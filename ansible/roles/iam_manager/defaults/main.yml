@@ -7,3 +7,4 @@ validator_config_dir: /home/{{ solana_user }}/.local/
 validator_ledger_dir: /mnt/ledger
 validator_accounts_dir: /mnt/accounts
 validator_snapshots_dir: /mnt/snapshots
+iam_set_immutable: true

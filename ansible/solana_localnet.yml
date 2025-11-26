@@ -32,6 +32,8 @@ all:
 
     # ───── Solana Cluster Grouping ─────
     solana_localnet:
+      vars:
+        iam_set_immutable: false
       hosts:
         host-alpha:
         host-bravo:

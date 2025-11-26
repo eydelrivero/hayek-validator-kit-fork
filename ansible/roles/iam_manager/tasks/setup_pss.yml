@@ -39,6 +39,7 @@
   ansible.builtin.command: chattr +i /usr/local/sbin/reset-my-password
   changed_when: false
   no_log: true
+  when: iam_set_immutable | bool
 
 # Configure sudo defaults for better password handling
 - name: Configure sudo defaults for password handling
@@ -48,5 +49,4 @@
     insertafter: "^# Defaults specification"
     validate: 'visudo -cf %s'
   no_log: true
-
 

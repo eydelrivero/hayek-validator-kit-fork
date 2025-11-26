@@ -65,6 +65,7 @@ services:
     volumes:
       - ./container-setup/scripts/generate-localnet-ssh-keys.sh:/generate-localnet-ssh-keys.sh
       - ./localnet-ssh-keys:/localnet-ssh-keys
+      - ./localnet-new-metal-box:/localnet-new-metal-box
     command: ["bash", "-c", "apt update && apt install -y openssh-client && /generate-localnet-ssh-keys.sh"]
   
   gossip-entrypoint:
@@ -117,14 +118,12 @@ services:
 
   # host-alpha will be hosting a voting non-delinquent validator named Canopy with a bunch of SOL stake
   host-alpha:
-    profiles:
-      - localnet
+    profiles: ["localnet"]
     depends_on:
       keygen-init:
         condition: service_completed_successfully
       gossip-entrypoint:
         condition: service_healthy
-
     build:
       context: ./
       target: validator-builder
@@ -140,6 +139,10 @@ services:
 
     # host-bravo is a validator-ready container without a validator key set. It does not have any validator running, but the tooling is already installed.
   host-bravo:
+    profiles: ["localnet"]
+    depends_on:
+      keygen-init:
+        condition: service_completed_successfully
     # NO NEED TO BUILD, because we want to use the image `${COMPOSE_PROJECT_NAME}-validator`
     # specified in *validator-variables and by now that image should be already built for host-alpha.
     # build:
@@ -158,6 +161,10 @@ services:
 
 # host-charlie is a naked Ubuntu 24.04. This guy is not ready for anything. This is good to test bare-bone provisioning scripts.
   host-charlie:
+    profiles: ["localnet"]
+    depends_on:
+      keygen-init:
+        condition: service_completed_successfully
     build:
       context: ./
       target: naked-builder
@@ -192,9 +199,9 @@ services:
   # --- ANSIBLE CONTROL FOR LOCALNET (Podman) ---
 
   ansible-control-localnet:
+    profiles: ["localnet"]
     <<: *ansible_base
     container_name: ansible-control-localnet
-    profiles: ["localnet"]
     environment:
       - SSH_AUTH_SOCK=/tmp/ssh-agent.sock
     depends_on:
@@ -202,26 +209,27 @@ services:
         condition: service_healthy
       host-alpha:
         condition: service_healthy
-      # host-bravo:
-      #   condition: service_healthy
-      # host-charlie:
-      #   condition: service_healthy
+      host-bravo:
+        condition: service_healthy
+      host-charlie:
+        condition: service_healthy
     # share net stack with gossip-entrypoint like you do today
     network_mode: service:gossip-entrypoint
     volumes:
       - ..:/hayek-validator-kit # the workspace folder where the repo will be mounted. Update ANSIBLE_WORKSPACE_DIR to match this path in initialize-localnet-and-demo-validators.sh
       # - ./container-setup/scripts/generate-localnet-ssh-keys.sh:/usr/local/bin/generate-localnet-ssh-keys.sh
       - ./localnet-ssh-keys:/localnet-ssh-keys
+      - ./localnet-new-metal-box:/root/new-metal-box
+      - ./validator-keys:/root/.validator-keys
     command: ["/bin/bash", "-lc", "/hayek-validator-kit/solana-localnet/container-setup/scripts/start-ansible-ssh-agent.sh && exec sleep infinity"]
 
   # --- ANSIBLE CONTROL FOR PROD (Docker + 1Password) ---
 
   ansible-control-prod:
+    # we want profile explicit
+    profiles: ["prod"]
     <<: *ansible_base
     container_name: ansible-control-prod
-    # no profile -> available by default
-    # or profiles: ["prod"] if you want it explicit
-    profiles: ["prod"]
     # Use Docker/OrbStack ssh-auth socket
     volumes:
       - ..:/hayek-validator-kit # the workspace folder where the repo will be mounted. Update ANSIBLE_WORKSPACE_DIR to match this path in initialize-localnet-and-demo-validators.sh
