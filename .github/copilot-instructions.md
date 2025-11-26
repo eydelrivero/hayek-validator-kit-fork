@@ -127,8 +127,8 @@ The Hayek Validator Kit is an infrastructure automation toolkit for deploying an
    # Start localnet from outside IDE
    ./start-localnet-from-outside-ide.sh
    
-   # Standard localnet startup
-   ./start-localnet.sh
+   # Standard localnet startup from ansible-control container
+   ./container-setup/scripts/initialize-localnet-and-demo-validators.sh
    
    # Add penetration testing tools
    ./add-pentest-to-localnet.sh
@@ -184,11 +184,14 @@ After making any changes to Ansible roles or Docker configurations:
 │   ├── solana_new_metal_box.yml # New server provisioning
 │   └── solana_two_host_operations.yml # Multi-host operations
 ├── solana-localnet/            # Docker-based local development environment
+│   ├── container-setup/        # Container setup scripts and systemd units
+│   │   ├── scripts/            # Container setup scripts
+│   │   │   └── initialize-localnet-and-demo-validators.sh       # Localnet startup script from ansible-control container
+│   │   └── systemd/            # Systemd unit files for containers
 │   ├── docker-compose.yml      # Multi-container Solana testnet
 │   ├── Dockerfile              # Container build definitions
 │   ├── build-solana-cli/       # Solana CLI build automation
 │   ├── validator-keys/         # Pre-generated validator keypairs
-│   ├── start-localnet.sh       # Localnet startup script
 │   ├── start-localnet-from-outside-ide.sh # IDE-independent startup
 │   └── add-pentest-to-localnet.sh # Add security testing tools
 ├── .devcontainer/              # VS Code dev container configuration

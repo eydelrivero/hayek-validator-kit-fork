@@ -2,7 +2,7 @@
 	"name": "Solana Localnet devcontainer",
 	"dockerComposeFile": "../../solana-localnet/docker-compose.yml",
 	"service": "ansible-control",
-	"postStartCommand": "./solana-localnet/start-localnet.sh",
+	"postStartCommand": "./solana-localnet/container-setup/scripts/initialize-localnet-and-demo-validators.sh",
 	"shutdownAction": "stopCompose",
 	// somehow it works in keeping the terminal open after postStartCommand but meh...
 	// It might be fixed soon, see https://github.com/microsoft/vscode-remote-release/issues/4537

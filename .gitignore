@@ -562,3 +562,4 @@ solana-localnet/validator-keys/*
 
 # Ignoring initial-setup until migrated
 ansible/initial-setup
+solana-localnet/localnet-ssh-keys/*

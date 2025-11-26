@@ -5,20 +5,23 @@ set -e
 
 # Path to your docker-compose file
 COMPOSE_FILE="./docker-compose.yml"
-SERVICE="ansible-control"
+SERVICE="ansible-control-localnet"
 WORKSPACE_FOLDER="$(pwd)"
 
 # Start docker compose in detached mode
-docker compose -f "$COMPOSE_FILE" up -d
+podman compose -f "$COMPOSE_FILE" --profile localnet up -d
 
 # Wait for the ansible-control container to be healthy/up
 echo "Waiting for $SERVICE container to be ready..."
-until docker compose -f "$COMPOSE_FILE" exec -T $SERVICE true 2>/dev/null; do
+until podman compose -f "$COMPOSE_FILE" --profile localnet exec -T $SERVICE true 2>/dev/null; do
   sleep 2
 done
 
+echo "Podman Compose version:"
+podman compose --version
+
 # Run the postStartCommand inside the container
-docker compose -f "$COMPOSE_FILE" exec $SERVICE bash -l -c "cd /hayek-validator-kit && ./solana-localnet/start-localnet.sh"
+podman compose -f "$COMPOSE_FILE" --profile localnet exec $SERVICE bash -l -c "cd /hayek-validator-kit && ./solana-localnet/container-setup/scripts/initialize-localnet-and-demo-validators.sh"
 
 echo "Localnet started. Attach to the container with:"
-echo "docker compose -f $COMPOSE_FILE exec -w /hayek-validator-kit $SERVICE bash -l"
+echo "podman compose -f $COMPOSE_FILE --profile localnet exec -w /hayek-validator-kit $SERVICE bash -l"

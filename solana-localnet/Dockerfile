@@ -6,23 +6,23 @@ ARG SOLANA_RELEASE
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies.
-RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && apt-get install -y --no-install-recommends \
-       apt-utils \
-       locales \
-       python3-dev \
-       python3-setuptools \
-       python3-pip \
-       python3-yaml \
-       software-properties-common \
-       rsyslog sudo iproute2 \
-       openssh-client openssh-server git curl nano openssl tar jq less tree \
-       at cron logrotate \
-    && apt-get purge -y --auto-remove \
-    && apt-get clean \
-    && rm -Rf /var/lib/apt/lists/* \
-    && rm -Rf /usr/share/doc && rm -Rf /usr/share/man
+# Install dependencies. Remove apt lock if present to avoid build failures.
+RUN rm -f /var/cache/apt/archives/lock && \
+     apt-get update && apt-get install -y --no-install-recommends \
+         apt-utils \
+         locales \
+         python3-dev \
+         python3-setuptools \
+         python3-pip \
+         python3-yaml \
+         software-properties-common \
+         rsyslog sudo iproute2 inetutils-ping telnet netcat-openbsd dnsutils traceroute \
+         openssh-client openssh-server git curl nano openssl tar jq less tree \
+         at cron logrotate \
+     && apt-get autoremove -y \
+     && apt-get clean \
+     && rm -Rf /var/lib/apt/lists/* \
+     && rm -Rf /usr/share/doc && rm -Rf /usr/share/man
 # RUN sed -i 's/^\($ModLoad imklog\)/#\1/' /etc/rsyslog.conf
 
 # Remove useless Python environment warning flag.
@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/root/.cache \
 #     && tar -xvjf "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE.tar.bz2" --directory "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE" \
 #     && rm -f "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE.tar.bz2"
 
-COPY --from=solana-binaries --chown=sol:sol "/solana-release" "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release"
+COPY --from=solana-binaries "/solana-release" "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release"
 
 RUN --mount=type=cache,target=/root/.cache \
     ln -sf "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release" "$SOLANA_INSTALL_DIR/active_release" \
@@ -144,7 +144,7 @@ RUN --mount=type=cache,target=/root/.cache \
 #     mkdir -p "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE" \
 #     && tar -xvjf "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE.tar.bz2" --directory "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE"
 
-COPY --from=solana-binaries --chown=sol:sol "/solana-release" "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release"
+COPY --from=solana-binaries "/solana-release" "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release"
 
 RUN --mount=type=cache,target=/root/.cache \
     ln -sf "$SOLANA_INSTALL_DIR/releases/$SOLANA_RELEASE/solana-release" "$SOLANA_INSTALL_DIR/active_release" \
@@ -186,7 +186,7 @@ EXPOSE 8008/udp
 # tpu_vote
 EXPOSE 8009/udp
 
-COPY "./localnet-gossip-entrypoint-setup.sh" "/usr/bin"
+COPY "./container-setup/scripts/localnet-gossip-entrypoint-setup.sh" "/usr/bin"
 ENV PATH=$SOLANA_INSTALL_DIR/active_release/bin:$PATH
 ENTRYPOINT /usr/bin/localnet-gossip-entrypoint-setup.sh
 CMD [""]
@@ -211,6 +211,18 @@ WORKDIR /opt/code/tools
 
 SHELL [ "/bin/bash", "-c" ]
 ENV LANG=C.UTF-8
+
+# Copy the unit file
+COPY ./container-setup/systemd/set-container-default-user-ssh-key.service /etc/systemd/system/set-container-default-user-ssh-key.service
+
+# Enable it so systemd creates the wants/ symlink
+RUN systemctl enable set-container-default-user-ssh-key.service
+
+# Copy the unit file
+COPY ./container-setup/systemd/set-validator-service-user-ssh-key.service /etc/systemd/system/set-validator-service-user-ssh-key.service
+
+# Enable it so systemd creates the wants/ symlink
+RUN systemctl enable set-validator-service-user-ssh-key.service
 
 # Start ssh server
 RUN --mount=type=cache,target=/root/.cache \
@@ -260,6 +272,12 @@ RUN echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 SHELL [ "/bin/bash", "-c" ]
 ENV LANG=C.UTF-8
+
+# Copy the unit file
+COPY ./systemd/set-container-default-user-ssh-key.service /etc/systemd/system/set-container-default-user-ssh-key.service
+
+# Enable it so systemd creates the wants/ symlink
+RUN systemctl enable set-container-default-user-ssh-key.service
 
 # Start ssh server
 RUN --mount=type=cache,target=/root/.cache \

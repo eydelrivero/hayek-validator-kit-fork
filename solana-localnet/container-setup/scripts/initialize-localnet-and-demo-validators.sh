@@ -34,17 +34,13 @@ NC='\033[0m' # No Color
 CURRENT_SCRIPT_RUNTIME_DIR="$("${readlink_cmd}" -f "${HERE}")"
 
 # setup solana cli default signer
-if [ -f ~/.config/solana/id_maybe.json ] && [ $(solana-keygen pubkey ~/.config/solana/id_maybe.json 2>/dev/null) ]; then
-  if [ -f ~/.config/solana/id.json ]; then mv ~/.config/solana/id.json ~/.config/solana/id.json.bak; fi
-  ln -sf ~/.config/solana/id_maybe.json ~/.config/solana/id.json
-  echo -e "${YELLOW}Default solana cli signer ($(solana-keygen pubkey ~/.config/solana/id.json)) was imported from host${NC}"
+if [ ! -f ~/.config/solana/id.json ]; then
+  echo -e "${YELLOW}Generating default solana cli signer...${NC}"
+  solana-keygen new -s --no-bip39-passphrase -o ~/.config/solana/id.json
 else
-  if [ ! -f ~/.config/solana/id.json ]; then
-    echo -e "${YELLOW}Default solana cli signer was NOT imported from host. Generating default signer...${NC}"
-    solana-keygen new -s --no-bip39-passphrase -o ~/.config/solana/id.json
-  fi
-  echo -e "${RED}WARNING: THIS SIGNER ($(solana-keygen pubkey ~/.config/solana/id.json)) IS EPHEMERAL AND WILL BE DESTROYED WHEN THE ansible-control CONTAINER IS STOPPED OR DELETED!${NC}"
+  echo "Default solana cli signer already exists at ~/.config/solana/id.json"
 fi
+echo -e "${RED}WARNING: THIS SIGNER ($(solana-keygen pubkey ~/.config/solana/id.json)) IS EPHEMERAL AND WILL BE DESTROYED WHEN THE ansible-control CONTAINER IS STOPPED OR DELETED!${NC}"
 
 MAX_SLEEP_SECONDS=120
 CURRENT_SLEEP_SECONDS=0
@@ -182,6 +178,9 @@ cleanup-tmp-dir() {
   trap 'rm -rf "$TMP_DIR"' EXIT
 }
 
+
+VALIDATOR_SERVICE_USER_SSH_KEY_PATH=/localnet-ssh-keys/sol_ed25519
+
 # Cleanup the host of the validator
 # Parameters: HOST, SSH_PORT, USER
 # USE: cleanup-host HOST SSH_PORT USER
@@ -192,7 +191,7 @@ cleanup-host() {
   HOST=$1
 
   # cleanup existing sol service
-  ssh -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "
+  ssh -i $VALIDATOR_SERVICE_USER_SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "
     set -e
 
     sudo systemctl stop sol 2> /dev/null || true
@@ -212,10 +211,11 @@ configure-demo-in-host() {
   : ${1?"Requires HOST"}
   HOST=$1
 
+  VALIDATOR_SERVICE_USER=sol
   HOST_SOLANA_BIN="~/.local/share/solana/install/active_release/bin"
 
   # Copy the primary-target-identity.json from the Ansible Control to the host
-  scp -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -P $SSH_PORT $ANSIBLE_DEMO_KEYS_DIR/primary-target-identity.json "$USER@$HOST:~/primary-target-identity.json"
+  scp -i $VALIDATOR_SERVICE_USER_SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -P $SSH_PORT $ANSIBLE_DEMO_KEYS_DIR/primary-target-identity.json "$USER@$HOST:~/primary-target-identity.json"
 
   # Generate the validator startup script
   ANSIBLE_DEMO_STARTUP_SCRIPT=$CURRENT_SCRIPT_RUNTIME_DIR/agave-validator-localnet.sh
@@ -232,12 +232,12 @@ configure-demo-in-host() {
   echo
 
   # Transfer the validator startup script from Ansible to the Host's sol user's bin directory
-  ssh -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "mkdir -p ~/bin && chmod 754 ~/bin"
-  scp -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -P $SSH_PORT $ANSIBLE_DEMO_STARTUP_SCRIPT "$USER@$HOST:~/bin/run-validator-demo.sh"
+  ssh -i $VALIDATOR_SERVICE_USER_SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "mkdir -p ~/bin && chmod 754 ~/bin"
+  scp -i $VALIDATOR_SERVICE_USER_SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -P $SSH_PORT $ANSIBLE_DEMO_STARTUP_SCRIPT "$USER@$HOST:~/bin/run-validator-demo.sh"
   rm -rf $ANSIBLE_DEMO_STARTUP_SCRIPT
 
   # Transfer the validator keys from Ansible to the Host's sol user's keys directory and create symlinks for identity.json
-  ssh -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "
+  ssh -i $VALIDATOR_SERVICE_USER_SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" "$USER@$HOST" -p $SSH_PORT "
     set -e
     # source ~/.profile
     PATH=$HOST_SOLANA_BIN:$PATH
@@ -263,6 +263,7 @@ Restart=always
 RestartSec=5
 User=sol
 LimitNOFILE=1000000
+LimitMEMLOCK=2000000000
 LogRateLimitIntervalSec=0
 Environment="PATH=/bin:/usr/bin:$HOST_SOLANA_BIN"
 ExecStart=/home/sol/bin/run-validator-demo.sh
@@ -270,6 +271,11 @@ ExecStart=/home/sol/bin/run-validator-demo.sh
 [Install]
 WantedBy=multi-user.target
 EOF
+
+    # set sol service as owner of ledger, accounts, and snapshots directories
+    sudo chown -R $VALIDATOR_SERVICE_USER:$VALIDATOR_SERVICE_USER /mnt/ledger
+    sudo chown -R $VALIDATOR_SERVICE_USER:$VALIDATOR_SERVICE_USER /mnt/accounts
+    sudo chown -R $VALIDATOR_SERVICE_USER:$VALIDATOR_SERVICE_USER /mnt/snapshots
 
     sudo systemctl enable --now sol
   "
