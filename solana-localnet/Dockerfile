@@ -274,7 +274,7 @@ SHELL [ "/bin/bash", "-c" ]
 ENV LANG=C.UTF-8
 
 # Copy the unit file
-COPY ./systemd/set-container-default-user-ssh-key.service /etc/systemd/system/set-container-default-user-ssh-key.service
+COPY ./container-setup/systemd/set-container-default-user-ssh-key.service /etc/systemd/system/set-container-default-user-ssh-key.service
 
 # Enable it so systemd creates the wants/ symlink
 RUN systemctl enable set-container-default-user-ssh-key.service

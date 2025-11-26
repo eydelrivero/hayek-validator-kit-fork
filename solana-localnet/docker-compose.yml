@@ -3,32 +3,29 @@
 # See https://docs.docker.com/compose/install/
 
 # Define a reusable command block using an anchor with a multiline command
-# x-settings-needed-for-systemd: &settings-needed-for-systemd -> @docker-only
+# x-settings-needed-for-systemd: &settings-needed-for-systemd # -> @docker-only
 #   privileged: true
 x-validator-variables: &validator-variables
   image: ${COMPOSE_PROJECT_NAME}-validator
   volumes:
-    # - /sys/fs/cgroup:/sys/fs/cgroup:rw -> @docker-only
+    # - /sys/fs/cgroup:/sys/fs/cgroup:rw # -> @docker-only
     - /mnt/ledger
     - /mnt/accounts
     - /mnt/snapshots
-    # - type: bind # -> @fixme-issue-with-podman -> @docker-only
+    # - type: bind # -> @docker-only
     #   # NOTE: If SSH_AUTH_SOCK is not set on the host, /dev/null will be mounted, which is not a valid UNIX socket.
     #   # Use /dev/null as a fallback if SSH_AUTH_SOCK is not set to avoid Docker errors when the SSH agent socket is unavailable
     #   source: ${SSH_AUTH_SOCK:-/dev/null}
     #   target: /ssh-agent
     #   read_only: true
-    # - "${HOME}/.ssh/id_ed25519.pub:/tmp/id_ed25519.pub:ro" # Mount the host's public key as read-only
-    # - "../ansible/iam/users:/tmp/team_ssh_public_keys:ro" # Mount the team public keys as read-only
+    # - "${HOME}/.ssh/id_ed25519.pub:/tmp/id_ed25519.pub:ro" # Mount the host's public key as read-only # deleteme
+    # - "../ansible/iam/users:/tmp/team_ssh_public_keys:ro" # Mount the team public keys as read-only # deleteme
     - ./container-setup/scripts/set-container-default-user-ssh-key.sh:/container-setup/scripts/set-container-default-user-ssh-key.sh
     - ./container-setup/scripts/set-validator-service-user-ssh-key.sh:/container-setup/scripts/set-validator-service-user-ssh-key.sh
-    # - ./systemd:/etc/systemd/system
     - ./localnet-ssh-keys:/localnet-ssh-keys
   environment:
-    SSH_AUTH_SOCK: /ssh-agent
     HOST_DEFAULT_USER: ubuntu # the unsername of the default user in the container OS, e.g., 'ubuntu' for Ubuntu images
     VALIDATOR_SERVICE_USER: sol # Set the username inside the container
-    VALIDATOR_OPERATOR_USER: ${ANSIBLE_REMOTE_USER:?error} # Set the validator operator user inside the container
     RPC_URL: http://gossip-entrypoint:8899
     container: podman # helps systemd detect it runs in a container
   tmpfs:
@@ -51,7 +48,6 @@ x-ansible-control-base: &ansible_base
     - RPC_URL=http://gossip-entrypoint:8899
   stdin_open: true
   tty: true
-  # common env, user, etc.
 
 networks:
   solana_network:
@@ -83,7 +79,7 @@ services:
       retries: 20
     container_name: "gossip-entrypoint"
     hostname: "gossip-entrypoint"
-    # volumes: -> @docker-only
+    # volumes: # -> @docker-only
     #   - /sys/fs/cgroup:/sys/fs/cgroup:rw
     environment:
       - FOO="bar"
@@ -136,15 +132,62 @@ services:
     hostname: "host-alpha"
     ports:
       - "9122:22"
-    # environment:
-    #   VALIDATOR_SERVICE_USER: sol
     networks:
       solana_network:
         ipv4_address: 172.25.0.11
+    # <<: [ *validator-variables, *settings-needed-for-systemd ] # -> @docker-only
+    <<: [ *validator-variables ]
+
+    # host-bravo is a validator-ready container without a validator key set. It does not have any validator running, but the tooling is already installed.
+  host-bravo:
+    # NO NEED TO BUILD, because we want to use the image `${COMPOSE_PROJECT_NAME}-validator`
+    # specified in *validator-variables and by now that image should be already built for host-alpha.
+    # build:
+    #   context: ./
+    #   # dockerfile: ./validator/Dockerfile
+    #   target: validator-builder
+    container_name: "host-bravo"
+    hostname: "host-bravo"
+    ports:
+      - "9222:22"
+    networks:
+      solana_network:
+        ipv4_address: 172.25.0.12
     # <<: [ *validator-variables, *settings-needed-for-systemd ] -> @docker-only
     <<: [ *validator-variables ]
 
-
+# host-charlie is a naked Ubuntu 24.04. This guy is not ready for anything. This is good to test bare-bone provisioning scripts.
+  host-charlie:
+    build:
+      context: ./
+      target: naked-builder
+    image: ${COMPOSE_PROJECT_NAME}-ubuntu-naked
+    container_name: "host-charlie"
+    hostname: "host-charlie"
+    ports:
+      - "9322:22"
+    networks:
+      solana_network:
+        ipv4_address: 172.25.0.13
+    volumes:
+      # - /sys/fs/cgroup:/sys/fs/cgroup:rw # -> @docker-only
+      # - type: bind  # -> @docker-only
+      #   source: ${SSH_AUTH_SOCK:-/dev/null}
+      #   target: /ssh-agent
+      #   read_only: true
+      # - "../ansible/iam/users:/tmp/team_ssh_public_keys:ro" # Mount the team public keys as read-only
+      - ./container-setup/scripts/set-container-default-user-ssh-key.sh:/container-setup/scripts/set-container-default-user-ssh-key.sh
+      - ./localnet-ssh-keys:/localnet-ssh-keys
+    environment:
+      HOST_DEFAULT_USER: ubuntu # the unsername of the default user in the container OS, e.g., 'ubuntu' for Ubuntu images
+      RPC_URL: http://gossip-entrypoint:8899
+      container: podman # helps systemd detect it runs in a container
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+    command: ["/lib/systemd/systemd", "--system"]
+    # <<: [ *settings-needed-for-systemd ] # -> @docker-only
 
   # --- ANSIBLE CONTROL FOR LOCALNET (Podman) ---
 
