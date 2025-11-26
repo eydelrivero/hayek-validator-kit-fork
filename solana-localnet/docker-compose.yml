@@ -195,6 +195,8 @@ services:
     <<: *ansible_base
     container_name: ansible-control-localnet
     profiles: ["localnet"]
+    environment:
+      - SSH_AUTH_SOCK=/tmp/ssh-agent.sock
     depends_on:
       gossip-entrypoint:
         condition: service_healthy
@@ -210,8 +212,7 @@ services:
       - ..:/hayek-validator-kit # the workspace folder where the repo will be mounted. Update ANSIBLE_WORKSPACE_DIR to match this path in initialize-localnet-and-demo-validators.sh
       # - ./container-setup/scripts/generate-localnet-ssh-keys.sh:/usr/local/bin/generate-localnet-ssh-keys.sh
       - ./localnet-ssh-keys:/localnet-ssh-keys
-    # command: ["/bin/bash", "-lc", "/usr/local/bin/generate-localnet-ssh-keys.sh && sleep infinity"]
-    command: ["/bin/bash", "-lc", "sleep infinity"]
+    command: ["/bin/bash", "-lc", "/hayek-validator-kit/solana-localnet/container-setup/scripts/start-ansible-ssh-agent.sh && exec sleep infinity"]
 
   # --- ANSIBLE CONTROL FOR PROD (Docker + 1Password) ---
 
