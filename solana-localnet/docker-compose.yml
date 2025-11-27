@@ -2,22 +2,12 @@
 # See https://stackoverflow.com/questions/76305311/is-there-a-default-value-for-localstacks-localstack-volume-dir-variable-if-o
 # See https://docs.docker.com/compose/install/
 
-# Define a reusable command block using an anchor with a multiline command
-# x-settings-needed-for-systemd: &settings-needed-for-systemd # -> @docker-only
-#   privileged: true
 x-validator-variables: &validator-variables
   image: ${COMPOSE_PROJECT_NAME}-validator
   volumes:
-    # - /sys/fs/cgroup:/sys/fs/cgroup:rw # -> @docker-only
     - /mnt/ledger
     - /mnt/accounts
     - /mnt/snapshots
-    # - type: bind # -> @docker-only
-    #   # NOTE: If SSH_AUTH_SOCK is not set on the host, /dev/null will be mounted, which is not a valid UNIX socket.
-    #   # Use /dev/null as a fallback if SSH_AUTH_SOCK is not set to avoid Docker errors when the SSH agent socket is unavailable
-    #   source: ${SSH_AUTH_SOCK:-/dev/null}
-    #   target: /ssh-agent
-    #   read_only: true
     # - "${HOME}/.ssh/id_ed25519.pub:/tmp/id_ed25519.pub:ro" # Mount the host's public key as read-only # deleteme
     # - "../ansible/iam/users:/tmp/team_ssh_public_keys:ro" # Mount the team public keys as read-only # deleteme
     - ./container-setup/scripts/set-container-default-user-ssh-key.sh:/container-setup/scripts/set-container-default-user-ssh-key.sh
@@ -27,7 +17,6 @@ x-validator-variables: &validator-variables
     HOST_DEFAULT_USER: ubuntu # the unsername of the default user in the container OS, e.g., 'ubuntu' for Ubuntu images
     VALIDATOR_SERVICE_USER: sol # Set the username inside the container
     RPC_URL: http://gossip-entrypoint:8899
-    container: podman # helps systemd detect it runs in a container
   tmpfs:
     - /run
     - /run/lock
@@ -80,8 +69,6 @@ services:
       retries: 20
     container_name: "gossip-entrypoint"
     hostname: "gossip-entrypoint"
-    # volumes: # -> @docker-only
-    #   - /sys/fs/cgroup:/sys/fs/cgroup:rw
     environment:
       - FOO="bar"
     networks:
@@ -134,7 +121,6 @@ services:
     networks:
       solana_network:
         ipv4_address: 172.25.0.11
-    # <<: [ *validator-variables, *settings-needed-for-systemd ] # -> @docker-only
     <<: [ *validator-variables ]
 
     # host-bravo is a validator-ready container without a validator key set. It does not have any validator running, but the tooling is already installed.
@@ -156,7 +142,6 @@ services:
     networks:
       solana_network:
         ipv4_address: 172.25.0.12
-    # <<: [ *validator-variables, *settings-needed-for-systemd ] -> @docker-only
     <<: [ *validator-variables ]
 
 # host-charlie is a naked Ubuntu 24.04. This guy is not ready for anything. This is good to test bare-bone provisioning scripts.
@@ -177,24 +162,17 @@ services:
       solana_network:
         ipv4_address: 172.25.0.13
     volumes:
-      # - /sys/fs/cgroup:/sys/fs/cgroup:rw # -> @docker-only
-      # - type: bind  # -> @docker-only
-      #   source: ${SSH_AUTH_SOCK:-/dev/null}
-      #   target: /ssh-agent
-      #   read_only: true
       # - "../ansible/iam/users:/tmp/team_ssh_public_keys:ro" # Mount the team public keys as read-only
       - ./container-setup/scripts/set-container-default-user-ssh-key.sh:/container-setup/scripts/set-container-default-user-ssh-key.sh
       - ./localnet-ssh-keys:/localnet-ssh-keys
     environment:
       HOST_DEFAULT_USER: ubuntu # the unsername of the default user in the container OS, e.g., 'ubuntu' for Ubuntu images
       RPC_URL: http://gossip-entrypoint:8899
-      container: podman # helps systemd detect it runs in a container
     tmpfs:
       - /run
       - /run/lock
       - /tmp
     command: ["/lib/systemd/systemd", "--system"]
-    # <<: [ *settings-needed-for-systemd ] # -> @docker-only
 
   # --- ANSIBLE CONTROL FOR LOCALNET (Podman) ---
 
@@ -208,11 +186,11 @@ services:
       gossip-entrypoint:
         condition: service_healthy
       host-alpha:
-        condition: service_healthy
+        condition: service_started
       host-bravo:
-        condition: service_healthy
+        condition: service_started
       host-charlie:
-        condition: service_healthy
+        condition: service_started
     # share net stack with gossip-entrypoint like you do today
     network_mode: service:gossip-entrypoint
     volumes:

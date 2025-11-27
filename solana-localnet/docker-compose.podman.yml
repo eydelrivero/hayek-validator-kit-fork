@@ -1,0 +1,12 @@
+services:
+  host-alpha:
+    environment:
+      container: podman
+
+  host-bravo:
+    environment:
+      container: podman
+
+  host-charlie:
+    environment:
+      container: podman
