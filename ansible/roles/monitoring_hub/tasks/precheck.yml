@@ -21,9 +21,10 @@
   changed_when: false
   when: (ssl_enabled | default(true) | bool) and (not is_docker_container | bool)
 
+# TODO: create var cloudflare_account_id
 - name: Verify Cloudflare API Token
   ansible.builtin.uri:
-    url: "https://api.cloudflare.com/client/v4/user/tokens/verify"
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_account_id }}/tokens/verify"
     method: GET
     headers:
       Authorization: "Bearer {{ ssl_cloudflare_token }}"

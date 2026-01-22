@@ -7,11 +7,20 @@
     state: directory
     mode: '0755'
 
-- name: Download and add InfluxData GPG key
+- name: Download and add InfluxData GPG key (rotated key)
   ansible.builtin.shell: |
-    curl -s https://repos.influxdata.com/influxdata-archive_compat.key | gpg --dearmor | tee /etc/apt/keyrings/influxdata-archive.gpg > /dev/null
-  args:
-    creates: /etc/apt/keyrings/influxdata-archive.gpg
+    curl -s https://repos.influxdata.com/influxdata-archive.key | gpg --dearmor | tee /etc/apt/keyrings/influxdata-archive.gpg > /dev/null
+
+- name: Remove legacy InfluxData repository entry (old signed-by key)
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/influxdata.gpg] https://repos.influxdata.com/debian stable main"
+    state: absent
+    filename: influxdata
+
+- name: Remove legacy InfluxData keyring if present
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/influxdata.gpg
+    state: absent
 
 - name: Add InfluxDB repository with GPG key
   ansible.builtin.apt_repository:

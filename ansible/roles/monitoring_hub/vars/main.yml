@@ -25,13 +25,13 @@ influxdb_additional_buckets:
     expectations: false
     token_permissions_write: true
     token_permissions_read: true
-    retention: 30 # days
+    retention: 365 # days
   - name: "solana_metrics"
     description: "Solana validator metrics (production, slots, balance, vote credits, etc.)"
     expectations: false
     token_permissions_write: true
     token_permissions_read: true
-    retention: 90 # days
+    retention: 365 # days
 
 # Solana specific variables
 solana_cli_bin: "/opt/solana/active_release/bin/solana"
@@ -45,7 +45,7 @@ solana:
       enabled: true
       network_name: "mainnet"
       metrics_interval: "30s"
-      watchtower_min_balance: 10
+      watchtower_min_balance: 2.5
       rpc_url: "https://api.mainnet-beta.solana.com/"
       stakewiz: true # Get Stakewiz rankings
       jito_mev: true
@@ -54,7 +54,7 @@ solana:
       enabled: true
       network_name: "testnet"
       metrics_interval: "30s"
-      watchtower_min_balance: 0.5
+      watchtower_min_balance: 10
       rpc_url: "https://api.testnet.solana.com/"
       stakewiz: false # Get Stakewiz rankings
       jito_mev: false
@@ -98,4 +98,4 @@ monitoring_services:
 
 # SSL / Let's Encrypt configuration
 ssl_enabled: true
-ssl_staging: true # Use Let's Encrypt staging environment for testing
+ssl_staging: false # Use Let's Encrypt staging environment for testing
