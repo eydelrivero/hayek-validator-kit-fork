@@ -110,6 +110,8 @@ Stop laptop-dependent binary publishing for Agave/Jito/Firedancer by making GitH
 
 ## OIDC + Production Guard Behavior (PR-5)
 
+- Detailed setup runbook: `docs/OIDC_S3_SETUP.md`
+
 - Workflows updated:
   - `.github/workflows/solana-binary-pipeline.yml`
   - `.github/workflows/solana-binary-promote.yml`

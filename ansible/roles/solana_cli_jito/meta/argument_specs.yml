@@ -28,3 +28,17 @@ argument_specs:
         required: false
         default: false
         description: "Use official repository instead of forked repository when building from source"
+      s3_release_base_url:
+        type: str
+        required: false
+        default: "https://solv-store.s3.us-east-1.amazonaws.com"
+        description: "Base URL used for binary downloads when build_from_source=false"
+      use_binary_manifest:
+        type: bool
+        required: false
+        default: true
+        description: "Resolve binary URL from published manifest before using fallback direct URL"
+      jito_manifest_url:
+        type: str
+        required: false
+        description: "Optional explicit manifest URL for Jito-Solana binary metadata"

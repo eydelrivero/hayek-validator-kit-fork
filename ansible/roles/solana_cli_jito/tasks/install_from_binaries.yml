@@ -1,11 +1,71 @@
 ---
-- name: Set Jito-Solana download URL
+- name: Set Jito-Solana binary source defaults
   ansible.builtin.set_fact:
-    jito_solana_download_url: "https://solv-store.s3.us-east-1.amazonaws.com/jito-solana/releases/download/{{ jito_tag }}/solana-release-{{ host_arch }}.tar.bz2"
+    s3_release_base_url: "{{ s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com') }}"
+    jito_manifest_enabled: "{{ use_binary_manifest | default(true) | bool }}"
+    jito_manifest_url: "{{ jito_manifest_url | default((s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com')) ~ '/manifests/solana-binary-manifest-v' ~ jito_version ~ '.json') }}"
+    jito_solana_download_url_fallback: "{{ (s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com')) ~ '/jito-solana/releases/download/' ~ jito_tag ~ '/solana-release-' ~ host_arch ~ '.tar.bz2' }}"
+
+- name: Fetch Jito-Solana binary manifest (best-effort)
+  ansible.builtin.uri:
+    url: "{{ jito_manifest_url }}"
+    method: GET
+    return_content: true
+    status_code:
+      - 200
+      - 404
+    timeout: 20
+  register: jito_manifest_response
+  changed_when: false
+  failed_when: false
+  when: jito_manifest_enabled
+
+- name: Parse Jito-Solana binary manifest
+  ansible.builtin.set_fact:
+    jito_manifest_json: "{{ jito_manifest_response.content | from_json }}"
+  when:
+    - jito_manifest_enabled
+    - jito_manifest_response.status | default(0) == 200
+
+- name: Select Jito-Solana manifest entry for requested version and architecture
+  ansible.builtin.set_fact:
+    jito_manifest_entry: >-
+      {{
+        (
+          jito_manifest_json.entries | default([])
+          | selectattr('client', 'equalto', 'jito-solana')
+          | selectattr('version', 'equalto', jito_version)
+          | selectattr('arch', 'equalto', host_arch)
+          | list
+          | first
+        ) | default({})
+      }}
+  when: jito_manifest_json is defined
+
+- name: Resolve Jito-Solana manifest URL candidates
+  ansible.builtin.set_fact:
+    jito_manifest_entry_s3_key: "{{ jito_manifest_entry.s3_key | default(jito_manifest_entry.destination_key | default(jito_manifest_entry.staging_key | default(''))) }}"
+    jito_solana_download_url_manifest: "{{ jito_manifest_entry.release_url | default(jito_manifest_entry.destination_url | default(jito_manifest_entry.staging_url | default(''))) }}"
+  when:
+    - jito_manifest_entry is defined
+    - jito_manifest_entry | length > 0
+
+- name: Build Jito-Solana manifest URL from key when direct URL is absent
+  ansible.builtin.set_fact:
+    jito_solana_download_url_manifest: "{{ s3_release_base_url ~ '/' ~ jito_manifest_entry_s3_key }}"
+  when:
+    - jito_solana_download_url_manifest | default('') == ''
+    - jito_manifest_entry_s3_key | default('') != ''
+
+- name: Set final Jito-Solana download URL (manifest first, fallback second)
+  ansible.builtin.set_fact:
+    jito_solana_download_url: "{{ (jito_solana_download_url_manifest | default('')) if (jito_solana_download_url_manifest | default('')) != '' else jito_solana_download_url_fallback }}"
 
 - name: Debug download URL
   ansible.builtin.debug:
-    msg: "Download URL: {{ jito_solana_download_url }}"
+    msg:
+      - "Download URL: {{ jito_solana_download_url }}"
+      - "URL source: {{ 'manifest' if (jito_solana_download_url_manifest | default('')) != '' else 'fallback' }}"
 
 - name: Ensure solana installed releases directory exists
   ansible.builtin.file:

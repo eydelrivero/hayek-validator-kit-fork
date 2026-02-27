@@ -4,15 +4,15 @@ solana_user: 'sol'
 solana_user_dir: "/home/{{ solana_user }}"
 validator_service_name: "sol"
 jito_relayer_service_name: "jito-relayer"
-ansible_solana_cli_dir: "{{ ansible_home_dir }}/.local/share/solana/install/active_release/bin"
+ansible_solana_cli_dir: "{{ system_solana_active_release_dir }}"
 
 # User variables
 keys_dir: "{{ solana_user_dir }}/keys"
 build_dir: "{{ solana_user_dir }}/build"
 scripts_dir: "{{ solana_user_dir }}/bin"
 logs_dir: "{{ solana_user_dir }}/logs"
-solana_install_dir: "{{ solana_user_dir }}/.local/share/solana/install/active_release/bin"
-solana_installed_releases_dir: "{{ solana_user_dir }}/.local/share/solana/install/releases"
+solana_install_dir: "{{ system_solana_active_release_dir }}"
+solana_installed_releases_dir: "{{ system_solana_installed_releases_dir }}"
 
 # Disk mount points configuration
 ledger_path: "{{ mount_base_path }}/ledger"

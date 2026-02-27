@@ -1,11 +1,71 @@
 ---
-- name: Set Solana Agave download URL
+- name: Set Solana Agave binary source defaults
   ansible.builtin.set_fact:
-    agave_download_url: "https://solv-store.s3.us-east-1.amazonaws.com/agave/releases/download/v{{ agave_version }}/solana-release-{{ host_arch }}.tar.bz2"
+    s3_release_base_url: "{{ s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com') }}"
+    agave_manifest_enabled: "{{ use_binary_manifest | default(true) | bool }}"
+    agave_manifest_url: "{{ agave_manifest_url | default((s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com')) ~ '/manifests/solana-binary-manifest-v' ~ agave_version ~ '.json') }}"
+    agave_download_url_fallback: "{{ (s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com')) ~ '/agave/releases/download/v' ~ agave_version ~ '/solana-release-' ~ host_arch ~ '.tar.bz2' }}"
+
+- name: Fetch Agave binary manifest (best-effort)
+  ansible.builtin.uri:
+    url: "{{ agave_manifest_url }}"
+    method: GET
+    return_content: true
+    status_code:
+      - 200
+      - 404
+    timeout: 20
+  register: agave_manifest_response
+  changed_when: false
+  failed_when: false
+  when: agave_manifest_enabled
+
+- name: Parse Agave binary manifest
+  ansible.builtin.set_fact:
+    agave_manifest_json: "{{ agave_manifest_response.content | from_json }}"
+  when:
+    - agave_manifest_enabled
+    - agave_manifest_response.status | default(0) == 200
+
+- name: Select Agave manifest entry for requested version and architecture
+  ansible.builtin.set_fact:
+    agave_manifest_entry: >-
+      {{
+        (
+          agave_manifest_json.entries | default([])
+          | selectattr('client', 'equalto', 'agave')
+          | selectattr('version', 'equalto', agave_version)
+          | selectattr('arch', 'equalto', host_arch)
+          | list
+          | first
+        ) | default({})
+      }}
+  when: agave_manifest_json is defined
+
+- name: Resolve Agave manifest URL candidates
+  ansible.builtin.set_fact:
+    agave_manifest_entry_s3_key: "{{ agave_manifest_entry.s3_key | default(agave_manifest_entry.destination_key | default(agave_manifest_entry.staging_key | default(''))) }}"
+    agave_download_url_manifest: "{{ agave_manifest_entry.release_url | default(agave_manifest_entry.destination_url | default(agave_manifest_entry.staging_url | default(''))) }}"
+  when:
+    - agave_manifest_entry is defined
+    - agave_manifest_entry | length > 0
+
+- name: Build Agave manifest URL from key when direct URL is absent
+  ansible.builtin.set_fact:
+    agave_download_url_manifest: "{{ s3_release_base_url ~ '/' ~ agave_manifest_entry_s3_key }}"
+  when:
+    - agave_download_url_manifest | default('') == ''
+    - agave_manifest_entry_s3_key | default('') != ''
+
+- name: Set final Agave download URL (manifest first, fallback second)
+  ansible.builtin.set_fact:
+    agave_download_url: "{{ (agave_download_url_manifest | default('')) if (agave_download_url_manifest | default('')) != '' else agave_download_url_fallback }}"
 
 - name: Print the Agave download URL
   ansible.builtin.debug:
-    msg: "Solana CLI will be downloaded from: {{ agave_download_url }}"
+    msg:
+      - "Solana CLI will be downloaded from: {{ agave_download_url }}"
+      - "URL source: {{ 'manifest' if (agave_download_url_manifest | default('')) != '' else 'fallback' }}"
 
 - name: Ensure solana installed releases directory exists
   ansible.builtin.file:
