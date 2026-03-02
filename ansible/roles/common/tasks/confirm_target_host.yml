@@ -9,6 +9,7 @@
   register: ip_info
   delegate_to: localhost
   run_once: true
+  become: false
 
 - name: confirm_target_host - Show server IP and location for confirmation
   ansible.builtin.pause:
@@ -26,12 +27,15 @@
 
       Type IP here
   register: ip_confirmation
-  when: ansible_facts['env']['TERM'] is defined and ansible_facts['env']['TERM'] != "dumb"
+  when:
+    - not (skip_confirmation_pauses | default(false) | bool)
+    - ansible_facts['env']['TERM'] | default('dumb') != "dumb"
 
 - name: confirm_target_host - Validate IP input
   ansible.builtin.fail:
     msg: "Incorrect IP. Please run the playbook again and type the correct IP."
   when:
-    - ansible_facts['env']['TERM'] is defined
-    - ansible_facts['env']['TERM'] != "dumb"
+    - not (skip_confirmation_pauses | default(false) | bool)
+    - ansible_facts['env']['TERM'] | default('dumb') != "dumb"
+    - ip_confirmation is defined
     - ip_confirmation.user_input != ansible_facts['default_ipv4']['address']

@@ -70,6 +70,7 @@
       ansible.builtin.systemd:
         name: cpu-governor
       register: cpu_governor_service_status
+      when: manage_cpu_governor_service | default(true) | bool
 
     - name: Assert CPU governor service is active
       ansible.builtin.assert:
@@ -77,6 +78,7 @@
         fail_msg: "ERROR! CPU governor service is not active. Status: {{ cpu_governor_service_status.status.ActiveState }}"
         success_msg: "✓ CPU governor service is active"
       ignore_errors: true
+      when: manage_cpu_governor_service | default(true) | bool
 
     # Verify sysctl configurations are applied
     - name: Check key sysctl parameters

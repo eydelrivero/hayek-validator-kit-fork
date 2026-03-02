@@ -1,0 +1,2245 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_START_TS="$(date +%s)"
+
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+WORKDIR="${WORKDIR:-$REPO_ROOT/test-harness/work/vm-hot-swap}"
+VM_ARCH="${VM_ARCH:-}"
+VM_BASE_IMAGE="${VM_BASE_IMAGE:-}"
+VM_CPUS="${VM_CPUS:-4}"
+VM_RAM_MB="${VM_RAM_MB:-4096}"
+VM_DISK_SYSTEM_GB="${VM_DISK_SYSTEM_GB:-40}"
+VM_DISK_LEDGER_GB="${VM_DISK_LEDGER_GB:-20}"
+VM_DISK_ACCOUNTS_GB="${VM_DISK_ACCOUNTS_GB:-10}"
+VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-5}"
+VM_QEMU_EFI="${VM_QEMU_EFI:-}"
+VM_NETWORK_MODE="${VM_NETWORK_MODE:-usernet}"
+VM_BRIDGE_CIDR_PREFIX="${VM_BRIDGE_CIDR_PREFIX:-24}"
+VM_BRIDGE_GATEWAY_IP="${VM_BRIDGE_GATEWAY_IP:-}"
+VM_BRIDGE_DNS_IP="${VM_BRIDGE_DNS_IP:-}"
+VM_NETWORK_MATCH_NAME="${VM_NETWORK_MATCH_NAME:-e*}"
+VM_SOURCE_BRIDGE_IP="${VM_SOURCE_BRIDGE_IP:-}"
+VM_DESTINATION_BRIDGE_IP="${VM_DESTINATION_BRIDGE_IP:-}"
+VM_SOURCE_TAP_IFACE="${VM_SOURCE_TAP_IFACE:-}"
+VM_DESTINATION_TAP_IFACE="${VM_DESTINATION_TAP_IFACE:-}"
+
+SSH_PRIVATE_KEY_FILE="${SSH_PRIVATE_KEY_FILE:-$REPO_ROOT/scripts/vm-test/work/id_ed25519}"
+SOURCE_SSH_PORT="${SOURCE_SSH_PORT:-2222}"
+SOURCE_SSH_PORT_ALT="${SOURCE_SSH_PORT_ALT:-2522}"
+DESTINATION_SSH_PORT="${DESTINATION_SSH_PORT:-3222}"
+DESTINATION_SSH_PORT_ALT="${DESTINATION_SSH_PORT_ALT:-3522}"
+SSH_WAIT_TIMEOUT="${SSH_WAIT_TIMEOUT:-420}"
+
+BOOTSTRAP_USER="${BOOTSTRAP_USER:-ubuntu}"
+METAL_BOX_SYSADMIN_USER="${METAL_BOX_SYSADMIN_USER:-alice}"
+VALIDATOR_OPERATOR_USER="${VALIDATOR_OPERATOR_USER:-bob}"
+VALIDATOR_NAME="${VALIDATOR_NAME:-demo1}"
+SOLANA_CLUSTER="${SOLANA_CLUSTER:-localnet}"
+SOLANA_CLUSTER_NORMALIZED="${SOLANA_CLUSTER#solana_}"
+SOLANA_CLUSTER_VARS_FILE="${SOLANA_CLUSTER_VARS_FILE:-$REPO_ROOT/ansible/group_vars/solana_${SOLANA_CLUSTER_NORMALIZED}.yml}"
+CITY_GROUP="${CITY_GROUP:-city_dal}"
+CITY_GROUP_VARS_FILE="${CITY_GROUP_VARS_FILE:-$REPO_ROOT/ansible/group_vars/${CITY_GROUP}.yml}"
+SWAP_EPOCH_END_THRESHOLD_SEC="${SWAP_EPOCH_END_THRESHOLD_SEC:-0}"
+VM_AUTHORIZED_IP="${VM_AUTHORIZED_IP:-10.0.2.2}"
+SSH_COMMON_ARGS="${SSH_COMMON_ARGS:--o IdentitiesOnly=yes -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no}"
+ENABLE_VM_TEST_SYSADMIN_NOPASSWD="${ENABLE_VM_TEST_SYSADMIN_NOPASSWD:-true}"
+AUTO_KILL_CONFLICTING_QEMU="${AUTO_KILL_CONFLICTING_QEMU:-true}"
+VM_METAL_BOX_SKIP_TAGS="${VM_METAL_BOX_SKIP_TAGS:-restart,cpu-isolation}"
+VM_DISABLE_CPU_GOVERNOR_SERVICE="${VM_DISABLE_CPU_GOVERNOR_SERVICE:-true}"
+VM_LOCALNET_ENTRYPOINT_MODE="${VM_LOCALNET_ENTRYPOINT_MODE:-auto}"
+VM_LOCALNET_ENTRYPOINT_RPC_HOST="${VM_LOCALNET_ENTRYPOINT_RPC_HOST:-127.0.0.1}"
+VM_LOCALNET_ENTRYPOINT_RPC_PORT="${VM_LOCALNET_ENTRYPOINT_RPC_PORT:-8899}"
+VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS="${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS:-10.0.2.2}"
+VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_PROCESS="${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_PROCESS:-127.0.0.1}"
+VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT="${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT:-8001}"
+VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE="${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE:-8000-8030}"
+VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH="${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH:-750}"
+VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE="${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE:-50000000}"
+VM_LOCALNET_ENTRYPOINT_FAUCET_PORT="${VM_LOCALNET_ENTRYPOINT_FAUCET_PORT:-19900}"
+VM_LOCALNET_ENTRYPOINT_ENGINE="${VM_LOCALNET_ENTRYPOINT_ENGINE:-auto}"
+VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE="${VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE:-}"
+VM_LOCALNET_ENTRYPOINT_CONTAINER_DYNAMIC_PORT_RANGE="${VM_LOCALNET_ENTRYPOINT_CONTAINER_DYNAMIC_PORT_RANGE:-}"
+VM_LOCALNET_ENTRYPOINT_CONTAINER_REBUILD="${VM_LOCALNET_ENTRYPOINT_CONTAINER_REBUILD:-false}"
+ENTRYPOINT_VM_SSH_PORT="${ENTRYPOINT_VM_SSH_PORT:-4222}"
+ENTRYPOINT_VM_SSH_PORT_ALT="${ENTRYPOINT_VM_SSH_PORT_ALT:-4522}"
+ENTRYPOINT_VM_GUEST_RPC_PORT="${ENTRYPOINT_VM_GUEST_RPC_PORT:-8899}"
+ENTRYPOINT_VM_GUEST_GOSSIP_PORT="${ENTRYPOINT_VM_GUEST_GOSSIP_PORT:-8001}"
+ENTRYPOINT_VM_GUEST_FAUCET_PORT="${ENTRYPOINT_VM_GUEST_FAUCET_PORT:-9900}"
+ENTRYPOINT_VM_BASE_IMAGE="${ENTRYPOINT_VM_BASE_IMAGE:-}"
+ENTRYPOINT_VM_SKIP_CLI_INSTALL="${ENTRYPOINT_VM_SKIP_CLI_INSTALL:-auto}"
+ENTRYPOINT_VM_BRIDGE_IP="${ENTRYPOINT_VM_BRIDGE_IP:-}"
+ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-}"
+
+SOURCE_FLAVOR=""
+DESTINATION_FLAVOR=""
+
+AGAVE_VERSION="${AGAVE_VERSION:-2.3.11}"
+JITO_VERSION="${JITO_VERSION:-2.3.6}"
+BAM_JITO_VERSION="${BAM_JITO_VERSION:-3.0.10}"
+BAM_JITO_VERSION_PATCH="${BAM_JITO_VERSION_PATCH:-}"
+BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
+BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
+FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
+SKIP_CONFIRMATION_PAUSES="${SKIP_CONFIRMATION_PAUSES:-true}"
+
+if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
+  VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE="hvk-vm-gossip-entrypoint:${AGAVE_VERSION}"
+fi
+
+VALIDATOR_KEYSET_SOURCE_DIR="${VALIDATOR_KEYSET_SOURCE_DIR:-$REPO_ROOT/solana-localnet/validator-keys/demo1}"
+
+RETAIN_ALWAYS=false
+RETAIN_ON_FAILURE=false
+EXEC_OK=false
+REPORT_EMITTED=false
+PRE_SWAP_VERIFIED=false
+POST_SWAP_VERIFIED=false
+SWAP_IDENTITY_VERIFIED=false
+ENTRYPOINT_PREFLIGHT_VM_SOURCE=false
+ENTRYPOINT_PREFLIGHT_VM_DESTINATION=false
+USERS_METAL_SETUP_DURATION_SEC=0
+ENTRYPOINT_PREFLIGHT_DURATION_SEC=0
+SOURCE_SETUP_DURATION_SEC=0
+DESTINATION_SETUP_DURATION_SEC=0
+PRE_SWAP_VERIFY_DURATION_SEC=0
+HOT_SWAP_DURATION_SEC=0
+POST_SWAP_VERIFY_DURATION_SEC=0
+TOTAL_DURATION_SEC=0
+HOST_VERSION_VM_SOURCE=""
+HOST_VERSION_VM_DESTINATION=""
+HOST_SERVICE_VM_SOURCE=""
+HOST_SERVICE_VM_DESTINATION=""
+HOST_DIAGNOSTIC_VM_SOURCE=""
+HOST_DIAGNOSTIC_VM_DESTINATION=""
+ENTRYPOINT_PREFLIGHT_DETAILS_VM_SOURCE=""
+ENTRYPOINT_PREFLIGHT_DETAILS_VM_DESTINATION=""
+SOURCE_IDENTITY_BEFORE=""
+SOURCE_PRIMARY_TARGET_BEFORE=""
+SOURCE_HOT_SPARE_BEFORE=""
+DESTINATION_IDENTITY_BEFORE=""
+DESTINATION_PRIMARY_TARGET_BEFORE=""
+DESTINATION_HOT_SPARE_BEFORE=""
+SOURCE_IDENTITY_AFTER=""
+SOURCE_PRIMARY_TARGET_AFTER=""
+SOURCE_HOT_SPARE_AFTER=""
+DESTINATION_IDENTITY_AFTER=""
+DESTINATION_PRIMARY_TARGET_AFTER=""
+DESTINATION_HOT_SPARE_AFTER=""
+CATCHUP_SNAPSHOT=""
+GOSSIP_SNAPSHOT=""
+EARLY_FAILURE_REASON=""
+ENTRYPOINT_BOOTSTRAP_OUTPUT=""
+REPORT_DIAGNOSIS=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  verify-vm-hot-swap.sh --source-flavor <flavor> --destination-flavor <flavor> [options]
+
+Required:
+  --source-flavor <agave|jito-shared|jito-cohosted|jito-bam>
+  --destination-flavor <agave|jito-shared|jito-cohosted|jito-bam>
+
+Optional:
+  --run-id <id>
+  --workdir <path>
+  --vm-arch <amd64|arm64>
+  --vm-base-image <path>
+  --source-ssh-port <int>            (default: 2222)
+  --source-ssh-port-alt <int>        (default: 2522)
+  --destination-ssh-port <int>       (default: 3222)
+  --destination-ssh-port-alt <int>   (default: 3522)
+  --retain-always
+  --retain-on-failure
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --source-flavor)
+      SOURCE_FLAVOR="${2:-}"
+      shift 2
+      ;;
+    --destination-flavor)
+      DESTINATION_FLAVOR="${2:-}"
+      shift 2
+      ;;
+    --run-id)
+      RUN_ID="${2:-}"
+      shift 2
+      ;;
+    --workdir)
+      WORKDIR="${2:-}"
+      shift 2
+      ;;
+    --vm-arch)
+      VM_ARCH="${2:-}"
+      shift 2
+      ;;
+    --vm-base-image)
+      VM_BASE_IMAGE="${2:-}"
+      shift 2
+      ;;
+    --source-ssh-port)
+      SOURCE_SSH_PORT="${2:-}"
+      shift 2
+      ;;
+    --source-ssh-port-alt)
+      SOURCE_SSH_PORT_ALT="${2:-}"
+      shift 2
+      ;;
+    --destination-ssh-port)
+      DESTINATION_SSH_PORT="${2:-}"
+      shift 2
+      ;;
+    --destination-ssh-port-alt)
+      DESTINATION_SSH_PORT_ALT="${2:-}"
+      shift 2
+      ;;
+    --retain-always)
+      RETAIN_ALWAYS=true
+      shift
+      ;;
+    --retain-on-failure)
+      RETAIN_ON_FAILURE=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$SOURCE_FLAVOR" || -z "$DESTINATION_FLAVOR" ]]; then
+  usage
+  exit 2
+fi
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required command: $cmd" >&2
+    exit 3
+  fi
+}
+
+for cmd in ansible-playbook ansible jq qemu-img ssh-keygen; do
+  require_cmd "$cmd"
+done
+
+case "$VM_NETWORK_MODE" in
+  usernet|shared-bridge) ;;
+  *)
+    echo "Unsupported VM_NETWORK_MODE: $VM_NETWORK_MODE (expected: usernet|shared-bridge)" >&2
+    exit 2
+    ;;
+esac
+
+# Ensure role/module lookup is stable regardless of caller working directory.
+export TERM="${TERM:-dumb}"
+export ANSIBLE_HOST_KEY_CHECKING=False
+export ANSIBLE_CONFIG="$REPO_ROOT/ansible/ansible.cfg"
+export ANSIBLE_ROLES_PATH="$REPO_ROOT/ansible/roles"
+export ANSIBLE_BECOME_TIMEOUT="${ANSIBLE_BECOME_TIMEOUT:-45}"
+export ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-45}"
+if [[ ! -r "$SOLANA_CLUSTER_VARS_FILE" ]]; then
+  echo "Cluster vars file is not readable: $SOLANA_CLUSTER_VARS_FILE" >&2
+  exit 3
+fi
+if [[ ! -r "$CITY_GROUP_VARS_FILE" ]]; then
+  echo "City group vars file is not readable: $CITY_GROUP_VARS_FILE" >&2
+  exit 3
+fi
+
+COMMON_ANSIBLE_EXTRA_VARS_ARGS=(
+  -e "@$REPO_ROOT/ansible/group_vars/all.yml"
+  -e "@$REPO_ROOT/ansible/group_vars/solana.yml"
+  -e "@$SOLANA_CLUSTER_VARS_FILE"
+  -e "@$CITY_GROUP_VARS_FILE"
+)
+
+if [[ "$SOLANA_CLUSTER_NORMALIZED" == "localnet" ]]; then
+  case "$VM_LOCALNET_ENTRYPOINT_MODE" in
+    auto|container|external|host|vm) ;;
+    *)
+      echo "Unsupported VM_LOCALNET_ENTRYPOINT_MODE: $VM_LOCALNET_ENTRYPOINT_MODE (expected: auto|container|external|host|vm)" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$VM_NETWORK_MODE" == "shared-bridge" ]]; then
+    if [[ -z "$VM_SOURCE_BRIDGE_IP" || -z "$VM_DESTINATION_BRIDGE_IP" || -z "$VM_BRIDGE_GATEWAY_IP" || -z "$VM_SOURCE_TAP_IFACE" || -z "$VM_DESTINATION_TAP_IFACE" ]]; then
+      echo "VM_NETWORK_MODE=shared-bridge requires VM_SOURCE_BRIDGE_IP, VM_DESTINATION_BRIDGE_IP, VM_BRIDGE_GATEWAY_IP, VM_SOURCE_TAP_IFACE, and VM_DESTINATION_TAP_IFACE." >&2
+      exit 2
+    fi
+    case "$VM_LOCALNET_ENTRYPOINT_MODE" in
+      host|external) ;;
+      vm)
+        if [[ -z "$ENTRYPOINT_VM_BRIDGE_IP" || -z "$ENTRYPOINT_VM_TAP_IFACE" ]]; then
+          echo "VM_LOCALNET_ENTRYPOINT_MODE=vm with VM_NETWORK_MODE=shared-bridge requires ENTRYPOINT_VM_BRIDGE_IP and ENTRYPOINT_VM_TAP_IFACE." >&2
+          exit 2
+        fi
+        ;;
+      *)
+        echo "VM_NETWORK_MODE=shared-bridge currently supports VM_LOCALNET_ENTRYPOINT_MODE=host, external, or vm only. Compose/container remains double-NAT." >&2
+        exit 2
+        ;;
+    esac
+    if [[ "$VM_LOCALNET_ENTRYPOINT_MODE" == "vm" ]]; then
+      if [[ "$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS" == "10.0.2.2" ]]; then
+        VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS="$ENTRYPOINT_VM_BRIDGE_IP"
+      fi
+      if [[ "$VM_LOCALNET_ENTRYPOINT_RPC_HOST" == "127.0.0.1" ]]; then
+        VM_LOCALNET_ENTRYPOINT_RPC_HOST="$ENTRYPOINT_VM_BRIDGE_IP"
+      fi
+      if [[ "$VM_AUTHORIZED_IP" == "10.0.2.2" || "$VM_AUTHORIZED_IP" == "$VM_BRIDGE_GATEWAY_IP" ]]; then
+        VM_AUTHORIZED_IP="$ENTRYPOINT_VM_BRIDGE_IP"
+      fi
+    else
+      if [[ "$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS" == "10.0.2.2" ]]; then
+        VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS="$VM_BRIDGE_GATEWAY_IP"
+      fi
+      if [[ "$VM_AUTHORIZED_IP" == "10.0.2.2" ]]; then
+        VM_AUTHORIZED_IP="$VM_BRIDGE_GATEWAY_IP"
+      fi
+    fi
+  fi
+  COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(
+    -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+    -e "{\"solana_gossip_entrypoints\":[\"${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}\"]}"
+  )
+fi
+
+CPU_GOVERNOR_MANAGE="true"
+if [[ "$VM_DISABLE_CPU_GOVERNOR_SERVICE" == "true" ]]; then
+  CPU_GOVERNOR_MANAGE="false"
+fi
+
+if [[ -z "$VM_ARCH" ]]; then
+  case "$(uname -m)" in
+    arm64|aarch64) VM_ARCH="arm64" ;;
+    *) VM_ARCH="amd64" ;;
+  esac
+fi
+
+if [[ -z "$VM_BASE_IMAGE" ]]; then
+  VM_BASE_IMAGE="$REPO_ROOT/scripts/vm-test/work/ubuntu-${VM_ARCH}.img"
+fi
+if [[ ! -r "$VM_BASE_IMAGE" ]]; then
+  echo "VM base image is not readable: $VM_BASE_IMAGE" >&2
+  exit 3
+fi
+if [[ -z "$ENTRYPOINT_VM_BASE_IMAGE" ]]; then
+  ENTRYPOINT_VM_BASE_IMAGE="$VM_BASE_IMAGE"
+fi
+if [[ ! -r "$ENTRYPOINT_VM_BASE_IMAGE" ]]; then
+  echo "Entrypoint VM base image is not readable: $ENTRYPOINT_VM_BASE_IMAGE" >&2
+  exit 3
+fi
+
+if [[ ! -r "$VALIDATOR_KEYSET_SOURCE_DIR/primary-target-identity.json" ]]; then
+  echo "Validator keyset source directory is missing primary-target-identity.json: $VALIDATOR_KEYSET_SOURCE_DIR" >&2
+  exit 3
+fi
+if [[ ! -r "$VALIDATOR_KEYSET_SOURCE_DIR/vote-account.json" ]]; then
+  echo "Validator keyset source directory is missing vote-account.json: $VALIDATOR_KEYSET_SOURCE_DIR" >&2
+  exit 3
+fi
+
+mkdir -p "$(dirname "$SSH_PRIVATE_KEY_FILE")"
+if [[ ! -r "$SSH_PRIVATE_KEY_FILE" ]]; then
+  ssh-keygen -t ed25519 -f "$SSH_PRIVATE_KEY_FILE" -N "" >/dev/null
+fi
+if [[ ! -r "${SSH_PRIVATE_KEY_FILE}.pub" ]]; then
+  ssh-keygen -y -f "$SSH_PRIVATE_KEY_FILE" >"${SSH_PRIVATE_KEY_FILE}.pub"
+fi
+SSH_PUBLIC_KEY="$(cat "${SSH_PRIVATE_KEY_FILE}.pub")"
+
+ensure_local_keyset() {
+  local target_dir="$HOME/.validator-keys/$VALIDATOR_NAME"
+  if [[ -d "$target_dir" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$target_dir")"
+  cp -R "$VALIDATOR_KEYSET_SOURCE_DIR" "$target_dir"
+}
+
+expected_client_regex_for_flavor() {
+  local flavor="$1"
+  case "$flavor" in
+    agave) echo 'client:(Solana|Agave)' ;;
+    jito-shared|jito-cohosted|jito-bam) echo 'client:(JitoLabs|Bam)' ;;
+    *)
+      echo "Unsupported flavor: $flavor" >&2
+      exit 2
+      ;;
+  esac
+}
+
+LOCALNET_ENTRYPOINT_PID_FILE=""
+LOCALNET_ENTRYPOINT_LOG=""
+LOCALNET_ENTRYPOINT_STARTED_BY_SCRIPT=false
+LOCALNET_ENTRYPOINT_GENESIS_HASH=""
+LOCALNET_ENTRYPOINT_CONTAINER_STARTED_BY_SCRIPT=false
+LOCALNET_ENTRYPOINT_ENGINE_RESOLVED=""
+LOCALNET_ENTRYPOINT_CONTAINER_NAME=""
+LOCALNET_ENTRYPOINT_COMPOSE_PROJECT=""
+LOCALNET_ENTRYPOINT_CONTAINER_LEDGER_DIR=""
+LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE=""
+LOCALNET_ENTRYPOINT_COMPOSE_HELPER="$REPO_ROOT/test-harness/scripts/manage-vm-control-plane.sh"
+
+is_tcp_port_listening() {
+  local port="$1"
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+}
+
+localnet_rpc_ready() {
+  local rpc_url="$1"
+  solana -u "$rpc_url" genesis-hash >/dev/null 2>&1
+}
+
+vm_uses_shared_bridge() {
+  [[ "${VM_NETWORK_MODE}" == "shared-bridge" ]]
+}
+
+vm_bootstrap_host_for() {
+  local host="$1"
+  if vm_uses_shared_bridge; then
+    case "$host" in
+      vm-source) printf '%s\n' "$VM_SOURCE_BRIDGE_IP" ;;
+      vm-destination) printf '%s\n' "$VM_DESTINATION_BRIDGE_IP" ;;
+      vm-entrypoint) printf '%s\n' "$ENTRYPOINT_VM_BRIDGE_IP" ;;
+      *) return 1 ;;
+    esac
+  else
+    printf '127.0.0.1\n'
+  fi
+}
+
+vm_bootstrap_port_for() {
+  local host="$1"
+  if vm_uses_shared_bridge; then
+    printf '22\n'
+  else
+    case "$host" in
+      vm-source) printf '%s\n' "$SOURCE_SSH_PORT" ;;
+      vm-destination) printf '%s\n' "$DESTINATION_SSH_PORT" ;;
+      vm-entrypoint) printf '%s\n' "$ENTRYPOINT_VM_SSH_PORT" ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+vm_operator_host_for() {
+  vm_bootstrap_host_for "$1"
+}
+
+vm_operator_port_for() {
+  local host="$1"
+  if vm_uses_shared_bridge; then
+    printf '2522\n'
+  else
+    case "$host" in
+      vm-source) printf '%s\n' "$SOURCE_SSH_PORT_ALT" ;;
+      vm-destination) printf '%s\n' "$DESTINATION_SSH_PORT_ALT" ;;
+      vm-entrypoint) printf '%s\n' "$ENTRYPOINT_VM_SSH_PORT_ALT" ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+vm_tap_iface_for() {
+  local host="$1"
+  case "$host" in
+    vm-source) printf '%s\n' "$VM_SOURCE_TAP_IFACE" ;;
+    vm-destination) printf '%s\n' "$VM_DESTINATION_TAP_IFACE" ;;
+    vm-entrypoint) printf '%s\n' "$ENTRYPOINT_VM_TAP_IFACE" ;;
+    *) return 1 ;;
+  esac
+}
+
+derive_report_diagnosis() {
+  REPORT_DIAGNOSIS=""
+
+  if [[ "$ENTRYPOINT_PREFLIGHT_VM_SOURCE" == "true" && "$ENTRYPOINT_PREFLIGHT_VM_DESTINATION" == "true" ]] \
+    && [[ "$HOST_DIAGNOSTIC_VM_SOURCE" == *"unable to determine the validator's public IP address"* ]]; then
+    REPORT_DIAGNOSIS="Control plane healthy; source validator is failing public-IP discovery. Current VM path is QEMU user-mode NAT to host to Docker Desktop to compose control plane (double NAT), so the entrypoint observes the Docker gateway rather than the validator VM's reachable address. Use VM_NETWORK_MODE=shared-bridge with a bridge-attached entrypoint VM or an external entrypoint on the same bridge, or keep using compose-only localnet for swap logic."
+  elif [[ "$HOST_DIAGNOSTIC_VM_SOURCE" == *"unable to determine the validator's public IP address"* ]]; then
+    REPORT_DIAGNOSIS="Source validator is failing public-IP discovery through the configured entrypoint path. Verify that the entrypoint can validate the validator VM's real routable address, not a NAT gateway address."
+  elif [[ "$PRE_SWAP_VERIFIED" == "false" && "$HOST_SERVICE_VM_SOURCE" == *"/active/running"* ]]; then
+    REPORT_DIAGNOSIS="Source validator service appears briefly active but failed runtime verification. Check Runtime Diagnostics for crash-loop evidence."
+  fi
+}
+
+is_local_address() {
+  local host="${1,,}"
+  [[ "$host" == "127.0.0.1" || "$host" == "localhost" || "$host" == "0.0.0.0" ]]
+}
+
+listener_pids_for_port() {
+  local port="$1"
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true
+}
+
+kill_stale_localnet_entrypoint_listener_pids() {
+  local port="$1"
+  local pid
+  for pid in $(
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
+      | awk 'NR > 1 && ($0 ~ /solana-test-validator/ || $0 ~ /agave-test-validator/) { print $2 }' \
+      | sort -u
+  ); do
+    if [[ -n "$pid" ]]; then
+      echo "[vm-hot-swap] Stopping stale solana-test-validator listener on port ${port} (pid=${pid})" >&2
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+}
+
+remove_stale_harness_entrypoint_containers() {
+  local name
+
+  resolve_localnet_entrypoint_engine
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    case "$name" in
+      hvk-vm-entrypoint-*|hvk-vmctl-*-gossip-entrypoint-vm-*|hvk-vmctl-*-ansible-control-vm-*)
+        echo "[vm-hot-swap] Removing stale harness entrypoint container ${name}" >&2
+        "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" rm -f "$name" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <("$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" ps -a --format '{{.Names}}' 2>/dev/null || true)
+}
+
+container_using_host_port() {
+  local port="$1"
+  local line
+
+  resolve_localnet_entrypoint_engine
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" =~ (^|[[:space:],])0\.0\.0\.0:${port}\-\> ]] || [[ "$line" =~ (^|[[:space:],]):::${port}\-\> ]]; then
+      printf '%s\n' "${line%%$'\t'*}"
+      return 0
+    fi
+  done < <("$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" ps -a --format '{{.Names}}{{printf "\t"}}{{.Ports}}' 2>/dev/null || true)
+  return 1
+}
+
+container_exists() {
+  local name="$1"
+  resolve_localnet_entrypoint_engine
+  "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" container inspect "$name" >/dev/null 2>&1
+}
+
+container_is_running() {
+  local name="$1"
+  local state=""
+  resolve_localnet_entrypoint_engine
+  state="$("$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)"
+  [[ "$state" == "true" ]]
+}
+
+assert_localnet_entrypoint_tcp_port_free() {
+  local port="$1"
+  local label="$2"
+  local container_name=""
+
+  container_name="$(container_using_host_port "$port" || true)"
+  if [[ -n "$container_name" ]]; then
+    if [[ "$container_name" =~ ^hvk-vm-entrypoint- ]] || [[ "$container_name" =~ ^hvk-vmctl-.*-(gossip-entrypoint-vm|ansible-control-vm)-[0-9]+$ ]]; then
+      echo "[vm-hot-swap] Removing stale harness entrypoint container ${container_name} (publishing port ${port})" >&2
+      "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" rm -f "$container_name" >/dev/null 2>&1 || true
+    else
+      echo "${label} port ${port} is already published by container ${container_name}." >&2
+      "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" ps -a --filter "name=${container_name}" >&2 || true
+      exit 3
+    fi
+  fi
+
+  if ! is_tcp_port_listening "$port"; then
+    return 0
+  fi
+
+  echo "${label} port ${port} is already in use by a non-harness process/container." >&2
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
+  exit 3
+}
+
+stop_localnet_entrypoint_if_started() {
+  if [[ "$LOCALNET_ENTRYPOINT_STARTED_BY_SCRIPT" != "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$LOCALNET_ENTRYPOINT_PID_FILE" && -f "$LOCALNET_ENTRYPOINT_PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$LOCALNET_ENTRYPOINT_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+is_ip_literal() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+(\.[0-9]+){3}$ || "$value" =~ : ]]
+}
+
+resolve_localnet_entrypoint_engine() {
+  local requested="$VM_LOCALNET_ENTRYPOINT_ENGINE"
+  if [[ -n "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" ]]; then
+    return 0
+  fi
+
+  case "$requested" in
+    auto)
+      if command -v docker >/dev/null 2>&1; then
+        LOCALNET_ENTRYPOINT_ENGINE_RESOLVED="docker"
+      elif command -v podman >/dev/null 2>&1; then
+        LOCALNET_ENTRYPOINT_ENGINE_RESOLVED="podman"
+      else
+        echo "VM_LOCALNET_ENTRYPOINT_MODE requires docker or podman on PATH." >&2
+        exit 3
+      fi
+      ;;
+    docker|podman)
+      require_cmd "$requested"
+      LOCALNET_ENTRYPOINT_ENGINE_RESOLVED="$requested"
+      ;;
+    *)
+      echo "Unsupported VM_LOCALNET_ENTRYPOINT_ENGINE: $requested (expected: auto|docker|podman)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+entrypoint_mode_uses_container() {
+  [[ "$VM_LOCALNET_ENTRYPOINT_MODE" == "auto" || "$VM_LOCALNET_ENTRYPOINT_MODE" == "container" ]]
+}
+
+entrypoint_mode_uses_vm() {
+  [[ "$VM_LOCALNET_ENTRYPOINT_MODE" == "vm" ]]
+}
+
+compute_container_entrypoint_dynamic_port_range() {
+  local configured="$VM_LOCALNET_ENTRYPOINT_CONTAINER_DYNAMIC_PORT_RANGE"
+  local base_range="${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}"
+  local start=""
+  local end=""
+  local width=30
+  local derived_start
+  local derived_end
+
+  if [[ -n "$LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$configured" ]]; then
+    LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE="$configured"
+    return 0
+  fi
+
+  if [[ "$base_range" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+    start="${BASH_REMATCH[1]}"
+    end="${BASH_REMATCH[2]}"
+    if (( end >= start )); then
+      width=$(( end - start ))
+    fi
+  fi
+
+  # Keep the dynamic range distinct from explicitly published RPC/gossip/faucet
+  # ports so the container runtime does not try to bind the same host port twice.
+  derived_start=$(( VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT + 1 ))
+  if (( derived_start < 1024 )); then
+    derived_start=1024
+  fi
+  if (( derived_start == VM_LOCALNET_ENTRYPOINT_RPC_PORT )); then
+    derived_start=$(( derived_start + 1 ))
+  fi
+  if (( derived_start == VM_LOCALNET_ENTRYPOINT_FAUCET_PORT )); then
+    derived_start=$(( derived_start + 1 ))
+  fi
+  derived_end=$(( derived_start + width ))
+  if (( VM_LOCALNET_ENTRYPOINT_RPC_PORT >= derived_start && VM_LOCALNET_ENTRYPOINT_RPC_PORT <= derived_end )); then
+    derived_start=$(( VM_LOCALNET_ENTRYPOINT_RPC_PORT + 1 ))
+    derived_end=$(( derived_start + width ))
+  fi
+  if (( VM_LOCALNET_ENTRYPOINT_FAUCET_PORT >= derived_start && VM_LOCALNET_ENTRYPOINT_FAUCET_PORT <= derived_end )); then
+    derived_start=$(( VM_LOCALNET_ENTRYPOINT_FAUCET_PORT + 1 ))
+    derived_end=$(( derived_start + width ))
+  fi
+  LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE="${derived_start}-${derived_end}"
+}
+
+run_compose_vm_control_plane() {
+  if [[ ! -x "$LOCALNET_ENTRYPOINT_COMPOSE_HELPER" ]]; then
+    echo "VM control-plane helper is not executable: $LOCALNET_ENTRYPOINT_COMPOSE_HELPER" >&2
+    exit 3
+  fi
+
+  VMH_ENGINE="$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" \
+  VMH_PROJECT_NAME="$LOCALNET_ENTRYPOINT_COMPOSE_PROJECT" \
+  VMH_SOLANA_RELEASE="$AGAVE_VERSION" \
+  VMH_RPC_PORT="$VM_LOCALNET_ENTRYPOINT_RPC_PORT" \
+  VMH_GOSSIP_PORT="$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" \
+  VMH_FAUCET_PORT="$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT" \
+  VMH_DYNAMIC_PORT_RANGE="$LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE" \
+  VMH_GOSSIP_HOST="$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS" \
+  VMH_SLOTS_PER_EPOCH="$VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH" \
+  VMH_LIMIT_LEDGER_SIZE="$VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE" \
+  VMH_REBUILD="$VM_LOCALNET_ENTRYPOINT_CONTAINER_REBUILD" \
+  "$LOCALNET_ENTRYPOINT_COMPOSE_HELPER" "$@"
+}
+
+capture_container_entrypoint_log() {
+  if [[ "$LOCALNET_ENTRYPOINT_CONTAINER_STARTED_BY_SCRIPT" != "true" && -z "$LOCALNET_ENTRYPOINT_ENGINE_RESOLVED" ]]; then
+    return 0
+  fi
+  if [[ -z "$LOCALNET_ENTRYPOINT_LOG" ]]; then
+    return 0
+  fi
+
+  resolve_localnet_entrypoint_engine
+  compute_container_entrypoint_dynamic_port_range
+  if ! run_compose_vm_control_plane logs >"$LOCALNET_ENTRYPOINT_LOG" 2>&1; then
+    : >"$LOCALNET_ENTRYPOINT_LOG"
+  fi
+  return 0
+}
+
+append_localnet_entrypoint_log_tail_to_bootstrap_output() {
+  local log_tail=""
+  if [[ -f "$LOCALNET_ENTRYPOINT_LOG" ]]; then
+    log_tail="$(tail -n 120 "$LOCALNET_ENTRYPOINT_LOG" 2>/dev/null || true)"
+    if [[ -n "$log_tail" ]]; then
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="${ENTRYPOINT_BOOTSTRAP_OUTPUT}
+
+--- localnet-entrypoint.log (tail) ---
+${log_tail}"
+    fi
+  fi
+}
+
+stop_container_localnet_entrypoint_if_started() {
+  if [[ "$LOCALNET_ENTRYPOINT_CONTAINER_STARTED_BY_SCRIPT" != "true" ]]; then
+    return 0
+  fi
+  resolve_localnet_entrypoint_engine
+  compute_container_entrypoint_dynamic_port_range
+  run_compose_vm_control_plane down >/dev/null 2>&1 || true
+}
+
+print_localnet_entrypoint_debug() {
+  capture_entrypoint_vm_log || true
+  capture_container_entrypoint_log || true
+  echo "[vm-hot-swap] Expected localnet entrypoint endpoints for VMs:" >&2
+  echo "[vm-hot-swap]   RPC: ${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" >&2
+  echo "[vm-hot-swap]   Gossip TCP/IP echo: ${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}" >&2
+  echo "[vm-hot-swap] Host-side RPC listener check:" >&2
+  lsof -nP -iTCP:"$VM_LOCALNET_ENTRYPOINT_RPC_PORT" -sTCP:LISTEN >&2 || true
+  echo "[vm-hot-swap] Host-side gossip listener check:" >&2
+  lsof -nP -iTCP:"$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" -sTCP:LISTEN >&2 || true
+  if entrypoint_mode_uses_container; then
+    resolve_localnet_entrypoint_engine
+    compute_container_entrypoint_dynamic_port_range
+    echo "[vm-hot-swap] Entrypoint container engine: ${LOCALNET_ENTRYPOINT_ENGINE_RESOLVED}" >&2
+    echo "[vm-hot-swap] Entrypoint compose project: ${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT}" >&2
+    echo "[vm-hot-swap] Entrypoint service ref: ${LOCALNET_ENTRYPOINT_CONTAINER_NAME}" >&2
+    run_compose_vm_control_plane ps >&2 || true
+  fi
+  if entrypoint_mode_uses_vm; then
+    echo "[vm-hot-swap] Entrypoint VM SSH: $(vm_bootstrap_host_for vm-entrypoint):$(vm_bootstrap_port_for vm-entrypoint)" >&2
+    if [[ -n "${ENTRYPOINT_VM_QEMU_LOG:-}" && -f "${ENTRYPOINT_VM_QEMU_LOG:-}" ]]; then
+      echo "[vm-hot-swap] Last entrypoint VM QEMU log lines:" >&2
+      tail -n 80 "$ENTRYPOINT_VM_QEMU_LOG" >&2 || true
+    fi
+  fi
+  if [[ -n "$LOCALNET_ENTRYPOINT_LOG" && -f "$LOCALNET_ENTRYPOINT_LOG" ]]; then
+    echo "[vm-hot-swap] Last localnet entrypoint log lines:" >&2
+    tail -n 80 "$LOCALNET_ENTRYPOINT_LOG" >&2 || true
+  fi
+}
+
+capture_entrypoint_vm_log() {
+  if ! entrypoint_mode_uses_vm; then
+    return 0
+  fi
+  if [[ -z "${ENTRYPOINT_VM_BOOTSTRAP_INVENTORY:-}" || ! -f "${ENTRYPOINT_VM_BOOTSTRAP_INVENTORY:-}" ]]; then
+    return 0
+  fi
+  if [[ -z "${LOCALNET_ENTRYPOINT_LOG:-}" ]]; then
+    return 0
+  fi
+
+  ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
+    -m shell -a "test -f /var/tmp/localnet-entrypoint.log && tail -n 200 /var/tmp/localnet-entrypoint.log || true" -o 2>/dev/null \
+    | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' >"$LOCALNET_ENTRYPOINT_LOG" || true
+}
+
+ensure_container_localnet_entrypoint_service() {
+  local rpc_url
+  local up_output=""
+  local tries=0
+
+  resolve_localnet_entrypoint_engine
+  LOCALNET_ENTRYPOINT_COMPOSE_PROJECT="${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT:-hvk-vmctl-${RUN_ID}}"
+  LOCALNET_ENTRYPOINT_CONTAINER_NAME="${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT}/gossip-entrypoint-vm"
+  compute_container_entrypoint_dynamic_port_range
+  rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+
+  remove_stale_harness_entrypoint_containers
+  kill_conflicting_qemu_listener "$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
+  kill_conflicting_qemu_listener "$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT"
+  kill_conflicting_qemu_listener "$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT"
+  kill_stale_localnet_entrypoint_listener_pids "$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
+  kill_stale_localnet_entrypoint_listener_pids "$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT"
+  kill_stale_localnet_entrypoint_listener_pids "$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT"
+  assert_localnet_entrypoint_tcp_port_free "$VM_LOCALNET_ENTRYPOINT_RPC_PORT" "Localnet entrypoint RPC"
+  assert_localnet_entrypoint_tcp_port_free "$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" "Localnet entrypoint gossip"
+  assert_localnet_entrypoint_tcp_port_free "$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT" "Localnet entrypoint faucet"
+  echo "[vm-hot-swap] Starting compose-managed VM control plane (${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT})..." >&2
+  up_output="$(run_compose_vm_control_plane up 2>&1)" || {
+    if grep -q "did not expose a healthy RPC endpoint" <<<"$up_output"; then
+      EARLY_FAILURE_REASON="Compose-managed localnet entrypoint did not expose a healthy RPC endpoint"
+    elif grep -q "did not reach finalized slot" <<<"$up_output"; then
+      EARLY_FAILURE_REASON="Compose-managed localnet entrypoint did not finalize enough slots"
+    elif grep -q "ansible-control-vm did not become ready" <<<"$up_output"; then
+      EARLY_FAILURE_REASON="ansible-control-vm did not become ready"
+    else
+      EARLY_FAILURE_REASON="Failed to start compose-managed VM control plane"
+    fi
+    ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$up_output" | tail -n 120)"
+    capture_container_entrypoint_log || true
+    append_localnet_entrypoint_log_tail_to_bootstrap_output
+    echo "$EARLY_FAILURE_REASON" >&2
+    echo "$ENTRYPOINT_BOOTSTRAP_OUTPUT" >&2
+    exit 1
+  }
+  LOCALNET_ENTRYPOINT_CONTAINER_STARTED_BY_SCRIPT=true
+  LOCALNET_ENTRYPOINT_CONTAINER_LEDGER_DIR="compose:${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT}/gossip-entrypoint-vm:/var/tmp/test-ledger"
+
+  until solana -u "$rpc_url" genesis-hash >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if ((tries > 30)); then
+      EARLY_FAILURE_REASON="Compose-managed localnet entrypoint did not become queryable at ${rpc_url}"
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$up_output" | tail -n 120)"
+      capture_container_entrypoint_log || true
+      append_localnet_entrypoint_log_tail_to_bootstrap_output
+      echo "$EARLY_FAILURE_REASON" >&2
+      print_localnet_entrypoint_debug
+      exit 4
+    fi
+    sleep 1
+  done
+
+  capture_container_entrypoint_log || true
+}
+
+ensure_entrypoint_vm_localnet_service() {
+  local extra_host_fwds
+  local rpc_url
+  local tries=0
+  local install_output=""
+  local copy_output=""
+  local start_output=""
+  local entrypoint_bootstrap_host
+  local entrypoint_bootstrap_port
+  local entrypoint_operator_port
+  local cli_probe_cmd
+  local skip_cli_install=false
+
+  rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  if [[ -f "$ENTRYPOINT_VM_PID_FILE" ]] && kill -0 "$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)" >/dev/null 2>&1 && localnet_rpc_ready "$rpc_url"; then
+    capture_entrypoint_vm_log
+    return 0
+  fi
+
+  entrypoint_bootstrap_host="$(vm_bootstrap_host_for vm-entrypoint)"
+  entrypoint_bootstrap_port="$(vm_bootstrap_port_for vm-entrypoint)"
+  entrypoint_operator_port="$(vm_operator_port_for vm-entrypoint)"
+  if vm_uses_shared_bridge; then
+    extra_host_fwds=""
+  else
+    extra_host_fwds="hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_RPC_PORT}-:${ENTRYPOINT_VM_GUEST_RPC_PORT},hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}-:${ENTRYPOINT_VM_GUEST_GOSSIP_PORT},hostfwd=udp::${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}-:${ENTRYPOINT_VM_GUEST_GOSSIP_PORT},hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_FAUCET_PORT}-:${ENTRYPOINT_VM_GUEST_FAUCET_PORT}"
+  fi
+
+  if [[ ! -f "$ENTRYPOINT_VM_PID_FILE" ]] || ! kill -0 "$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)" >/dev/null 2>&1; then
+    echo "[vm-hot-swap] Starting isolated entrypoint VM..." >&2
+    start_vm "$ENTRYPOINT_VM_NAME" "$ENTRYPOINT_VM_DIR" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" "$entrypoint_operator_port" "$ENTRYPOINT_VM_QEMU_LOG" "$ENTRYPOINT_VM_PID_FILE" "$(vm_tap_iface_for vm-entrypoint)" "$extra_host_fwds" "$ENTRYPOINT_VM_BASE_IMAGE"
+  fi
+
+  cli_probe_cmd="[ -x /opt/solana/active_release/bin/solana-test-validator ] || [ -x /opt/solana/active_release/bin/agave-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/agave-test-validator ]"
+  case "$ENTRYPOINT_VM_SKIP_CLI_INSTALL" in
+    true)
+      skip_cli_install=true
+      ;;
+    false)
+      skip_cli_install=false
+      ;;
+    auto)
+      if ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
+        -m shell -a "$cli_probe_cmd" -o >/dev/null 2>&1; then
+        skip_cli_install=true
+      fi
+      ;;
+    *)
+      echo "Unsupported ENTRYPOINT_VM_SKIP_CLI_INSTALL: $ENTRYPOINT_VM_SKIP_CLI_INSTALL (expected: auto|true|false)" >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ "$skip_cli_install" != "true" ]]; then
+    echo "[vm-hot-swap] Ensuring Agave CLI is available inside the isolated entrypoint VM..." >&2
+    install_output="$(
+      ansible-playbook \
+        -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" \
+        "$REPO_ROOT/ansible/playbooks/pb_install_solana_cli_agave.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/all.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/solana.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/solana_localnet.yml" \
+        -e "solana_cluster=localnet" \
+        -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
+        -e "target_host=vm-entrypoint" \
+        -e "operator_user=$BOOTSTRAP_USER" \
+        -e "agave_version=$AGAVE_VERSION" \
+        -e "build_from_source=$BUILD_FROM_SOURCE" 2>&1
+    )" || {
+      EARLY_FAILURE_REASON="Failed to install Agave CLI in isolated entrypoint VM"
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$install_output" | tail -n 80)"
+      echo "$EARLY_FAILURE_REASON" >&2
+      echo "$ENTRYPOINT_BOOTSTRAP_OUTPUT" >&2
+      exit 1
+    }
+  else
+    echo "[vm-hot-swap] Reusing preinstalled Solana CLI in the isolated entrypoint VM." >&2
+  fi
+
+  copy_output="$(
+    ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
+      -m copy -a "src=$REPO_ROOT/solana-localnet/container-setup/scripts/localnet-gossip-entrypoint-setup.sh dest=/usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh mode=0755" -o 2>&1
+  )" || {
+    EARLY_FAILURE_REASON="Failed to stage the localnet entrypoint launcher in isolated entrypoint VM"
+    ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$copy_output" | tail -n 80)"
+    echo "$EARLY_FAILURE_REASON" >&2
+    echo "$ENTRYPOINT_BOOTSTRAP_OUTPUT" >&2
+    exit 1
+  }
+
+  echo "[vm-hot-swap] Starting localnet entrypoint inside the isolated entrypoint VM..." >&2
+  start_output="$(
+    ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
+      -m shell -a "pkill -f '/usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh|solana-test-validator|agave-test-validator' >/dev/null 2>&1 || true; export PATH='/opt/solana/active_release/bin:/home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin:'\"\$PATH\"; export SLOTS_PER_EPOCH='${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH}'; export LIMIT_LEDGER_SIZE='${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE}'; export DYNAMIC_PORT_RANGE='${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}'; export RPC_PORT='${ENTRYPOINT_VM_GUEST_RPC_PORT}'; export FAUCET_PORT='${ENTRYPOINT_VM_GUEST_FAUCET_PORT}'; export BIND_ADDRESS='0.0.0.0'; export GOSSIP_HOST=\"\$(hostname -I | awk '{print \$1}')\"; export GOSSIP_PORT='${ENTRYPOINT_VM_GUEST_GOSSIP_PORT}'; export LEDGER_DIR='/var/tmp/test-ledger'; export RESET_FLAG='--reset'; nohup /usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh >/var/tmp/localnet-entrypoint.log 2>&1 </dev/null &" -o 2>&1
+  )" || {
+    EARLY_FAILURE_REASON="Failed to start localnet entrypoint inside isolated entrypoint VM"
+    ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$start_output" | tail -n 80)"
+    echo "$EARLY_FAILURE_REASON" >&2
+    echo "$ENTRYPOINT_BOOTSTRAP_OUTPUT" >&2
+    exit 1
+  }
+
+  until solana -u "$rpc_url" genesis-hash >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if ((tries > 120)); then
+      capture_entrypoint_vm_log
+      EARLY_FAILURE_REASON="Isolated localnet entrypoint VM did not become ready at ${rpc_url}"
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$start_output" | tail -n 80)"
+      echo "Isolated localnet entrypoint VM did not become ready at ${rpc_url}." >&2
+      print_localnet_entrypoint_debug
+      exit 4
+    fi
+    sleep 1
+  done
+
+  capture_entrypoint_vm_log
+}
+
+ensure_localnet_entrypoint() {
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
+    return 0
+  fi
+
+  require_cmd solana
+
+  if entrypoint_mode_uses_container; then
+    ensure_container_localnet_entrypoint_service
+    LOCALNET_ENTRYPOINT_GENESIS_HASH="$(solana -u "http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" genesis-hash)"
+    COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "expected_genesis_hash=$LOCALNET_ENTRYPOINT_GENESIS_HASH")
+    return 0
+  fi
+
+  if entrypoint_mode_uses_vm; then
+    ensure_entrypoint_vm_localnet_service
+    LOCALNET_ENTRYPOINT_GENESIS_HASH="$(solana -u "http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" genesis-hash)"
+    COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "expected_genesis_hash=$LOCALNET_ENTRYPOINT_GENESIS_HASH")
+    return 0
+  fi
+
+  local rpc_port="$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
+  local rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  local gossip_port="$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT"
+  local process_gossip_host="$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_PROCESS"
+  local rpc_listening=false
+  local rpc_ready=false
+  local gossip_listening=false
+
+  if is_tcp_port_listening "$rpc_port"; then
+    rpc_listening=true
+  fi
+  if is_local_address "$process_gossip_host" && is_tcp_port_listening "$gossip_port"; then
+    gossip_listening=true
+  fi
+  if [[ "$rpc_listening" == "true" ]] && localnet_rpc_ready "$rpc_url"; then
+    rpc_ready=true
+  fi
+
+  if [[ "$rpc_ready" == "true" ]] && { [[ "$gossip_listening" == "true" ]] || ! is_local_address "$process_gossip_host"; }; then
+    echo "[vm-hot-swap] Reusing healthy localnet entrypoint at ${rpc_url}" >&2
+  else
+    if [[ "$VM_LOCALNET_ENTRYPOINT_MODE" == "external" ]]; then
+      echo "Localnet entrypoint is unhealthy at ${rpc_url} (rpc_ready=${rpc_ready}, gossip_listening=${gossip_listening}) and VM_LOCALNET_ENTRYPOINT_MODE=external." >&2
+      echo "Start a healthy external entrypoint first, or set VM_LOCALNET_ENTRYPOINT_MODE=auto." >&2
+      exit 3
+    fi
+
+    kill_stale_localnet_entrypoint_listener_pids "$rpc_port"
+    kill_stale_localnet_entrypoint_listener_pids "$gossip_port"
+
+    if is_tcp_port_listening "$rpc_port"; then
+      echo "RPC port ${rpc_port} is already in use by a non-solana-test-validator process." >&2
+      echo "Choose another VM_LOCALNET_ENTRYPOINT_RPC_PORT or stop the conflicting process." >&2
+      exit 3
+    fi
+    if is_tcp_port_listening "$gossip_port"; then
+      echo "Gossip port ${gossip_port} is already in use by a non-solana-test-validator process." >&2
+      echo "Choose another VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT or stop the conflicting process." >&2
+      exit 3
+    fi
+
+    require_cmd solana-test-validator
+    echo "[vm-hot-swap] Starting localnet entrypoint via solana-test-validator at ${rpc_url} ..." >&2
+    nohup solana-test-validator \
+      --slots-per-epoch "$VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH" \
+      --limit-ledger-size "$VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE" \
+      --dynamic-port-range "$VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE" \
+      --rpc-port "$VM_LOCALNET_ENTRYPOINT_RPC_PORT" \
+      --faucet-port "$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT" \
+      --bind-address 0.0.0.0 \
+      --gossip-host "$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_PROCESS" \
+      --gossip-port "$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" \
+      --reset >"$LOCALNET_ENTRYPOINT_LOG" 2>&1 &
+    echo $! >"$LOCALNET_ENTRYPOINT_PID_FILE"
+    LOCALNET_ENTRYPOINT_STARTED_BY_SCRIPT=true
+  fi
+
+  local tries=0
+  until solana -u "$rpc_url" genesis-hash >/dev/null 2>&1; do
+    if [[ "$LOCALNET_ENTRYPOINT_STARTED_BY_SCRIPT" == "true" && -f "$LOCALNET_ENTRYPOINT_PID_FILE" ]]; then
+      local started_pid
+      started_pid="$(cat "$LOCALNET_ENTRYPOINT_PID_FILE" 2>/dev/null || true)"
+      if [[ -n "$started_pid" ]] && ! kill -0 "$started_pid" >/dev/null 2>&1; then
+        echo "Localnet entrypoint process exited before becoming ready (pid=${started_pid})." >&2
+        if [[ -n "$LOCALNET_ENTRYPOINT_LOG" && -f "$LOCALNET_ENTRYPOINT_LOG" ]]; then
+          echo "[vm-hot-swap] Last entrypoint log lines:" >&2
+          tail -n 120 "$LOCALNET_ENTRYPOINT_LOG" >&2 || true
+        fi
+        exit 4
+      fi
+    fi
+    tries=$((tries + 1))
+    if ((tries > 120)); then
+      echo "Localnet entrypoint at ${rpc_url} did not become ready in time." >&2
+      if [[ -n "$LOCALNET_ENTRYPOINT_LOG" && -f "$LOCALNET_ENTRYPOINT_LOG" ]]; then
+        echo "[vm-hot-swap] Last entrypoint log lines:" >&2
+        tail -n 80 "$LOCALNET_ENTRYPOINT_LOG" >&2 || true
+      fi
+      exit 4
+    fi
+    sleep 1
+  done
+
+  LOCALNET_ENTRYPOINT_GENESIS_HASH="$(solana -u "$rpc_url" genesis-hash)"
+  COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "expected_genesis_hash=$LOCALNET_ENTRYPOINT_GENESIS_HASH")
+}
+
+assert_vm_can_reach_localnet_entrypoint() {
+  local host="$1"
+  local label="$2"
+  local vm_entrypoint_host="$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS"
+  local rpc_port="$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
+  local gossip_port="$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT"
+  local wait_timeout="${3:-20}"
+  local resolve_cmd
+
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$OPERATOR_INVENTORY" ]]; then
+    echo "[vm-hot-swap] Cannot verify ${label} entrypoint reachability before operator inventory exists." >&2
+    exit 2
+  fi
+
+  if ! command -v ansible >/dev/null 2>&1; then
+    echo "[vm-hot-swap] ansible is required to verify VM reachability to the localnet entrypoint." >&2
+    exit 2
+  fi
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "[vm-hot-swap] lsof is required to debug localnet entrypoint listener failures." >&2
+    exit 2
+  fi
+
+  if ! is_ip_literal "$vm_entrypoint_host"; then
+    resolve_cmd="set -eu; getent ahostsv4 \"$vm_entrypoint_host\" >/dev/null 2>&1 || getent hosts \"$vm_entrypoint_host\" >/dev/null 2>&1"
+    if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$resolve_cmd" -o >/dev/null; then
+      echo "[vm-hot-swap] ${label} VM cannot resolve entrypoint host ${vm_entrypoint_host}." >&2
+      print_localnet_entrypoint_debug
+      exit 1
+    fi
+  fi
+
+  if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m wait_for -a "host=${vm_entrypoint_host} port=${rpc_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o >/dev/null; then
+    echo "[vm-hot-swap] ${label} VM cannot reach localnet entrypoint RPC at ${vm_entrypoint_host}:${rpc_port}." >&2
+    print_localnet_entrypoint_debug
+    exit 1
+  fi
+
+  if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m wait_for -a "host=${vm_entrypoint_host} port=${gossip_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o >/dev/null; then
+    echo "[vm-hot-swap] ${label} VM cannot reach localnet entrypoint gossip TCP/IP-echo at ${vm_entrypoint_host}:${gossip_port}." >&2
+    print_localnet_entrypoint_debug
+    exit 1
+  fi
+
+  case "$host" in
+    vm-source)
+      ENTRYPOINT_PREFLIGHT_VM_SOURCE=true
+      ENTRYPOINT_PREFLIGHT_DETAILS_VM_SOURCE="${vm_entrypoint_host}:${rpc_port},${vm_entrypoint_host}:${gossip_port}"
+      ;;
+    vm-destination)
+      ENTRYPOINT_PREFLIGHT_VM_DESTINATION=true
+      ENTRYPOINT_PREFLIGHT_DETAILS_VM_DESTINATION="${vm_entrypoint_host}:${rpc_port},${vm_entrypoint_host}:${gossip_port}"
+      ;;
+    *)
+      echo "[vm-hot-swap] Unsupported host for entrypoint preflight: ${host}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+assert_host_can_query_localnet_entrypoint() {
+  local host="$1"
+  local label="$2"
+  local rpc_url
+  local cmd
+  local output
+  local rc=0
+
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
+    return 0
+  fi
+
+  rpc_url="http://${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  cmd="set -eu; actual=\$(/opt/solana/active_release/bin/solana -u \"$rpc_url\" genesis-hash); [ \"\$actual\" = \"$LOCALNET_ENTRYPOINT_GENESIS_HASH\" ]"
+  output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$cmd" -o 2>&1
+  )" || rc=$?
+
+  if ((rc != 0)); then
+    echo "[vm-hot-swap] ${label} host cannot query the localnet entrypoint via Solana CLI at ${rpc_url}." >&2
+    echo "$output" >&2
+    print_localnet_entrypoint_debug
+    exit 1
+  fi
+}
+
+CASE_DIR="$WORKDIR/$RUN_ID"
+SRC_VM_NAME="hvk-src-${RUN_ID}"
+DST_VM_NAME="hvk-dst-${RUN_ID}"
+ENTRYPOINT_VM_NAME="hvk-entry-${RUN_ID}"
+SRC_VM_DIR="$CASE_DIR/source"
+DST_VM_DIR="$CASE_DIR/destination"
+ENTRYPOINT_VM_DIR="$CASE_DIR/entrypoint"
+ARTIFACTS_DIR="$CASE_DIR/artifacts"
+mkdir -p "$SRC_VM_DIR" "$DST_VM_DIR" "$ENTRYPOINT_VM_DIR" "$ARTIFACTS_DIR"
+
+SRC_QEMU_LOG="$ARTIFACTS_DIR/source-qemu.log"
+DST_QEMU_LOG="$ARTIFACTS_DIR/destination-qemu.log"
+ENTRYPOINT_VM_QEMU_LOG="$ARTIFACTS_DIR/entrypoint-qemu.log"
+SRC_PID_FILE="$CASE_DIR/source-qemu.pid"
+DST_PID_FILE="$CASE_DIR/destination-qemu.pid"
+ENTRYPOINT_VM_PID_FILE="$CASE_DIR/entrypoint-qemu.pid"
+ENTRYPOINT_VM_BOOTSTRAP_INVENTORY="$CASE_DIR/inventory.entrypoint.bootstrap.yml"
+LOCALNET_ENTRYPOINT_PID_FILE="$CASE_DIR/localnet-entrypoint.pid"
+LOCALNET_ENTRYPOINT_LOG="$ARTIFACTS_DIR/localnet-entrypoint.log"
+
+emit_test_report() {
+  local result="${1:-}"
+  local report_file="$ARTIFACTS_DIR/test-report.txt"
+  local json_report_file="$ARTIFACTS_DIR/test-report.json"
+  if [[ -z "$result" ]]; then
+    if [[ "$EXEC_OK" == "true" ]]; then
+      result="PASS"
+    else
+      result="FAIL"
+    fi
+  fi
+  TOTAL_DURATION_SEC=$(( $(date +%s) - SCRIPT_START_TS ))
+  derive_report_diagnosis
+  derive_report_diagnosis
+
+  cat >"$report_file" <<EOF
+============================================================
+VM Hot Swap Test Report
+============================================================
+Run ID: ${RUN_ID}
+Result: ${result}
+Case: ${SOURCE_FLAVOR:-unknown} -> ${DESTINATION_FLAVOR:-unknown}
+Cluster: ${SOLANA_CLUSTER:-unknown}
+City group: ${CITY_GROUP:-unknown}
+VM arch: ${VM_ARCH:-unknown}
+VM network mode: ${VM_NETWORK_MODE}
+
+Note
+- Partial report generated before full verification helpers were initialized.
+
+Early Failure
+- Reason: ${EARLY_FAILURE_REASON:-not captured}
+- Bootstrap output:
+${ENTRYPOINT_BOOTSTRAP_OUTPUT:-not captured}
+
+Checks Passed
+- Localnet entrypoint preflight (source VM): ${ENTRYPOINT_PREFLIGHT_VM_SOURCE}
+- Localnet entrypoint preflight (destination VM): ${ENTRYPOINT_PREFLIGHT_VM_DESTINATION}
+- Pre-swap runtime verification: ${PRE_SWAP_VERIFIED}
+- Post-swap identity verification: ${SWAP_IDENTITY_VERIFIED}
+- Post-swap runtime verification: ${POST_SWAP_VERIFIED}
+
+Diagnosis
+${REPORT_DIAGNOSIS:-No additional diagnosis captured.}
+
+Artifacts
+- Case directory: ${CASE_DIR}
+- Source QEMU log: ${SRC_QEMU_LOG}
+- Destination QEMU log: ${DST_QEMU_LOG}
+- Entrypoint VM QEMU log (vm mode): ${ENTRYPOINT_VM_QEMU_LOG:-not used}
+- Entrypoint container engine: ${LOCALNET_ENTRYPOINT_ENGINE_RESOLVED:-not used}
+- Entrypoint container name: ${LOCALNET_ENTRYPOINT_CONTAINER_NAME:-not used}
+- Localnet entrypoint log: ${LOCALNET_ENTRYPOINT_LOG:-not used}
+- Report file: ${report_file}
+- JSON report file: ${json_report_file}
+============================================================
+EOF
+
+  jq -n \
+    --arg run_id "$RUN_ID" \
+    --arg result "$result" \
+    --arg source_flavor "${SOURCE_FLAVOR:-unknown}" \
+    --arg destination_flavor "${DESTINATION_FLAVOR:-unknown}" \
+    --arg cluster "${SOLANA_CLUSTER:-unknown}" \
+    --arg city_group "${CITY_GROUP:-unknown}" \
+    --arg vm_arch "${VM_ARCH:-unknown}" \
+    --arg vm_network_mode "${VM_NETWORK_MODE}" \
+    --argjson total_duration_sec "$TOTAL_DURATION_SEC" \
+    --argjson entrypoint_preflight_vm_source "$ENTRYPOINT_PREFLIGHT_VM_SOURCE" \
+    --argjson entrypoint_preflight_vm_destination "$ENTRYPOINT_PREFLIGHT_VM_DESTINATION" \
+    --argjson pre_swap_verified "$PRE_SWAP_VERIFIED" \
+    --argjson swap_identity_verified "$SWAP_IDENTITY_VERIFIED" \
+    --argjson post_swap_verified "$POST_SWAP_VERIFIED" \
+    --arg early_failure_reason "${EARLY_FAILURE_REASON:-not captured}" \
+    --arg entrypoint_bootstrap_output "${ENTRYPOINT_BOOTSTRAP_OUTPUT:-not captured}" \
+    --arg report_diagnosis "${REPORT_DIAGNOSIS:-No additional diagnosis captured.}" \
+    --arg case_dir "$CASE_DIR" \
+    --arg source_qemu_log "$SRC_QEMU_LOG" \
+    --arg destination_qemu_log "$DST_QEMU_LOG" \
+    --arg entrypoint_vm_qemu_log "${ENTRYPOINT_VM_QEMU_LOG:-not used}" \
+    --arg entrypoint_container_engine "${LOCALNET_ENTRYPOINT_ENGINE_RESOLVED:-not used}" \
+    --arg entrypoint_container_name "${LOCALNET_ENTRYPOINT_CONTAINER_NAME:-not used}" \
+    --arg localnet_entrypoint_log "${LOCALNET_ENTRYPOINT_LOG:-not used}" \
+    --arg text_report_file "$report_file" \
+    --arg json_report_file "$json_report_file" \
+    '{
+      run_id: $run_id,
+      result: $result,
+      case: {
+        source_flavor: $source_flavor,
+        destination_flavor: $destination_flavor
+      },
+      environment: {
+        cluster: $cluster,
+        city_group: $city_group,
+        vm_arch: $vm_arch,
+        vm_network_mode: $vm_network_mode
+      },
+      durations_sec: {
+        total: $total_duration_sec
+      },
+      checks_passed: {
+        localnet_entrypoint_preflight_source: $entrypoint_preflight_vm_source,
+        localnet_entrypoint_preflight_destination: $entrypoint_preflight_vm_destination,
+        pre_swap_runtime_and_client: $pre_swap_verified,
+        post_swap_identity: $swap_identity_verified,
+        post_swap_runtime_and_client: $post_swap_verified
+      },
+      early_failure: {
+        reason: $early_failure_reason,
+        bootstrap_output: $entrypoint_bootstrap_output
+      },
+      diagnosis: $report_diagnosis,
+      note: "Partial report generated before full verification helpers were initialized.",
+      artifacts: {
+        case_dir: $case_dir,
+        source_qemu_log: $source_qemu_log,
+        destination_qemu_log: $destination_qemu_log,
+        entrypoint_vm_qemu_log: $entrypoint_vm_qemu_log,
+        entrypoint_container_engine: $entrypoint_container_engine,
+        entrypoint_container_name: $entrypoint_container_name,
+        localnet_entrypoint_log: $localnet_entrypoint_log,
+        text_report_file: $text_report_file,
+        json_report_file: $json_report_file
+      }
+    }' >"$json_report_file"
+
+  echo "[vm-hot-swap] Wrote reports:" >&2
+  echo "[vm-hot-swap]   text: $report_file" >&2
+  echo "[vm-hot-swap]   json: $json_report_file" >&2
+  echo "[vm-hot-swap] --- Begin test report ---" >&2
+  cat "$report_file" >&2
+  echo "[vm-hot-swap] --- End test report ---" >&2
+  REPORT_EMITTED=true
+}
+
+cleanup_vm() {
+  local pid_file="$1"
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid="$(cat "$pid_file")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
+kill_conflicting_qemu_listener() {
+  local port="$1"
+  local qemu_pids=""
+  qemu_pids="$(
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
+      | awk 'NR > 1 && $1 ~ /^qemu-syst/ { print $2 }' \
+      | sort -u || true
+  )"
+  if [[ -z "$qemu_pids" ]]; then
+    return 0
+  fi
+
+  local pid
+  for pid in $qemu_pids; do
+    echo "[vm-hot-swap] Reclaiming port ${port} from stale qemu pid=${pid}" >&2
+    kill "$pid" >/dev/null 2>&1 || true
+    sleep 1
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+cleanup() {
+  capture_container_entrypoint_log || true
+  capture_entrypoint_vm_log || true
+  stop_container_localnet_entrypoint_if_started
+  stop_localnet_entrypoint_if_started
+  if [[ "${REPORT_EMITTED:-false}" != "true" && -n "${ARTIFACTS_DIR:-}" && -d "${ARTIFACTS_DIR:-}" ]]; then
+    emit_test_report || true
+  fi
+  local keep=false
+  if [[ "$RETAIN_ALWAYS" == true ]]; then
+    keep=true
+  elif [[ "$EXEC_OK" != true && "$RETAIN_ON_FAILURE" == true ]]; then
+    keep=true
+  fi
+  if [[ "$keep" == true ]]; then
+    echo "[vm-hot-swap] retaining VM processes/artifacts at $CASE_DIR" >&2
+    return 0
+  fi
+  cleanup_vm "$ENTRYPOINT_VM_PID_FILE"
+  cleanup_vm "$SRC_PID_FILE"
+  cleanup_vm "$DST_PID_FILE"
+}
+trap cleanup EXIT
+
+run_script_for_arch() {
+  case "$VM_ARCH" in
+    amd64) echo "$REPO_ROOT/scripts/vm-test/run-qemu-amd64.sh" ;;
+    arm64) echo "$REPO_ROOT/scripts/vm-test/run-qemu-arm64.sh" ;;
+    *)
+      echo "Unsupported VM arch: $VM_ARCH" >&2
+      exit 2
+      ;;
+  esac
+}
+
+RUN_SCRIPT="$(run_script_for_arch)"
+if [[ ! -x "$RUN_SCRIPT" ]]; then
+  echo "Run script not executable: $RUN_SCRIPT" >&2
+  exit 3
+fi
+
+start_vm() {
+  local vm_name="$1"
+  local vm_dir="$2"
+  local ssh_host="$3"
+  local ssh_port="$4"
+  local ssh_port_alt="$5"
+  local qemu_log="$6"
+  local pid_file="$7"
+  local tap_iface="$8"
+  local extra_host_fwds="${9:-}"
+  local base_image="${10:-$VM_BASE_IMAGE}"
+
+  if vm_uses_shared_bridge; then
+    WORK_DIR="$vm_dir" \
+    VM_STATIC_IPV4="$ssh_host" \
+    VM_GATEWAY_IPV4="$VM_BRIDGE_GATEWAY_IP" \
+    VM_DNS_IPV4="$VM_BRIDGE_DNS_IP" \
+    VM_CIDR_PREFIX="$VM_BRIDGE_CIDR_PREFIX" \
+    VM_NETWORK_MATCH_NAME="$VM_NETWORK_MATCH_NAME" \
+    "$REPO_ROOT/scripts/vm-test/make-seed.sh" "$vm_name" "$SSH_PUBLIC_KEY"
+  else
+    WORK_DIR="$vm_dir" "$REPO_ROOT/scripts/vm-test/make-seed.sh" "$vm_name" "$SSH_PUBLIC_KEY"
+  fi
+  WORK_DIR="$vm_dir" \
+  VM_DISK_SYSTEM_GB="$VM_DISK_SYSTEM_GB" \
+  VM_DISK_LEDGER_GB="$VM_DISK_LEDGER_GB" \
+  VM_DISK_ACCOUNTS_GB="$VM_DISK_ACCOUNTS_GB" \
+  VM_DISK_SNAPSHOTS_GB="$VM_DISK_SNAPSHOTS_GB" \
+  "$REPO_ROOT/scripts/vm-test/create-disks.sh" "$VM_ARCH" "$vm_name" "$base_image"
+
+  (
+    export WORK_DIR="$vm_dir"
+    export SSH_PORT="$ssh_port"
+    export SSH_PORT_ALT="$ssh_port_alt"
+    export EXTRA_HOST_FWDS="$extra_host_fwds"
+    export RAM_MB="$VM_RAM_MB"
+    export CPUS="$VM_CPUS"
+    export QEMU_EFI="$VM_QEMU_EFI"
+    if vm_uses_shared_bridge; then
+      export VM_NETWORK_BACKEND="tap"
+      export TAP_IFACE="$tap_iface"
+    else
+      export VM_NETWORK_BACKEND="user"
+      export TAP_IFACE=""
+    fi
+    nohup "$RUN_SCRIPT" "$vm_name" >"$qemu_log" 2>&1 &
+    echo $! >"$pid_file"
+  )
+
+  "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$ssh_host" "$ssh_port" "$SSH_WAIT_TIMEOUT" >/dev/null
+
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+    echo "[vm-hot-swap] QEMU process for $vm_name is not running after startup (port $ssh_port)." >&2
+    echo "[vm-hot-swap] Last QEMU log lines:" >&2
+    tail -n 80 "$qemu_log" >&2 || true
+    exit 4
+  fi
+}
+
+assert_vm_alive_and_ssh_ready() {
+  local label="$1"
+  local host="$2"
+  local port="$3"
+  local pid_file="$4"
+  local qemu_log="$5"
+  local timeout="${6:-120}"
+  local pid
+
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+    echo "[vm-hot-swap] ${label} QEMU process is not running (pid_file=${pid_file})." >&2
+    echo "[vm-hot-swap] Last ${label} QEMU log lines:" >&2
+    tail -n 120 "$qemu_log" >&2 || true
+    exit 4
+  fi
+
+  if ! "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$host" "$port" "$timeout" >/dev/null; then
+    echo "[vm-hot-swap] ${label} SSH not reachable at ${host}:${port}." >&2
+    echo "[vm-hot-swap] Last ${label} QEMU log lines:" >&2
+    tail -n 120 "$qemu_log" >&2 || true
+    exit 4
+  fi
+}
+
+SOURCE_BOOTSTRAP_HOST="$(vm_bootstrap_host_for vm-source)"
+DESTINATION_BOOTSTRAP_HOST="$(vm_bootstrap_host_for vm-destination)"
+SOURCE_BOOTSTRAP_PORT_EFFECTIVE="$(vm_bootstrap_port_for vm-source)"
+DESTINATION_BOOTSTRAP_PORT_EFFECTIVE="$(vm_bootstrap_port_for vm-destination)"
+SOURCE_OPERATOR_HOST_EFFECTIVE="$(vm_operator_host_for vm-source)"
+DESTINATION_OPERATOR_HOST_EFFECTIVE="$(vm_operator_host_for vm-destination)"
+SOURCE_OPERATOR_PORT_EFFECTIVE="$(vm_operator_port_for vm-source)"
+DESTINATION_OPERATOR_PORT_EFFECTIVE="$(vm_operator_port_for vm-destination)"
+ENTRYPOINT_BOOTSTRAP_HOST_EFFECTIVE="$(vm_bootstrap_host_for vm-entrypoint)"
+ENTRYPOINT_BOOTSTRAP_PORT_EFFECTIVE="$(vm_bootstrap_port_for vm-entrypoint)"
+ENTRYPOINT_OPERATOR_PORT_EFFECTIVE="$(vm_operator_port_for vm-entrypoint)"
+
+if [[ "$AUTO_KILL_CONFLICTING_QEMU" == "true" ]]; then
+  for port in "$SOURCE_SSH_PORT" "$SOURCE_SSH_PORT_ALT" "$DESTINATION_SSH_PORT" "$DESTINATION_SSH_PORT_ALT"; do
+    kill_conflicting_qemu_listener "$port"
+  done
+  if entrypoint_mode_uses_vm && ! vm_uses_shared_bridge; then
+    for port in "$ENTRYPOINT_VM_SSH_PORT" "$ENTRYPOINT_VM_SSH_PORT_ALT" "$VM_LOCALNET_ENTRYPOINT_RPC_PORT" "$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" "$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT"; do
+      kill_conflicting_qemu_listener "$port"
+    done
+  fi
+fi
+
+echo "[vm-hot-swap] Starting source VM..." >&2
+start_vm "$SRC_VM_NAME" "$SRC_VM_DIR" "$SOURCE_BOOTSTRAP_HOST" "$SOURCE_BOOTSTRAP_PORT_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_QEMU_LOG" "$SRC_PID_FILE" "$(vm_tap_iface_for vm-source)"
+echo "[vm-hot-swap] Starting destination VM..." >&2
+start_vm "$DST_VM_NAME" "$DST_VM_DIR" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_QEMU_LOG" "$DST_PID_FILE" "$(vm_tap_iface_for vm-destination)"
+
+ensure_local_keyset
+
+IAM_CSV="$CASE_DIR/iam_setup_vm_validator.csv"
+AUTHORIZED_IPS_CSV="$CASE_DIR/authorized_ips_vm.csv"
+BOOTSTRAP_INVENTORY="$CASE_DIR/inventory.bootstrap.yml"
+OPERATOR_INVENTORY="$CASE_DIR/inventory.operator.yml"
+TARGET_HOSTS="vm-source,vm-destination"
+
+cat >"$IAM_CSV" <<EOF
+user,key,group_a,group_b,group_c
+alice,${SSH_PUBLIC_KEY},sysadmin,,
+${VALIDATOR_OPERATOR_USER},${SSH_PUBLIC_KEY},validator_operators,,
+carla,${SSH_PUBLIC_KEY},validator_viewers,,
+sol,,,,
+EOF
+
+cat >"$AUTHORIZED_IPS_CSV" <<EOF
+ip,comment
+${VM_AUTHORIZED_IP},Host entrypoint/control-plane address
+EOF
+
+cat >"$BOOTSTRAP_INVENTORY" <<EOF
+all:
+  hosts:
+    vm-source:
+      ansible_host: ${SOURCE_BOOTSTRAP_HOST}
+      ansible_port: ${SOURCE_BOOTSTRAP_PORT_EFFECTIVE}
+      ansible_user: ${BOOTSTRAP_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+    vm-destination:
+      ansible_host: ${DESTINATION_BOOTSTRAP_HOST}
+      ansible_port: ${DESTINATION_BOOTSTRAP_PORT_EFFECTIVE}
+      ansible_user: ${BOOTSTRAP_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+  children:
+    ${CITY_GROUP}:
+      hosts:
+        vm-source:
+        vm-destination:
+    solana:
+      hosts:
+        vm-source:
+        vm-destination:
+    solana_localnet:
+      hosts:
+        vm-source:
+        vm-destination:
+EOF
+
+cat >"$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" <<EOF
+all:
+  hosts:
+    vm-entrypoint:
+      ansible_host: ${ENTRYPOINT_BOOTSTRAP_HOST_EFFECTIVE}
+      ansible_port: ${ENTRYPOINT_BOOTSTRAP_PORT_EFFECTIVE}
+      ansible_user: ${BOOTSTRAP_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+EOF
+
+ensure_localnet_entrypoint
+
+cat >"$OPERATOR_INVENTORY" <<EOF
+all:
+  hosts:
+    vm-source:
+      ansible_host: ${SOURCE_OPERATOR_HOST_EFFECTIVE}
+      ansible_port: ${SOURCE_OPERATOR_PORT_EFFECTIVE}
+      ansible_user: ${VALIDATOR_OPERATOR_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+    vm-destination:
+      ansible_host: ${DESTINATION_OPERATOR_HOST_EFFECTIVE}
+      ansible_port: ${DESTINATION_OPERATOR_PORT_EFFECTIVE}
+      ansible_user: ${VALIDATOR_OPERATOR_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+  children:
+    ${CITY_GROUP}:
+      hosts:
+        vm-source:
+        vm-destination:
+    solana:
+      hosts:
+        vm-source:
+        vm-destination:
+    solana_localnet:
+      hosts:
+        vm-source:
+        vm-destination:
+EOF
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Running users -> metal-box (requested order)..." >&2
+if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
+  echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy for VM automation..." >&2
+  ansible-playbook \
+    -i "$BOOTSTRAP_INVENTORY" \
+    "$REPO_ROOT/test-harness/ansible/pb_prepare_vm_sysadmin_nopasswd.yml" \
+    -e "target_hosts=$TARGET_HOSTS" \
+    -e "bootstrap_user=$BOOTSTRAP_USER"
+fi
+
+ansible-playbook \
+  -i "$BOOTSTRAP_INVENTORY" \
+  "$REPO_ROOT/test-harness/ansible/pb_vm_users_then_metal_box.yml" \
+  --skip-tags "$VM_METAL_BOX_SKIP_TAGS" \
+  "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+  -e "target_host=$TARGET_HOSTS" \
+  -e "bootstrap_user=$BOOTSTRAP_USER" \
+  -e "metal_box_user=$METAL_BOX_SYSADMIN_USER" \
+  -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE" \
+  -e "users_csv_file=$(basename "$IAM_CSV")" \
+  -e "users_base_dir=$(dirname "$IAM_CSV")" \
+  -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")" \
+  -e "authorized_access_csv=$AUTHORIZED_IPS_CSV" \
+  -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+
+echo "[vm-hot-swap] Waiting for post-metal SSH ports..." >&2
+"$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" 300 >/dev/null
+"$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" 300 >/dev/null
+USERS_METAL_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Verifying VM reachability to the localnet entrypoint..." >&2
+ensure_localnet_entrypoint
+assert_vm_can_reach_localnet_entrypoint "vm-source" "source"
+assert_vm_can_reach_localnet_entrypoint "vm-destination" "destination"
+ENTRYPOINT_PREFLIGHT_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+setup_host_flavor() {
+  local host="$1"
+  local flavor="$2"
+  local validator_type="$3"
+  local base_args=(
+    -i "$OPERATOR_INVENTORY"
+    --limit "$host"
+    -e "target_host=$host"
+    -e "ansible_user=$VALIDATOR_OPERATOR_USER"
+    -e "validator_name=$VALIDATOR_NAME"
+    -e "validator_type=$validator_type"
+    -e "solana_cluster=$SOLANA_CLUSTER"
+    -e "build_from_source=$BUILD_FROM_SOURCE"
+    -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+  )
+
+  case "$flavor" in
+    agave)
+      ansible-playbook \
+        "${base_args[@]}" \
+        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        -e "agave_version=$AGAVE_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_agave.yml"
+      ;;
+    jito-shared)
+      ansible-playbook \
+        "${base_args[@]}" \
+        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        -e "jito_version=$JITO_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      ;;
+    jito-cohosted)
+      ansible-playbook \
+        "${base_args[@]}" \
+        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        -e "jito_version=$JITO_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      ;;
+    jito-bam)
+      if [[ -n "$BAM_JITO_VERSION_PATCH" ]]; then
+        ansible-playbook \
+          "${base_args[@]}" \
+          "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+          -e "jito_version=$BAM_JITO_VERSION" \
+          -e "jito_version_patch=$BAM_JITO_VERSION_PATCH" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      else
+        ansible-playbook \
+          "${base_args[@]}" \
+          "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+          -e "jito_version=$BAM_JITO_VERSION" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      fi
+      ;;
+    *)
+      echo "Unsupported flavor: $flavor" >&2
+      exit 2
+      ;;
+  esac
+}
+
+assert_host_client() {
+  local host="$1"
+  local flavor="$2"
+  local expected_regex
+  local output
+  local version_cmd
+  local rc=0
+  expected_regex="$(expected_client_regex_for_flavor "$flavor")"
+  version_cmd="set -eu; bindir='/opt/solana/active_release/bin'; if [ -x \"\$bindir/agave-validator\" ]; then \"\$bindir/agave-validator\" --version; elif [ -x \"\$bindir/solana-validator\" ]; then \"\$bindir/solana-validator\" --version; elif [ -x \"\$bindir/solana\" ]; then \"\$bindir/solana\" --version; else echo 'No validator version command found in' \"\$bindir\" >&2; exit 1; fi"
+  output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$version_cmd" -o 2>&1
+  )" || rc=$?
+  if [[ -z "$output" ]]; then
+    output="version probe failed with no output"
+  fi
+  case "$host" in
+    vm-source) HOST_VERSION_VM_SOURCE="$output" ;;
+    vm-destination) HOST_VERSION_VM_DESTINATION="$output" ;;
+  esac
+  if ((rc != 0)) || ! grep -Eq "$expected_regex" <<<"$output"; then
+    echo "Host $host does not match expected flavor '$flavor' (pattern: $expected_regex)" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+}
+
+assert_host_validator_runtime() {
+  local host="$1"
+  local service_cmd
+  local state_cmd
+  local journal_cmd
+  local state_output
+  local journal_output=""
+  local service_check_rc=0
+  local rpc_check_rc=0
+
+  service_cmd="set -eu; systemctl is-active --quiet sol; status=\$(systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --value --no-pager | tr '\n' ' '); case \"\$status\" in *failed*|*inactive* ) echo \"Validator service unhealthy: \$status\" >&2; exit 1 ;; esac"
+  state_cmd="set -eu; systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --value --no-pager | tr '\n' '/' | sed 's#/*\$##'"
+  journal_cmd="set -eu; journalctl -u sol -n 80 --no-pager || true"
+
+  state_output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$state_cmd" -o 2>&1 || true
+  )"
+  if [[ -z "$state_output" ]]; then
+    state_output="service state probe failed with no output"
+  fi
+  case "$host" in
+    vm-source) HOST_SERVICE_VM_SOURCE="$state_output" ;;
+    vm-destination) HOST_SERVICE_VM_DESTINATION="$state_output" ;;
+  esac
+
+  ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m shell -a "$service_cmd" -o >/dev/null || service_check_rc=$?
+
+  ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m wait_for -a "host=127.0.0.1 port=8899 timeout=60 state=started" -o >/dev/null || rpc_check_rc=$?
+
+  if ((service_check_rc != 0 || rpc_check_rc != 0)); then
+    journal_output="$(
+      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$journal_cmd" -o 2>&1 || true
+    )"
+    if [[ -z "$journal_output" ]]; then
+      journal_output="runtime diagnostic probe failed with no output"
+    fi
+    case "$host" in
+      vm-source) HOST_DIAGNOSTIC_VM_SOURCE="$journal_output" ;;
+      vm-destination) HOST_DIAGNOSTIC_VM_DESTINATION="$journal_output" ;;
+    esac
+  fi
+
+  if ((service_check_rc != 0)); then
+    echo "Host $host validator service is not healthy." >&2
+    echo "$state_output" >&2
+    echo "$journal_output" >&2
+    exit 1
+  fi
+  if ((rpc_check_rc != 0)); then
+    echo "Host $host validator RPC port 8899 is not listening." >&2
+    echo "$state_output" >&2
+    echo "$journal_output" >&2
+    exit 1
+  fi
+}
+
+assert_swap_identity_state() {
+  local source_cmd
+  local destination_cmd
+  source_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
+  destination_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
+
+  ansible "vm-source" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b -m shell -a "$source_cmd" -o
+
+  ansible "vm-destination" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b -m shell -a "$destination_cmd" -o
+
+  SWAP_IDENTITY_VERIFIED=true
+}
+
+capture_host_identity_state() {
+  local host="$1"
+  local stage="$2"
+  local cmd
+  local output
+  local run_key
+  local primary_key
+  local hot_key
+
+  cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; pubkey_or_missing() { f=\"\$1\"; if [ -f \"\$f\" ]; then /opt/solana/active_release/bin/solana-keygen pubkey \"\$f\"; else printf 'missing\\n'; fi; }; run=\$(pubkey_or_missing \"\$kdir/identity.json\"); primary=\$(pubkey_or_missing \"\$kdir/primary-target-identity.json\"); hot=\$(pubkey_or_missing \"\$kdir/hot-spare-identity.json\"); printf '%s\\t%s\\t%s\\n' \"\$run\" \"\$primary\" \"\$hot\""
+  output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$cmd" -o 2>/dev/null | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' || true
+  )"
+  if [[ -z "$output" ]]; then
+    run_key="unavailable"
+    primary_key="unavailable"
+    hot_key="unavailable"
+  else
+    IFS=$'\t' read -r run_key primary_key hot_key <<<"$output"
+  fi
+
+  case "${host}:${stage}" in
+    vm-source:before)
+      SOURCE_IDENTITY_BEFORE="$run_key"
+      SOURCE_PRIMARY_TARGET_BEFORE="$primary_key"
+      SOURCE_HOT_SPARE_BEFORE="$hot_key"
+      ;;
+    vm-destination:before)
+      DESTINATION_IDENTITY_BEFORE="$run_key"
+      DESTINATION_PRIMARY_TARGET_BEFORE="$primary_key"
+      DESTINATION_HOT_SPARE_BEFORE="$hot_key"
+      ;;
+    vm-source:after)
+      SOURCE_IDENTITY_AFTER="$run_key"
+      SOURCE_PRIMARY_TARGET_AFTER="$primary_key"
+      SOURCE_HOT_SPARE_AFTER="$hot_key"
+      ;;
+    vm-destination:after)
+      DESTINATION_IDENTITY_AFTER="$run_key"
+      DESTINATION_PRIMARY_TARGET_AFTER="$primary_key"
+      DESTINATION_HOT_SPARE_AFTER="$hot_key"
+      ;;
+    *)
+      echo "Unsupported host/stage for capture_host_identity_state: ${host}:${stage}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+capture_cluster_snapshots() {
+  local rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
+    CATCHUP_SNAPSHOT="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
+    GOSSIP_SNAPSHOT="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
+    return 0
+  fi
+
+  CATCHUP_SNAPSHOT="$(
+    solana catchup -u "$rpc_url" --our-localhost 8899 2>&1 | sed -n '1,40p' || true
+  )"
+  GOSSIP_SNAPSHOT="$(
+    solana gossip -u "$rpc_url" 2>&1 | sed -n '1,60p' || true
+  )"
+
+  if [[ -z "$CATCHUP_SNAPSHOT" ]]; then
+    CATCHUP_SNAPSHOT="No catchup output captured."
+  fi
+  if [[ -z "$GOSSIP_SNAPSHOT" ]]; then
+    GOSSIP_SNAPSHOT="No gossip output captured."
+  fi
+}
+
+emit_test_report() {
+  local result="${1:-}"
+  local report_file="$ARTIFACTS_DIR/test-report.txt"
+  local json_report_file="$ARTIFACTS_DIR/test-report.json"
+  if [[ -z "$result" ]]; then
+    if [[ "$EXEC_OK" == "true" ]]; then
+      result="PASS"
+    else
+      result="FAIL"
+    fi
+  fi
+  TOTAL_DURATION_SEC=$(( $(date +%s) - SCRIPT_START_TS ))
+
+  cat >"$report_file" <<EOF
+============================================================
+VM Hot Swap Test Report
+============================================================
+Run ID: ${RUN_ID}
+Result: ${result}
+Case: ${SOURCE_FLAVOR} -> ${DESTINATION_FLAVOR}
+Cluster: ${SOLANA_CLUSTER}
+City group: ${CITY_GROUP}
+VM arch: ${VM_ARCH}
+VM network mode: ${VM_NETWORK_MODE}
+
+Environment
+- Source SSH (bootstrap/post-metal): ${SOURCE_SSH_PORT} / ${SOURCE_SSH_PORT_ALT}
+- Destination SSH (bootstrap/post-metal): ${DESTINATION_SSH_PORT} / ${DESTINATION_SSH_PORT_ALT}
+- Localnet entrypoint mode: ${VM_LOCALNET_ENTRYPOINT_MODE}
+- Localnet RPC: http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}
+- Localnet gossip for VMs: ${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}
+- Localnet genesis hash: ${LOCALNET_ENTRYPOINT_GENESIS_HASH:-unknown}
+
+Phase Durations
+- Users + metal-box setup: ${USERS_METAL_SETUP_DURATION_SEC}s
+- Localnet entrypoint preflight: ${ENTRYPOINT_PREFLIGHT_DURATION_SEC}s
+- Source flavor setup: ${SOURCE_SETUP_DURATION_SEC}s
+- Destination flavor setup: ${DESTINATION_SETUP_DURATION_SEC}s
+- Pre-swap verification: ${PRE_SWAP_VERIFY_DURATION_SEC}s
+- Hot-swap execution: ${HOT_SWAP_DURATION_SEC}s
+- Post-swap verification: ${POST_SWAP_VERIFY_DURATION_SEC}s
+- Total runtime: ${TOTAL_DURATION_SEC}s
+
+Checks Passed
+- Source flavor setup completed
+- Destination flavor setup completed
+- Localnet entrypoint preflight (source VM): ${ENTRYPOINT_PREFLIGHT_VM_SOURCE}
+- Localnet entrypoint preflight (destination VM): ${ENTRYPOINT_PREFLIGHT_VM_DESTINATION}
+- Pre-swap runtime verification: ${PRE_SWAP_VERIFIED}
+- Hot-swap playbook completed
+- Post-swap identity verification: ${SWAP_IDENTITY_VERIFIED}
+- Post-swap runtime verification: ${POST_SWAP_VERIFIED}
+
+Diagnosis
+${REPORT_DIAGNOSIS:-No additional diagnosis captured.}
+
+Localnet Entrypoint Reachability
+- Source VM: ${ENTRYPOINT_PREFLIGHT_VM_SOURCE} (${ENTRYPOINT_PREFLIGHT_DETAILS_VM_SOURCE:-not checked})
+- Destination VM: ${ENTRYPOINT_PREFLIGHT_VM_DESTINATION} (${ENTRYPOINT_PREFLIGHT_DETAILS_VM_DESTINATION:-not checked})
+
+Identity State Before Swap
+- Source identity.json: ${SOURCE_IDENTITY_BEFORE:-not captured}
+- Source primary-target-identity.json: ${SOURCE_PRIMARY_TARGET_BEFORE:-not captured}
+- Source hot-spare-identity.json: ${SOURCE_HOT_SPARE_BEFORE:-not captured}
+- Destination identity.json: ${DESTINATION_IDENTITY_BEFORE:-not captured}
+- Destination primary-target-identity.json: ${DESTINATION_PRIMARY_TARGET_BEFORE:-not captured}
+- Destination hot-spare-identity.json: ${DESTINATION_HOT_SPARE_BEFORE:-not captured}
+
+Identity State After Swap
+- Source identity.json: ${SOURCE_IDENTITY_AFTER:-not captured}
+- Source primary-target-identity.json: ${SOURCE_PRIMARY_TARGET_AFTER:-not captured}
+- Source hot-spare-identity.json: ${SOURCE_HOT_SPARE_AFTER:-not captured}
+- Destination identity.json: ${DESTINATION_IDENTITY_AFTER:-not captured}
+- Destination primary-target-identity.json: ${DESTINATION_PRIMARY_TARGET_AFTER:-not captured}
+- Destination hot-spare-identity.json: ${DESTINATION_HOT_SPARE_AFTER:-not captured}
+
+Observed State
+- Source service: ${HOST_SERVICE_VM_SOURCE:-not captured}
+- Source version: ${HOST_VERSION_VM_SOURCE:-not captured}
+- Destination service: ${HOST_SERVICE_VM_DESTINATION:-not captured}
+- Destination version: ${HOST_VERSION_VM_DESTINATION:-not captured}
+
+Runtime Diagnostics
+- Source: ${HOST_DIAGNOSTIC_VM_SOURCE:-not captured}
+- Destination: ${HOST_DIAGNOSTIC_VM_DESTINATION:-not captured}
+
+Catchup Snapshot
+${CATCHUP_SNAPSHOT:-not captured}
+
+Gossip Snapshot
+${GOSSIP_SNAPSHOT:-not captured}
+
+Artifacts
+- Case directory: ${CASE_DIR}
+- Source QEMU log: ${SRC_QEMU_LOG}
+- Destination QEMU log: ${DST_QEMU_LOG}
+- Entrypoint VM QEMU log (vm mode): ${ENTRYPOINT_VM_QEMU_LOG:-not used}
+- Entrypoint container engine: ${LOCALNET_ENTRYPOINT_ENGINE_RESOLVED:-not used}
+- Entrypoint container name: ${LOCALNET_ENTRYPOINT_CONTAINER_NAME:-not used}
+- Localnet entrypoint log: ${LOCALNET_ENTRYPOINT_LOG:-not used}
+- Report file: ${report_file}
+- JSON report file: ${json_report_file}
+============================================================
+EOF
+
+  jq -n \
+    --arg run_id "$RUN_ID" \
+    --arg result "$result" \
+    --arg source_flavor "$SOURCE_FLAVOR" \
+    --arg destination_flavor "$DESTINATION_FLAVOR" \
+    --arg cluster "$SOLANA_CLUSTER" \
+    --arg city_group "$CITY_GROUP" \
+    --arg vm_arch "$VM_ARCH" \
+    --arg vm_network_mode "$VM_NETWORK_MODE" \
+    --argjson users_metal_setup_duration_sec "$USERS_METAL_SETUP_DURATION_SEC" \
+    --argjson entrypoint_preflight_duration_sec "$ENTRYPOINT_PREFLIGHT_DURATION_SEC" \
+    --argjson source_setup_duration_sec "$SOURCE_SETUP_DURATION_SEC" \
+    --argjson destination_setup_duration_sec "$DESTINATION_SETUP_DURATION_SEC" \
+    --argjson pre_swap_verify_duration_sec "$PRE_SWAP_VERIFY_DURATION_SEC" \
+    --argjson hot_swap_duration_sec "$HOT_SWAP_DURATION_SEC" \
+    --argjson post_swap_verify_duration_sec "$POST_SWAP_VERIFY_DURATION_SEC" \
+    --argjson total_duration_sec "$TOTAL_DURATION_SEC" \
+    --argjson entrypoint_preflight_vm_source "$ENTRYPOINT_PREFLIGHT_VM_SOURCE" \
+    --argjson entrypoint_preflight_vm_destination "$ENTRYPOINT_PREFLIGHT_VM_DESTINATION" \
+    --argjson pre_swap_verified "$PRE_SWAP_VERIFIED" \
+    --argjson swap_identity_verified "$SWAP_IDENTITY_VERIFIED" \
+    --argjson post_swap_verified "$POST_SWAP_VERIFIED" \
+    --arg source_ssh_port "$SOURCE_SSH_PORT" \
+    --arg source_ssh_port_alt "$SOURCE_SSH_PORT_ALT" \
+    --arg destination_ssh_port "$DESTINATION_SSH_PORT" \
+    --arg destination_ssh_port_alt "$DESTINATION_SSH_PORT_ALT" \
+    --arg localnet_entrypoint_mode "$VM_LOCALNET_ENTRYPOINT_MODE" \
+    --arg localnet_rpc_url "http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
+    --arg localnet_gossip_endpoint "${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}" \
+    --arg localnet_genesis_hash "${LOCALNET_ENTRYPOINT_GENESIS_HASH:-unknown}" \
+    --arg entrypoint_preflight_details_vm_source "${ENTRYPOINT_PREFLIGHT_DETAILS_VM_SOURCE:-not checked}" \
+    --arg entrypoint_preflight_details_vm_destination "${ENTRYPOINT_PREFLIGHT_DETAILS_VM_DESTINATION:-not checked}" \
+    --arg host_service_vm_source "${HOST_SERVICE_VM_SOURCE:-not captured}" \
+    --arg host_version_vm_source "${HOST_VERSION_VM_SOURCE:-not captured}" \
+    --arg host_diagnostic_vm_source "${HOST_DIAGNOSTIC_VM_SOURCE:-not captured}" \
+    --arg host_service_vm_destination "${HOST_SERVICE_VM_DESTINATION:-not captured}" \
+    --arg host_version_vm_destination "${HOST_VERSION_VM_DESTINATION:-not captured}" \
+    --arg host_diagnostic_vm_destination "${HOST_DIAGNOSTIC_VM_DESTINATION:-not captured}" \
+    --arg source_identity_before "${SOURCE_IDENTITY_BEFORE:-not captured}" \
+    --arg source_primary_target_before "${SOURCE_PRIMARY_TARGET_BEFORE:-not captured}" \
+    --arg source_hot_spare_before "${SOURCE_HOT_SPARE_BEFORE:-not captured}" \
+    --arg destination_identity_before "${DESTINATION_IDENTITY_BEFORE:-not captured}" \
+    --arg destination_primary_target_before "${DESTINATION_PRIMARY_TARGET_BEFORE:-not captured}" \
+    --arg destination_hot_spare_before "${DESTINATION_HOT_SPARE_BEFORE:-not captured}" \
+    --arg source_identity_after "${SOURCE_IDENTITY_AFTER:-not captured}" \
+    --arg source_primary_target_after "${SOURCE_PRIMARY_TARGET_AFTER:-not captured}" \
+    --arg source_hot_spare_after "${SOURCE_HOT_SPARE_AFTER:-not captured}" \
+    --arg destination_identity_after "${DESTINATION_IDENTITY_AFTER:-not captured}" \
+    --arg destination_primary_target_after "${DESTINATION_PRIMARY_TARGET_AFTER:-not captured}" \
+    --arg destination_hot_spare_after "${DESTINATION_HOT_SPARE_AFTER:-not captured}" \
+    --arg catchup_snapshot "${CATCHUP_SNAPSHOT:-not captured}" \
+    --arg gossip_snapshot "${GOSSIP_SNAPSHOT:-not captured}" \
+    --arg report_diagnosis "${REPORT_DIAGNOSIS:-No additional diagnosis captured.}" \
+    --arg case_dir "$CASE_DIR" \
+    --arg source_qemu_log "$SRC_QEMU_LOG" \
+    --arg destination_qemu_log "$DST_QEMU_LOG" \
+    --arg entrypoint_vm_qemu_log "${ENTRYPOINT_VM_QEMU_LOG:-not used}" \
+    --arg entrypoint_container_engine "${LOCALNET_ENTRYPOINT_ENGINE_RESOLVED:-not used}" \
+    --arg entrypoint_container_name "${LOCALNET_ENTRYPOINT_CONTAINER_NAME:-not used}" \
+    --arg localnet_entrypoint_log "${LOCALNET_ENTRYPOINT_LOG:-not used}" \
+    --arg text_report_file "$report_file" \
+    --arg json_report_file "$json_report_file" \
+    '{
+      run_id: $run_id,
+      result: $result,
+      case: {
+        source_flavor: $source_flavor,
+        destination_flavor: $destination_flavor
+      },
+      environment: {
+        cluster: $cluster,
+        city_group: $city_group,
+        vm_arch: $vm_arch,
+        vm_network_mode: $vm_network_mode,
+        ssh_ports: {
+          source: {
+            bootstrap: $source_ssh_port,
+            post_metal: $source_ssh_port_alt
+          },
+          destination: {
+            bootstrap: $destination_ssh_port,
+            post_metal: $destination_ssh_port_alt
+          }
+        },
+        localnet_entrypoint: {
+          mode: $localnet_entrypoint_mode,
+          rpc_url: $localnet_rpc_url,
+          gossip_endpoint_for_vms: $localnet_gossip_endpoint,
+          genesis_hash: $localnet_genesis_hash
+        }
+      },
+      durations_sec: {
+        users_metal_setup: $users_metal_setup_duration_sec,
+        localnet_entrypoint_preflight: $entrypoint_preflight_duration_sec,
+        source_setup: $source_setup_duration_sec,
+        destination_setup: $destination_setup_duration_sec,
+        pre_swap_verify: $pre_swap_verify_duration_sec,
+        hot_swap: $hot_swap_duration_sec,
+        post_swap_verify: $post_swap_verify_duration_sec,
+        total: $total_duration_sec
+      },
+      checks_passed: {
+        localnet_entrypoint_preflight_source: $entrypoint_preflight_vm_source,
+        localnet_entrypoint_preflight_destination: $entrypoint_preflight_vm_destination,
+        pre_swap_runtime_and_client: $pre_swap_verified,
+        post_swap_identity: $swap_identity_verified,
+        post_swap_runtime_and_client: $post_swap_verified
+      },
+      localnet_entrypoint_reachability: {
+        source: {
+          ok: $entrypoint_preflight_vm_source,
+          checked_endpoints: $entrypoint_preflight_details_vm_source
+        },
+        destination: {
+          ok: $entrypoint_preflight_vm_destination,
+          checked_endpoints: $entrypoint_preflight_details_vm_destination
+        }
+      },
+      identities: {
+        before: {
+          source: {
+            identity: $source_identity_before,
+            primary_target_identity: $source_primary_target_before,
+            hot_spare_identity: $source_hot_spare_before
+          },
+          destination: {
+            identity: $destination_identity_before,
+            primary_target_identity: $destination_primary_target_before,
+            hot_spare_identity: $destination_hot_spare_before
+          }
+        },
+        after: {
+          source: {
+            identity: $source_identity_after,
+            primary_target_identity: $source_primary_target_after,
+            hot_spare_identity: $source_hot_spare_after
+          },
+          destination: {
+            identity: $destination_identity_after,
+            primary_target_identity: $destination_primary_target_after,
+            hot_spare_identity: $destination_hot_spare_after
+          }
+        }
+      },
+      observed_state: {
+        source: {
+          service: $host_service_vm_source,
+          version: $host_version_vm_source,
+          runtime_diagnostic: $host_diagnostic_vm_source
+        },
+        destination: {
+          service: $host_service_vm_destination,
+          version: $host_version_vm_destination,
+          runtime_diagnostic: $host_diagnostic_vm_destination
+        }
+      },
+      diagnosis: $report_diagnosis,
+      cluster_snapshots: {
+        catchup: $catchup_snapshot,
+        gossip: $gossip_snapshot
+      },
+      artifacts: {
+        case_dir: $case_dir,
+        source_qemu_log: $source_qemu_log,
+        destination_qemu_log: $destination_qemu_log,
+        entrypoint_vm_qemu_log: $entrypoint_vm_qemu_log,
+        entrypoint_container_engine: $entrypoint_container_engine,
+        entrypoint_container_name: $entrypoint_container_name,
+        localnet_entrypoint_log: $localnet_entrypoint_log,
+        text_report_file: $text_report_file,
+        json_report_file: $json_report_file
+      }
+    }' >"$json_report_file"
+
+  echo "[vm-hot-swap] Wrote reports:" >&2
+  echo "[vm-hot-swap]   text: $report_file" >&2
+  echo "[vm-hot-swap]   json: $json_report_file" >&2
+  echo "[vm-hot-swap] --- Begin test report ---" >&2
+  cat "$report_file" >&2
+  echo "[vm-hot-swap] --- End test report ---" >&2
+  REPORT_EMITTED=true
+}
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Configuring source flavor: $SOURCE_FLAVOR" >&2
+assert_vm_alive_and_ssh_ready "source" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
+ensure_localnet_entrypoint
+setup_host_flavor "vm-source" "$SOURCE_FLAVOR" "primary"
+assert_host_can_query_localnet_entrypoint "vm-source" "source"
+SOURCE_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Configuring destination flavor: $DESTINATION_FLAVOR" >&2
+assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
+ensure_localnet_entrypoint
+setup_host_flavor "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
+assert_host_can_query_localnet_entrypoint "vm-destination" "destination"
+DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Capturing pre-swap identity state..." >&2
+capture_host_identity_state "vm-source" "before"
+capture_host_identity_state "vm-destination" "before"
+
+echo "[vm-hot-swap] Verifying pre-swap flavors..." >&2
+assert_host_validator_runtime "vm-source"
+assert_host_validator_runtime "vm-destination"
+assert_host_client "vm-source" "$SOURCE_FLAVOR"
+assert_host_client "vm-destination" "$DESTINATION_FLAVOR"
+PRE_SWAP_VERIFIED=true
+PRE_SWAP_VERIFY_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Running hot-swap playbook..." >&2
+ensure_localnet_entrypoint
+ansible-playbook \
+  -i "$OPERATOR_INVENTORY" \
+  "$REPO_ROOT/ansible/playbooks/pb_hot_swap_validator_hosts_v2.yml" \
+  "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+  -e "source_host=vm-source" \
+  -e "destination_host=vm-destination" \
+  -e "operator_user=$VALIDATOR_OPERATOR_USER" \
+  -e "auto_confirm_swap=true" \
+  -e "deprovision_source_host=false" \
+  -e "swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC"
+HOT_SWAP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+phase_start_ts="$(date +%s)"
+echo "[vm-hot-swap] Verifying post-swap identity state..." >&2
+assert_swap_identity_state
+capture_host_identity_state "vm-source" "after"
+capture_host_identity_state "vm-destination" "after"
+
+echo "[vm-hot-swap] Verifying post-swap flavors..." >&2
+assert_host_validator_runtime "vm-source"
+assert_host_validator_runtime "vm-destination"
+assert_host_client "vm-source" "$SOURCE_FLAVOR"
+assert_host_client "vm-destination" "$DESTINATION_FLAVOR"
+POST_SWAP_VERIFIED=true
+capture_cluster_snapshots
+POST_SWAP_VERIFY_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+EXEC_OK=true
+emit_test_report
+echo "[vm-hot-swap] Case completed successfully: $SOURCE_FLAVOR -> $DESTINATION_FLAVOR" >&2

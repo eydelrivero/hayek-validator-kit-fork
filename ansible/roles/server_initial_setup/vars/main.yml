@@ -23,6 +23,7 @@ cpu_config:
   isolated_cores: "2,26"
   irq_cores: "0-1,3-25,27-47"
   pstate: "active"
+manage_cpu_governor_service: true
 
 # SSH Configuration
 ssh_config:
@@ -49,13 +50,15 @@ firewall:
 
 # Validator directory configuration
 validator_directory_name: "validator"
+validator_directory_path: "/opt/{{ validator_directory_name }}"
+validator_directory_scripts_subdir: "scripts"
 validator_directory:
   name: "{{ validator_directory_name }}"
-  path: "/opt/{{ validator_directory_name }}"
+  path: "{{ validator_directory_path }}"
   owner: "root"
   group: "{{ validator_group }}"
   mode: '2775'
-  scripts_subdir: "scripts"
+  scripts_subdir: "{{ validator_directory_scripts_subdir }}"
 
 # Mount directories list
 mount_directories:
@@ -87,9 +90,10 @@ filesystem_formats:
 
 # Health check configuration
 # Script to monitor validator health
+health_check_script_name: "health_check.sh"
 health_check:
-  script_name: "health_check.sh"
-  dest_path: "/usr/local/bin/{{ health_check.script_name }}"
+  script_name: "{{ health_check_script_name }}"
+  dest_path: "/usr/local/bin/{{ health_check_script_name }}"
   owner: "root"
   group: "root"
   mode: "0755"
