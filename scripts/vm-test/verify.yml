@@ -1,0 +1,46 @@
+---
+- name: Verify metal box setup
+  hosts: all
+  become: true
+  tasks:
+    - name: Check mount points exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /mnt/ledger
+        - /mnt/accounts
+        - /mnt/snapshots
+      register: mount_points
+
+    - name: Assert mount points exist
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+      loop: "{{ mount_points.results }}"
+
+    - name: Check fstab entries exist
+      ansible.builtin.shell: "grep -E '(/mnt/ledger|/mnt/accounts|/mnt/snapshots)' /etc/fstab"
+      register: fstab_entries
+      changed_when: false
+
+    - name: Assert fstab entries are present
+      ansible.builtin.assert:
+        that:
+          - fstab_entries.stdout | length > 0
+
+    - name: Check sshd config port
+      ansible.builtin.shell: "grep -E '^Port ' /etc/ssh/sshd_config"
+      register: ssh_port
+      changed_when: false
+
+    - name: Show SSH port
+      ansible.builtin.debug:
+        var: ssh_port.stdout
+
+    - name: Check UFW status
+      ansible.builtin.command: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Show UFW status
+      ansible.builtin.debug:
+        var: ufw_status.stdout_lines

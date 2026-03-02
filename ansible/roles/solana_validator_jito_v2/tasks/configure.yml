@@ -42,7 +42,7 @@
     - name: configure - Get localnet genesis hash
       block:
         - name: configure - Get genesis hash
-          ansible.builtin.command: solana -ul genesis-hash
+          ansible.builtin.command: "solana -u {{ solana_rpc_url | default('http://localhost:8899') }} genesis-hash"
           register: cluster_genesis_hash
           delegate_to: localhost
           changed_when: false
@@ -52,7 +52,7 @@
             expected_genesis_hash: "{{ cluster_genesis_hash.stdout }}"
 
         - name: configure - Get entrypoint identity pubkey
-          ansible.builtin.shell: solana -ul validators --keep-unstaked-delinquents --output json | jq -r ".validators | .[0].identityPubkey"
+          ansible.builtin.shell: "solana -u {{ solana_rpc_url | default('http://localhost:8899') }} validators --keep-unstaked-delinquents --output json | jq -r '.validators | .[0].identityPubkey'"
           register: entrypoint_identity_cmd
           delegate_to: localhost
           changed_when: false

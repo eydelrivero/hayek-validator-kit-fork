@@ -178,6 +178,13 @@ molecule test -s common_tests
 ./scripts/run-rust-env-v2-tests.sh
 ```
 
+### Harness Contract Smoke Test
+
+```bash
+# Verifies the cross-target harness command/adapter contract surface
+./scripts/run-harness-contract-tests.sh
+```
+
 ### Features
 
 - **Smart parameter handling** - Applies correct parameters per scenario

@@ -46,6 +46,7 @@
   ansible.builtin.set_fact:
     jito_manifest_entry_s3_key: "{{ jito_manifest_entry.s3_key | default(jito_manifest_entry.destination_key | default(jito_manifest_entry.staging_key | default(''))) }}"
     jito_solana_download_url_manifest: "{{ jito_manifest_entry.release_url | default(jito_manifest_entry.destination_url | default(jito_manifest_entry.staging_url | default(''))) }}"
+    jito_solana_checksum_manifest: "{{ jito_manifest_entry.sha256 | default(jito_manifest_entry.checksum_sha256 | default('')) }}"
   when:
     - jito_manifest_entry is defined
     - jito_manifest_entry | length > 0
@@ -60,6 +61,7 @@
 - name: Set final Jito-Solana download URL (manifest first, fallback second)
   ansible.builtin.set_fact:
     jito_solana_download_url: "{{ (jito_solana_download_url_manifest | default('')) if (jito_solana_download_url_manifest | default('')) != '' else jito_solana_download_url_fallback }}"
+    jito_solana_download_checksum: "{{ ('sha256:' ~ jito_solana_checksum_manifest) if (jito_solana_checksum_manifest | default('')) != '' else '' }}"
 
 - name: Debug download URL
   ansible.builtin.debug:
@@ -93,9 +95,33 @@
   ansible.builtin.debug:
     msg: "Unarchive release directory: {{ solana_installed_release_dir }}"
 
+- name: Download jito-solana binaries archive
+  ansible.builtin.get_url:
+    url: "{{ jito_solana_download_url }}"
+    dest: "/tmp/{{ jito_tag }}-{{ host_arch }}.tar.bz2"
+    mode: "0644"
+    force: true
+    checksum: "{{ jito_solana_download_checksum if (jito_solana_download_checksum | default('')) != '' else omit }}"
+    timeout: 60
+  register: jito_archive_download
+  ignore_errors: "{{ ansible_check_mode }}"
+  become: true
+
+- name: Fail when jito-solana archive download is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      Failed to download Jito-Solana archive from {{ jito_solana_download_url }}.
+      This usually means the binary was not published for version {{ jito_version }}
+      and architecture {{ host_arch }}, or the object is not publicly readable.
+      If you expected a prebuilt binary, publish/promote it first or use a version
+      present in the binary manifest. Otherwise set build_from_source=true.
+  when:
+    - not ansible_check_mode
+    - jito_archive_download is failed
+
 - name: Unarchive jito-solana binaries
   ansible.builtin.unarchive:
-    src: "{{ jito_solana_download_url }}"
+    src: "{{ jito_archive_download.dest }}"
     dest: "{{ solana_installed_release_dir }}"
     remote_src: true
     creates: "{{ solana_installed_release_dir }}/solana-release/bin/solana"

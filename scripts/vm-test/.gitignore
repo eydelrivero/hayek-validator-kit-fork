@@ -1,0 +1,5 @@
+work*/
+*.qcow2
+*.img
+*.iso
+ssh/
