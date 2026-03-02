@@ -20,3 +20,6 @@ async_retry_delay_seconds: 10
 # Service management configuration for stopping services during swap
 service_stop_retries: 3
 service_stop_delay_seconds: 10
+# Swap confirmation control
+# Keep default interactive behavior for operator safety.
+auto_confirm_swap: false

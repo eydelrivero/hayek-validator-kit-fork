@@ -1,0 +1,43 @@
+---
+- name: Prepare localnet hosts for hot-swap harness tests
+  hosts: "{{ target_hosts }}"
+  become: true
+  gather_facts: false
+  vars:
+    operator_user: "{{ operator_user | default('ubuntu') }}"
+    validator_operators_group: "{{ validator_operators_group | default('validator_operators') }}"
+    validator_service_name: "{{ validator_service_name | default('sol') }}"
+
+  tasks:
+    - name: Ensure validator operators group exists
+      ansible.builtin.group:
+        name: "{{ validator_operators_group }}"
+        state: present
+
+    - name: Ensure sol user exists and is in validator operators group
+      ansible.builtin.user:
+        name: sol
+        create_home: true
+        shell: /bin/bash
+        groups: "{{ validator_operators_group }}"
+        append: true
+        state: present
+
+    - name: Ensure operator user is in validator operators group
+      ansible.builtin.user:
+        name: "{{ operator_user }}"
+        groups: "{{ validator_operators_group }}"
+        append: true
+        state: present
+
+    - name: Ensure validator operators sudoers file exists
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/30-validator-operators
+        mode: "0440"
+        validate: "visudo -cf %s"
+        content: |
+          # Managed by test harness preflight for localnet swap tests.
+          %{{ validator_operators_group }} ALL=(sol) NOPASSWD: ALL
+          %{{ validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start {{ validator_service_name }}
+          %{{ validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop {{ validator_service_name }}
+          %{{ validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart {{ validator_service_name }}

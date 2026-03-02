@@ -1,0 +1,109 @@
+name: test-harness
+
+on:
+  push:
+    paths:
+      - "test-harness/**"
+      - "docs/TEST_HARNESS_*.md"
+      - "scripts/vm-test/create-disks.sh"
+      - "scripts/vm-test/README.md"
+      - "ansible-tests/scripts/run-harness-contract-tests.sh"
+      - "bare-metal/latitudesh/*.sh"
+      - ".github/workflows/test-harness.yml"
+  pull_request:
+    paths:
+      - "test-harness/**"
+      - "docs/TEST_HARNESS_*.md"
+      - "scripts/vm-test/create-disks.sh"
+      - "scripts/vm-test/README.md"
+      - "ansible-tests/scripts/run-harness-contract-tests.sh"
+      - "bare-metal/latitudesh/*.sh"
+      - ".github/workflows/test-harness.yml"
+  workflow_dispatch:
+    inputs:
+      run_infra:
+        description: "Run infrastructure-backed matrix on self-hosted runners"
+        required: true
+        default: false
+        type: boolean
+      scenario:
+        description: "Scenario name"
+        required: true
+        default: "agave_only"
+        type: string
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure executables
+        run: |
+          chmod +x test-harness/bin/hvk-test
+          chmod +x test-harness/targets/*.sh
+          chmod +x ansible-tests/scripts/run-harness-contract-tests.sh
+          chmod +x bare-metal/latitudesh/*.sh || true
+
+      - name: Harness list
+        run: ./test-harness/bin/hvk-test list --json | jq '.'
+
+      - name: Adapter describe
+        run: |
+          ./test-harness/bin/hvk-test describe --target compose --scenario agave_only --json | jq '.'
+          ./test-harness/bin/hvk-test describe --target vm --scenario agave_only --json | jq '.'
+          ./test-harness/bin/hvk-test describe --target latitude --scenario agave_only --json | jq '.'
+
+      - name: Ansible harness contract script
+        run: ./ansible-tests/scripts/run-harness-contract-tests.sh
+
+  infra_matrix:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_infra
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [compose, vm, latitude]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure executables
+        run: |
+          chmod +x test-harness/bin/hvk-test
+          chmod +x test-harness/targets/*.sh
+          chmod +x scripts/vm-test/*.sh
+          chmod +x solana-localnet/tests/*.sh
+          chmod +x bare-metal/latitudesh/*.sh || true
+
+      - name: Run target smoke
+        env:
+          LATITUDE_OPERATOR_NAME: ${{ secrets.LATITUDE_OPERATOR_NAME }}
+          LATITUDE_OPERATOR_SSH_PUBLIC_KEY: ${{ secrets.LATITUDE_OPERATOR_SSH_PUBLIC_KEY }}
+          LATITUDE_OPERATOR_SSH_PRIVATE_KEY_FILE: ${{ secrets.LATITUDE_OPERATOR_SSH_PRIVATE_KEY_FILE }}
+        run: |
+          case "${{ matrix.target }}" in
+            compose)
+              ./test-harness/bin/hvk-test run \
+                --target compose \
+                --scenario "${{ inputs.scenario }}" \
+                --compose-engine docker
+              ;;
+            vm)
+              ./test-harness/bin/hvk-test run \
+                --target vm \
+                --scenario "${{ inputs.scenario }}" \
+                --vm-profile small
+              ;;
+            latitude)
+              if [ -z "${LATITUDE_OPERATOR_NAME}" ] || [ -z "${LATITUDE_OPERATOR_SSH_PUBLIC_KEY}" ]; then
+                echo "Skipping latitude target: required secrets are not configured."
+                exit 0
+              fi
+              ./test-harness/bin/hvk-test run \
+                --target latitude \
+                --scenario "${{ inputs.scenario }}" \
+                --operator-name "${LATITUDE_OPERATOR_NAME}" \
+                --operator-ssh-public-key "${LATITUDE_OPERATOR_SSH_PUBLIC_KEY}" \
+                --operator-ssh-private-key-file "${LATITUDE_OPERATOR_SSH_PRIVATE_KEY_FILE:-}"
+              ;;
+          esac
