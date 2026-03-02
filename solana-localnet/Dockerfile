@@ -187,6 +187,7 @@ EXPOSE 8008/udp
 EXPOSE 8009/udp
 
 COPY "./container-setup/scripts/localnet-gossip-entrypoint-setup.sh" "/usr/bin"
+RUN chmod 0755 /usr/bin/localnet-gossip-entrypoint-setup.sh
 ENV PATH=$SOLANA_INSTALL_DIR/active_release/bin:$PATH
 ENTRYPOINT /usr/bin/localnet-gossip-entrypoint-setup.sh
 CMD [""]

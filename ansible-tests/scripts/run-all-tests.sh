@@ -142,6 +142,21 @@ fi
 
 echo -e "${BLUE}========================================${NC}"
 
+# Optional harness contract checks (disabled by default)
+if [[ "${INCLUDE_HARNESS_CONTRACT_TESTS:-false}" == "true" ]]; then
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}🧩 Running harness contract checks${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    if ./scripts/run-harness-contract-tests.sh; then
+        echo -e "${GREEN}✅ harness-contract: PASSED${NC}"
+    else
+        echo -e "${RED}❌ harness-contract: FAILED${NC}"
+        if [ "$CONTINUE_ON_ERROR" = false ]; then
+            exit 1
+        fi
+    fi
+fi
+
 # Exit with appropriate code
 if [ ${#FAILED_SCENARIOS[@]} -eq 0 ]; then
     echo -e "${GREEN}🎉 ALL TESTS PASSED!${NC}"
