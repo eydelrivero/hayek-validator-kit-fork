@@ -287,6 +287,14 @@
     prompt: "Do you want to proceed with the validator swap? (yes/no)"
   register: swap_confirmation
   run_once: true
+  when: not (auto_confirm_swap | default(false) | bool)
+
+- name: confirm_swap - Auto-confirm swap operation
+  ansible.builtin.set_fact:
+    swap_confirmation:
+      user_input: "yes"
+  run_once: true
+  when: auto_confirm_swap | default(false) | bool
 
 - name: confirm_swap - Make swap confirmation available globally
   ansible.builtin.set_fact:

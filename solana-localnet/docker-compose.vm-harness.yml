@@ -1,0 +1,56 @@
+services:
+  gossip-entrypoint-vm:
+    build:
+      context: ./
+      target: gossip-entrypoint-builder
+      args:
+        SOLANA_RELEASE: ${VMH_SOLANA_RELEASE}
+    image: ${VMH_PROJECT_NAME}-gossip-entrypoint
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8899/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 2s
+    environment:
+      SLOTS_PER_EPOCH: ${VMH_SLOTS_PER_EPOCH:-750}
+      LIMIT_LEDGER_SIZE: ${VMH_LIMIT_LEDGER_SIZE:-50000000}
+      DYNAMIC_PORT_RANGE: 8000-8030
+      RPC_PORT: 8899
+      GOSSIP_PORT: 8001
+      FAUCET_PORT: 9900
+      BIND_ADDRESS: 0.0.0.0
+      GOSSIP_HOST: ${VMH_GOSSIP_HOST:-10.0.2.2}
+      LEDGER_DIR: /var/tmp/test-ledger
+      RESET_FLAG: --reset
+    ports:
+      - "${VMH_RPC_PORT}:8899/tcp"
+      - "${VMH_GOSSIP_PORT}:8001/tcp"
+      - "${VMH_GOSSIP_PORT}:8001/udp"
+      - "${VMH_FAUCET_PORT}:9900/tcp"
+      - "${VMH_DYNAMIC_PORT_RANGE}:8000-8030/tcp"
+      - "${VMH_DYNAMIC_PORT_RANGE}:8000-8030/udp"
+    security_opt:
+      - seccomp:unconfined
+    restart: "no"
+
+  ansible-control-vm:
+    build:
+      context: ./
+      target: ansible-control-builder
+      args:
+        SOLANA_RELEASE: ${VMH_SOLANA_RELEASE}
+    image: ${VMH_PROJECT_NAME}-ansible-control
+    working_dir: /hayek-validator-kit
+    depends_on:
+      gossip-entrypoint-vm:
+        condition: service_healthy
+    network_mode: service:gossip-entrypoint-vm
+    environment:
+      SSH_AUTH_SOCK: /tmp/ssh-agent.sock
+      RPC_URL: http://localhost:8899
+    stdin_open: true
+    tty: true
+    volumes:
+      - ..:/hayek-validator-kit
+    command: ["/bin/bash", "-lc", "/hayek-validator-kit/solana-localnet/container-setup/scripts/start-ansible-ssh-agent.sh && exec sleep infinity"]
