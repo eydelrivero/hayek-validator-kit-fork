@@ -1,12 +1,8 @@
 #cloud-config
 users:
   - name: ubuntu
-    ssh-authorized-keys:
+    ssh_authorized_keys:
       - __SSH_PUBLIC_KEY__
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
 ssh_pwauth: false
-package_update: true
-package_upgrade: false
-packages:
-  - openssh-server

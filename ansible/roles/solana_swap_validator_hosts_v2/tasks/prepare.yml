@@ -47,7 +47,7 @@
   run_once: true
   when:
     - seconds_remaining is defined
-    - seconds_remaining | float < swap_epoch_end_threshold_sec
+    - seconds_remaining | float < (swap_epoch_end_threshold_sec | float)
 
 - name: prepare - Check if SSH key already exists
   ansible.builtin.stat:
@@ -436,9 +436,10 @@
   become: true
   when:
     - not ansible_check_mode
-    - not solana_cluster == "localnet"
     - inventory_hostname == destination_host
     - ansible_facts['os_family'] == 'Debian'
+    - source_host_address is defined
+    - source_host_address | length > 0
 
 - name: Robust SSH connectivity test from source_host to destination_host
   block:
