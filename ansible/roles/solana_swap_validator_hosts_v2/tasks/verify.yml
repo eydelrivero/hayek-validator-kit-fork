@@ -97,6 +97,81 @@
     - source_primary_pubkey != ''
   run_once: true
 
+- name: verify - Validate post-swap runtime identities on localnet
+  block:
+    - name: verify - Get expected source hot-spare identity pubkey
+      ansible.builtin.command: >
+        solana-keygen pubkey {{ source_host_keys_dir }}/hot-spare-identity.json
+      register: expected_source_hotspare_pubkey
+      environment:
+        PATH: "{{ system_solana_active_release_dir }}"
+      when: inventory_hostname == source_host
+      changed_when: false
+      check_mode: false
+
+    - name: verify - Wait for source validator runtime identity to switch to hot-spare
+      ansible.builtin.shell: >
+        {{ system_solana_active_release_dir }}/agave-validator -l {{ ledger_path }} contact-info | head -1 | sed 's/Identity: //'
+      register: source_runtime_identity_after
+      when: inventory_hostname == source_host
+      become: true
+      become_user: "{{ solana_user }}"
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      retries: 20
+      delay: 3
+      until:
+        - source_runtime_identity_after.stdout is defined
+        - source_runtime_identity_after.stdout | trim == expected_source_hotspare_pubkey.stdout | trim
+
+    - name: verify - Fail if source validator runtime identity did not switch on localnet
+      ansible.builtin.fail:
+        msg: |
+          Source validator runtime identity did not switch to the hot-spare on localnet.
+          Expected: {{ expected_source_hotspare_pubkey.stdout | default('unknown') }}
+          Actual: {{ source_runtime_identity_after.stdout | default('') }}
+      when:
+        - inventory_hostname == source_host
+        - source_runtime_identity_after.stdout is not defined or source_runtime_identity_after.stdout | trim != expected_source_hotspare_pubkey.stdout | trim
+
+    - name: verify - Get expected destination primary identity pubkey
+      ansible.builtin.command: >
+        solana-keygen pubkey {{ destination_host_primary_target_identity_path }}
+      register: expected_destination_primary_pubkey
+      environment:
+        PATH: "{{ system_solana_active_release_dir }}"
+      when: inventory_hostname == destination_host
+      changed_when: false
+      check_mode: false
+
+    - name: verify - Wait for destination validator runtime identity to switch to primary target
+      ansible.builtin.shell: >
+        {{ system_solana_active_release_dir }}/agave-validator -l {{ ledger_path }} contact-info | head -1 | sed 's/Identity: //'
+      register: destination_runtime_identity_after
+      when: inventory_hostname == destination_host
+      become: true
+      become_user: "{{ solana_user }}"
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      retries: 20
+      delay: 3
+      until:
+        - destination_runtime_identity_after.stdout is defined
+        - destination_runtime_identity_after.stdout | trim == expected_destination_primary_pubkey.stdout | trim
+
+    - name: verify - Fail if destination validator runtime identity did not switch on localnet
+      ansible.builtin.fail:
+        msg: |
+          Destination validator runtime identity did not switch to the primary target on localnet.
+          Expected: {{ expected_destination_primary_pubkey.stdout | default('unknown') }}
+          Actual: {{ destination_runtime_identity_after.stdout | default('') }}
+      when:
+        - inventory_hostname == destination_host
+        - destination_runtime_identity_after.stdout is not defined or destination_runtime_identity_after.stdout | trim != expected_destination_primary_pubkey.stdout | trim
+  when: solana_cluster == 'localnet'
+
 - name: verify - Get vote account data after swap
   block:
     - name: verify - Determine Solana cluster parameter
@@ -112,22 +187,75 @@
       changed_when: false
       check_mode: false
 
-    - name: verify - Get vote account address
+    - name: verify - Prefer the known source vote account address
+      ansible.builtin.set_fact:
+        post_swap_vote_account_address: "{{ hostvars[source_host]['source_vote_pubkey'] }}"
+      when:
+        - hostvars[source_host]['source_vote_pubkey'] is defined
+        - hostvars[source_host]['source_vote_pubkey'] != ''
+
+    - name: verify - Get vote account address from validator identity (fallback)
       ansible.builtin.shell: |
         solana {{ solana_cluster_param }} validators --keep-unstaked-delinquents --output json | jq -r '.validators[] | select(.identityPubkey == "{{ validator_identity_pubkey.stdout }}") | .voteAccountPubkey'
       register: vote_account_address_result
-      when: inventory_hostname == destination_host
+      when:
+        - inventory_hostname == destination_host
+        - post_swap_vote_account_address is not defined or post_swap_vote_account_address == ''
       delegate_to: localhost
       changed_when: false
       check_mode: false
+      failed_when: false
+      retries: 15
+      delay: 2
+      until:
+        - vote_account_address_result.stdout is defined
+        - vote_account_address_result.stdout | trim != ''
+
+    - name: verify - Save fallback vote account address
+      ansible.builtin.set_fact:
+        post_swap_vote_account_address: "{{ vote_account_address_result.stdout | trim }}"
+      when:
+        - inventory_hostname == destination_host
+        - vote_account_address_result is defined
+        - vote_account_address_result.stdout is defined
+        - vote_account_address_result.stdout | trim != ''
+
+    - name: verify - Fail if post-swap vote account address is unavailable
+      ansible.builtin.fail:
+        msg: |
+          Unable to determine the post-swap vote account address for identity {{ validator_identity_pubkey.stdout | default('unknown') }}.
+          Preferred source vote account: {{ hostvars[source_host]['source_vote_pubkey'] | default('not available') }}
+          Fallback lookup stdout: {{ vote_account_address_result.stdout | default('') }}
+          Fallback lookup stderr: {{ vote_account_address_result.stderr | default('') }}
+      when:
+        - inventory_hostname == destination_host
+        - post_swap_vote_account_address is not defined or post_swap_vote_account_address == ''
 
     - name: verify - Get vote account data from destination validator
-      ansible.builtin.command: solana vote-account {{ solana_cluster_param }} {{ vote_account_address_result.stdout }} --output json
+      ansible.builtin.command: solana vote-account {{ solana_cluster_param }} {{ post_swap_vote_account_address }} --output json
       register: source_vote_account_after
       when: inventory_hostname == destination_host
       delegate_to: localhost
       changed_when: false
       check_mode: false
+      failed_when: false
+      retries: 20
+      delay: 3
+      until:
+        - source_vote_account_after.rc == 0
+        - source_vote_account_after.stdout is defined
+        - source_vote_account_after.stdout | trim != ''
+
+    - name: verify - Fail if vote account data remains unavailable after swap
+      ansible.builtin.fail:
+        msg: |
+          Failed to read post-swap vote account {{ post_swap_vote_account_address | default('unknown') }}.
+          RC: {{ source_vote_account_after.rc | default('unknown') }}
+          Stdout: {{ source_vote_account_after.stdout | default('') }}
+          Stderr: {{ source_vote_account_after.stderr | default('') }}
+      when:
+        - inventory_hostname == destination_host
+        - source_vote_account_after.rc is not defined or source_vote_account_after.rc != 0
 
     - name: verify - Parse vote account data after swap
       ansible.builtin.set_fact:
@@ -159,6 +287,7 @@
         - vote_account_after is defined
         - vote_account_after.epochVotingHistory is defined
         - vote_account_after.epochVotingHistory | length > 0
+  when: solana_cluster != 'localnet'
 
 - name: verify - Calculate TVC impact
   block:

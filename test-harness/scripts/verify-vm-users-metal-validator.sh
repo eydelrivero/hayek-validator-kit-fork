@@ -454,6 +454,7 @@ ensure_localnet_entrypoint
 echo "[vm-e2e] Running users -> metal-box (kept in requested order)..." >&2
 if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
   echo "[vm-e2e] Preparing temporary sysadmin sudo policy for VM automation..." >&2
+  echo "[vm-e2e] Preparing temporary sysadmin sudo policy on ${TARGET_HOST}..." >&2
   ansible-playbook \
     -i "$BOOTSTRAP_INVENTORY" \
     "$REPO_ROOT/test-harness/ansible/pb_prepare_vm_sysadmin_nopasswd.yml" \
