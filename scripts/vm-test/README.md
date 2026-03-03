@@ -1,8 +1,10 @@
-# VM test harness (macOS Intel + Apple Silicon)
+# VM test harness (macOS + Linux)
 
 This harness spins up disposable Ubuntu VMs with extra disks so you can run the full metal-box playbook safely. It supports:
 - Intel macOS: amd64 Ubuntu images
 - Apple Silicon macOS: arm64 Ubuntu images
+- Linux x86_64: amd64 Ubuntu images (KVM when available)
+- Linux arm64: arm64 Ubuntu images (KVM when available)
 
 Note: `cpu-isolation` is already skipped on non-x86_64, so arm64 runs will not try to modify GRUB.
 
@@ -12,6 +14,13 @@ Note: `cpu-isolation` is already skipped on non-x86_64, so arm64 runs will not t
 - cloud-init ISO tooling (`cloud-localds` or `xorriso`)
 - ssh client
 - ansible
+
+Ubuntu 24.04 package install:
+
+```bash
+sudo apt update
+sudo apt install -y qemu-system-x86 qemu-system-arm qemu-utils cloud-image-utils ansible
+```
 
 If you use UTM, make sure `qemu-system-*` binaries are on your PATH (UTM ships them).
 
@@ -122,6 +131,54 @@ ssh -o IdentitiesOnly=yes -o IdentityAgent=none \
   -i scripts/vm-test/work/id_ed25519 -p 2222 ubuntu@127.0.0.1
 ```
 
+## Quick start (Ubuntu 24.04 / shared bridge)
+
+1) Install the Linux prereqs:
+
+```bash
+sudo apt update
+sudo apt install -y qemu-system-x86 qemu-system-arm qemu-utils cloud-image-utils ansible
+```
+
+2) Download a same-arch cloud image for the host. On x86_64, prefer amd64:
+
+```bash
+mkdir -p scripts/vm-test/work
+curl -L -o scripts/vm-test/work/ubuntu-amd64.img \
+  https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+```
+
+3) Create the host-only bridge and tap devices:
+
+```bash
+./scripts/vm-test/setup-shared-bridge.sh
+```
+
+4) Run the hot-swap verifier with the dedicated entrypoint VM on the same bridge:
+
+```bash
+VM_NETWORK_MODE=shared-bridge \
+VM_LOCALNET_ENTRYPOINT_MODE=vm \
+VM_SOURCE_BRIDGE_IP=192.168.100.11 \
+VM_DESTINATION_BRIDGE_IP=192.168.100.12 \
+ENTRYPOINT_VM_BRIDGE_IP=192.168.100.13 \
+VM_BRIDGE_GATEWAY_IP=192.168.100.1 \
+VM_SOURCE_TAP_IFACE=tap-hvk-src \
+VM_DESTINATION_TAP_IFACE=tap-hvk-dst \
+ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent \
+ENTRYPOINT_VM_SKIP_CLI_INSTALL=auto \
+AGAVE_VERSION=3.1.9 \
+BAM_JITO_VERSION=3.1.9 \
+BUILD_FROM_SOURCE=false \
+./test-harness/scripts/verify-vm-hot-swap.sh \
+  --source-flavor agave \
+  --destination-flavor jito-bam \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+If you intentionally run `--vm-arch arm64` on an x86_64 host, QEMU falls back to TCG emulation. That works only after installing `qemu-system-arm`, and it is materially slower than using an amd64 guest on an amd64 host.
+
 ## Troubleshooting
 
 - QEMU runs in the foreground; use a second terminal for SSH. To stop QEMU, press `Ctrl+A` then `X`.
@@ -206,4 +263,4 @@ ansible-playbook -i scripts/vm-test/inventory.vm.yml scripts/vm-test/verify.yml 
 - The QEMU run scripts forward both `2222 -> 22` and `2522 -> 2522` to avoid lockout after the SSH port changes.
 - If you want different ports, set `SSH_PORT` and `SSH_PORT_ALT` when running the VM scripts.
 - Default VM resources are `CPUS=4`, `RAM_MB=4096`, and disk sizes `40/20/10/5` GiB. Override with env vars as needed.
-- If you see "accel=hvf" errors, remove the `accel=hvf` portion from the run scripts.
+- The QEMU launcher scripts now auto-select `hvf` on macOS, `kvm` on same-arch Linux when `/dev/kvm` is usable, and `tcg` otherwise. Override with `QEMU_ACCEL` or `QEMU_CPU` if you need to force a mode.

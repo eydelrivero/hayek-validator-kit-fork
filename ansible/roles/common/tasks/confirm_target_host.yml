@@ -1,6 +1,7 @@
 ---
 - name: confirm_target_host - Gather facts
   ansible.builtin.setup:
+  become: false
 
 - name: confirm_target_host - Get IP information from ipinfo.io
   ansible.builtin.uri:

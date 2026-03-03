@@ -11,6 +11,10 @@ CPUS=${CPUS:-4}
 EXTRA_HOST_FWDS=${EXTRA_HOST_FWDS:-}
 VM_NETWORK_BACKEND=${VM_NETWORK_BACKEND:-user}
 TAP_IFACE=${TAP_IFACE:-}
+VM_MAC_ADDRESS=${VM_MAC_ADDRESS:-}
+QEMU_BIN=${QEMU_BIN:-qemu-system-x86_64}
+QEMU_ACCEL=${QEMU_ACCEL:-auto}
+QEMU_CPU=${QEMU_CPU:-auto}
 
 if [[ -z "$VM_NAME" ]]; then
   echo "Usage: $0 <vm-name>" >&2
@@ -23,10 +27,40 @@ ACCOUNTS_DISK="$WORK_DIR/${VM_NAME}-accounts.qcow2"
 SNAPSHOTS_DISK="$WORK_DIR/${VM_NAME}-snapshots.qcow2"
 SEED_ISO="$WORK_DIR/${VM_NAME}-seed.iso"
 
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+MACHINE_ACCEL="tcg"
+CPU_MODEL="max"
+
+case "$HOST_OS" in
+  Darwin)
+    MACHINE_ACCEL="hvf"
+    if [[ "$HOST_ARCH" == "x86_64" || "$HOST_ARCH" == "amd64" ]]; then
+      CPU_MODEL="host"
+    fi
+    ;;
+  Linux)
+    if [[ ("$HOST_ARCH" == "x86_64" || "$HOST_ARCH" == "amd64") && -r /dev/kvm && -w /dev/kvm ]]; then
+      MACHINE_ACCEL="kvm"
+      CPU_MODEL="host"
+    fi
+    ;;
+esac
+
+if [[ "$QEMU_ACCEL" != "auto" ]]; then
+  MACHINE_ACCEL="$QEMU_ACCEL"
+fi
+if [[ "$QEMU_CPU" != "auto" ]]; then
+  CPU_MODEL="$QEMU_CPU"
+fi
+
 NET_ARGS=()
 case "$VM_NETWORK_BACKEND" in
   user)
     NIC_ARGS="user,model=virtio-net-pci,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::${SSH_PORT_ALT}-:${GUEST_SSH_PORT_ALT}"
+    if [[ -n "$VM_MAC_ADDRESS" ]]; then
+      NIC_ARGS+=",mac=${VM_MAC_ADDRESS}"
+    fi
     if [[ -n "$EXTRA_HOST_FWDS" ]]; then
       NIC_ARGS+=",${EXTRA_HOST_FWDS}"
     fi
@@ -42,7 +76,7 @@ case "$VM_NETWORK_BACKEND" in
     fi
     NET_ARGS=(
       -netdev "tap,id=net0,ifname=${TAP_IFACE},script=no,downscript=no"
-      -device "virtio-net-pci,netdev=net0"
+      -device "virtio-net-pci,netdev=net0${VM_MAC_ADDRESS:+,mac=${VM_MAC_ADDRESS}}"
     )
     ;;
   *)
@@ -51,9 +85,9 @@ case "$VM_NETWORK_BACKEND" in
     ;;
 esac
 
-qemu-system-x86_64 \
-  -machine q35,accel=hvf \
-  -cpu host \
+exec "$QEMU_BIN" \
+  -machine "q35,accel=${MACHINE_ACCEL}" \
+  -cpu "$CPU_MODEL" \
   -smp "$CPUS" \
   -m "$RAM_MB" \
   -drive file="$SYSTEM_DISK",if=virtio \
