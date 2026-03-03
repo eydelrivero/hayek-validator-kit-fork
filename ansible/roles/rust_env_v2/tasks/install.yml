@@ -4,6 +4,12 @@
     url: https://sh.rustup.rs
     dest: /tmp/rustup-init.sh
     mode: "0755"
+    timeout: 30
+    force: true
+  register: rustup_download
+  retries: 5
+  delay: 5
+  until: rustup_download is succeeded
   become: true
 
 - name: Install Rust using rustup-init
