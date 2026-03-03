@@ -52,7 +52,11 @@ EOF
 fi
 
 if command -v cloud-localds >/dev/null 2>&1; then
-  cloud-localds "$SEED_ISO" "$USER_DATA_TMP" "$META_DATA_TMP" "${NETWORK_CONFIG_ARGS[@]}"
+  cloud_localds_args=("$SEED_ISO" "$USER_DATA_TMP" "$META_DATA_TMP")
+  if ((${#NETWORK_CONFIG_ARGS[@]} > 0)); then
+    cloud_localds_args+=(-N "${NETWORK_CONFIG_ARGS[0]}")
+  fi
+  cloud-localds "${cloud_localds_args[@]}"
 elif command -v xorriso >/dev/null 2>&1; then
   xorriso -as mkisofs -output "$SEED_ISO" -volid cidata -joliet -rock "$USER_DATA_TMP" "$META_DATA_TMP" "${NETWORK_CONFIG_ARGS[@]}"
 else
