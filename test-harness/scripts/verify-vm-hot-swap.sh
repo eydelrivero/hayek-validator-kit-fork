@@ -135,8 +135,10 @@ SOURCE_HOT_SPARE_AFTER=""
 DESTINATION_IDENTITY_AFTER=""
 DESTINATION_PRIMARY_TARGET_AFTER=""
 DESTINATION_HOT_SPARE_AFTER=""
-CATCHUP_SNAPSHOT=""
-GOSSIP_SNAPSHOT=""
+CATCHUP_SNAPSHOT_BEFORE=""
+CATCHUP_SNAPSHOT_AFTER=""
+GOSSIP_SNAPSHOT_BEFORE=""
+GOSSIP_SNAPSHOT_AFTER=""
 EARLY_FAILURE_REASON=""
 ENTRYPOINT_BOOTSTRAP_OUTPUT=""
 REPORT_DIAGNOSIS=""
@@ -1320,6 +1322,9 @@ emit_test_report() {
   local result="${1:-}"
   local report_file="$ARTIFACTS_DIR/test-report.txt"
   local json_report_file="$ARTIFACTS_DIR/test-report.json"
+
+  capture_runtime_diagnostics_if_possible
+
   if [[ -z "$result" ]]; then
     if [[ "$EXEC_OK" == "true" ]]; then
       result="PASS"
@@ -2082,28 +2087,122 @@ capture_host_identity_state() {
   esac
 }
 
-capture_cluster_snapshots() {
+sanitize_snapshot_output() {
+  sed \
+    -e 's/\r$//' \
+    -e '/Permanently added .* to the list of known hosts\./d'
+}
+
+capture_single_host_catchup_snapshot() {
+  local host="$1"
+  local operator_host=""
+  local operator_port=""
   local rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  local output=""
+
+  operator_host="$(vm_operator_host_for "$host")"
+  operator_port="$(vm_operator_port_for "$host")"
+
+  output="$(
+    timeout 25s ssh $SSH_COMMON_ARGS \
+      -o LogLevel=ERROR \
+      -i "$SSH_PRIVATE_KEY_FILE" \
+      -p "$operator_port" \
+      "${VALIDATOR_OPERATOR_USER}@${operator_host}" \
+      "export PATH='/opt/solana/active_release/bin:'\"\$PATH\"; timeout 20s solana catchup -u '$rpc_url' --our-localhost 8899" \
+      2>&1 | sanitize_snapshot_output | sed -n '1,40p' || true
+  )"
+
+  if [[ -z "$output" ]]; then
+    output="No catchup output captured."
+  fi
+
+  printf '%s\n' "$output"
+}
+
+capture_single_gossip_snapshot() {
+  local rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  local output=""
+
+  output="$(
+    solana gossip -u "$rpc_url" 2>&1 | sanitize_snapshot_output | sed -n '1,60p' || true
+  )"
+
+  if [[ -z "$output" ]]; then
+    output="No gossip output captured."
+  fi
+
+  printf '%s\n' "$output"
+}
+
+capture_host_runtime_diagnostic_summary() {
+  local host="$1"
+  local cmd
+  local output
+
+  cmd="set -eu; active=\$(systemctl show sol --property=ActiveState --value --no-pager 2>/dev/null || printf 'unknown'); sub=\$(systemctl show sol --property=SubState --value --no-pager 2>/dev/null || printf 'unknown'); exec_status=\$(systemctl show sol --property=ExecMainStatus --value --no-pager 2>/dev/null || printf 'unknown'); pid=\$(systemctl show sol --property=MainPID --value --no-pager 2>/dev/null || printf 'unknown'); printf 'service=%s/%s/%s pid=%s\n' \"\$active\" \"\$sub\" \"\$exec_status\" \"\$pid\"; ident=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info 2>/dev/null | head -1 | sed 's/^Identity: //' || true); if [ -n \"\$ident\" ]; then printf 'ledger_identity=%s\n' \"\$ident\"; fi; printf -- '-- recent journal --\n'; journalctl -u sol -n 12 --no-pager 2>/dev/null | tail -n 12 || true"
+  output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$cmd" -o 2>&1 | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' | sed 's/\\\\n/\
+/g' || true
+  )"
+
+  if [[ -z "$output" ]]; then
+    output="runtime diagnostic probe failed with no output"
+  fi
+
+  case "$host" in
+    vm-source) HOST_DIAGNOSTIC_VM_SOURCE="$output" ;;
+    vm-destination) HOST_DIAGNOSTIC_VM_DESTINATION="$output" ;;
+  esac
+}
+
+capture_runtime_diagnostics_if_possible() {
+  [[ -f "$OPERATOR_INVENTORY" ]] || return 0
+
+  if [[ -z "$HOST_DIAGNOSTIC_VM_SOURCE" ]]; then
+    capture_host_runtime_diagnostic_summary "vm-source" || true
+  fi
+  if [[ -z "$HOST_DIAGNOSTIC_VM_DESTINATION" ]]; then
+    capture_host_runtime_diagnostic_summary "vm-destination" || true
+  fi
+}
+
+capture_cluster_snapshots() {
+  local stage="$1"
+  local catchup_output=""
+  local gossip_output=""
 
   if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
-    CATCHUP_SNAPSHOT="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
-    GOSSIP_SNAPSHOT="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
-    return 0
+    catchup_output="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
+    gossip_output="Not captured for non-localnet cluster (${SOLANA_CLUSTER})."
+  else
+    catchup_output="$(
+      cat <<EOF
+Source:
+$(capture_single_host_catchup_snapshot "vm-source")
+
+Destination:
+$(capture_single_host_catchup_snapshot "vm-destination")
+EOF
+    )"
+    gossip_output="$(capture_single_gossip_snapshot)"
   fi
 
-  CATCHUP_SNAPSHOT="$(
-    solana catchup -u "$rpc_url" --our-localhost 8899 2>&1 | sed -n '1,40p' || true
-  )"
-  GOSSIP_SNAPSHOT="$(
-    solana gossip -u "$rpc_url" 2>&1 | sed -n '1,60p' || true
-  )"
-
-  if [[ -z "$CATCHUP_SNAPSHOT" ]]; then
-    CATCHUP_SNAPSHOT="No catchup output captured."
-  fi
-  if [[ -z "$GOSSIP_SNAPSHOT" ]]; then
-    GOSSIP_SNAPSHOT="No gossip output captured."
-  fi
+  case "$stage" in
+    before)
+      CATCHUP_SNAPSHOT_BEFORE="${catchup_output:-No catchup output captured.}"
+      GOSSIP_SNAPSHOT_BEFORE="${gossip_output:-No gossip output captured.}"
+      ;;
+    after)
+      CATCHUP_SNAPSHOT_AFTER="${catchup_output:-No catchup output captured.}"
+      GOSSIP_SNAPSHOT_AFTER="${gossip_output:-No gossip output captured.}"
+      ;;
+    *)
+      echo "Unsupported stage for capture_cluster_snapshots: ${stage}" >&2
+      exit 2
+      ;;
+  esac
 }
 
 emit_test_report() {
@@ -2189,14 +2288,25 @@ Observed State
 - Destination version: ${HOST_VERSION_VM_DESTINATION:-not captured}
 
 Runtime Diagnostics
-- Source: ${HOST_DIAGNOSTIC_VM_SOURCE:-not captured}
-- Destination: ${HOST_DIAGNOSTIC_VM_DESTINATION:-not captured}
+Source:
+${HOST_DIAGNOSTIC_VM_SOURCE:-not captured}
 
-Catchup Snapshot
-${CATCHUP_SNAPSHOT:-not captured}
+Destination:
+${HOST_DIAGNOSTIC_VM_DESTINATION:-not captured}
 
-Gossip Snapshot
-${GOSSIP_SNAPSHOT:-not captured}
+Catchup Snapshots
+Before Swap:
+${CATCHUP_SNAPSHOT_BEFORE:-not captured}
+
+After Swap:
+${CATCHUP_SNAPSHOT_AFTER:-not captured}
+
+Gossip Snapshots
+Before Swap:
+${GOSSIP_SNAPSHOT_BEFORE:-not captured}
+
+After Swap:
+${GOSSIP_SNAPSHOT_AFTER:-not captured}
 
 Artifacts
 - Case directory: ${CASE_DIR}
@@ -2261,8 +2371,10 @@ EOF
     --arg destination_identity_after "${DESTINATION_IDENTITY_AFTER:-not captured}" \
     --arg destination_primary_target_after "${DESTINATION_PRIMARY_TARGET_AFTER:-not captured}" \
     --arg destination_hot_spare_after "${DESTINATION_HOT_SPARE_AFTER:-not captured}" \
-    --arg catchup_snapshot "${CATCHUP_SNAPSHOT:-not captured}" \
-    --arg gossip_snapshot "${GOSSIP_SNAPSHOT:-not captured}" \
+    --arg catchup_snapshot_before "${CATCHUP_SNAPSHOT_BEFORE:-not captured}" \
+    --arg catchup_snapshot_after "${CATCHUP_SNAPSHOT_AFTER:-not captured}" \
+    --arg gossip_snapshot_before "${GOSSIP_SNAPSHOT_BEFORE:-not captured}" \
+    --arg gossip_snapshot_after "${GOSSIP_SNAPSHOT_AFTER:-not captured}" \
     --arg report_diagnosis "${REPORT_DIAGNOSIS:-No additional diagnosis captured.}" \
     --arg case_dir "$CASE_DIR" \
     --arg source_qemu_log "$SRC_QEMU_LOG" \
@@ -2369,8 +2481,14 @@ EOF
       },
       diagnosis: $report_diagnosis,
       cluster_snapshots: {
-        catchup: $catchup_snapshot,
-        gossip: $gossip_snapshot
+        catchup: {
+          before: $catchup_snapshot_before,
+          after: $catchup_snapshot_after
+        },
+        gossip: {
+          before: $gossip_snapshot_before,
+          after: $gossip_snapshot_after
+        }
       },
       artifacts: {
         case_dir: $case_dir,
@@ -2421,6 +2539,8 @@ capture_host_identity_state "vm-destination" "before"
 echo "[vm-hot-swap] Verifying pre-swap flavors..." >&2
 assert_host_validator_runtime "vm-source"
 assert_host_validator_runtime "vm-destination"
+capture_host_runtime_diagnostic_summary "vm-source"
+capture_host_runtime_diagnostic_summary "vm-destination"
 assert_host_client "vm-source" "$SOURCE_FLAVOR"
 assert_host_client "vm-destination" "$DESTINATION_FLAVOR"
 echo "[vm-hot-swap] Waiting for validators to finish catchup..." >&2
@@ -2428,6 +2548,7 @@ wait_for_host_validator_catchup "vm-source"
 wait_for_host_validator_catchup "vm-destination"
 echo "[vm-hot-swap] Waiting for source validator tower file..." >&2
 wait_for_source_tower_file
+capture_cluster_snapshots "before"
 PRE_SWAP_VERIFIED=true
 PRE_SWAP_VERIFY_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
@@ -2458,10 +2579,12 @@ capture_host_identity_state "vm-destination" "after"
 echo "[vm-hot-swap] Verifying post-swap flavors..." >&2
 assert_host_validator_runtime "vm-source"
 assert_host_validator_runtime "vm-destination"
+capture_host_runtime_diagnostic_summary "vm-source"
+capture_host_runtime_diagnostic_summary "vm-destination"
 assert_host_client "vm-source" "$SOURCE_FLAVOR"
 assert_host_client "vm-destination" "$DESTINATION_FLAVOR"
 POST_SWAP_VERIFIED=true
-capture_cluster_snapshots
+capture_cluster_snapshots "after"
 POST_SWAP_VERIFY_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
 EXEC_OK=true
