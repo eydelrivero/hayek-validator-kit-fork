@@ -78,6 +78,128 @@ This flow performs:
 - flavor setup (`pb_setup_validator_agave` / `pb_setup_validator_jito_v2`)
 - `pb_hot_swap_validator_hosts_v2`
 
+### VM L2 Guardrail Suite
+
+For adversarial VM checks that assert swap guardrails (expected failures), use:
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-l2-guardrails.sh \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+To run a single adversarial case during iteration:
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-l2-guardrails.sh \
+  --only-case catchup_guard_entrypoint_down \
+  --stop-on-error \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+L2 defaults to:
+- `VM_NETWORK_MODE=shared-bridge`
+- `VM_LOCALNET_ENTRYPOINT_MODE=vm`
+- `SHARED_ENTRYPOINT_VM=true` (reuse a single entrypoint VM across L2 cases)
+- `REUSE_PREPARED_VMS=true` (prepare source/destination once, then run each case from qcow2 overlays)
+- bridge/tap tuple:
+  - source `192.168.100.11` / `tap-hvk-src`
+  - destination `192.168.100.12` / `tap-hvk-dst`
+  - entrypoint `192.168.100.13` / `tap-hvk-ent`
+  - gateway `192.168.100.1`
+
+These can still be overridden via environment variables.
+Use `--no-shared-entrypoint` to force per-case entrypoint VM isolation.
+Use `--no-vm-reuse` to disable prepared source/destination cache reuse.
+Use `--refresh-vm-reuse` to rebuild the prepared cache before running cases.
+Use `--inspect-on-instability` to pause before the automatic cache-refresh retry when a recoverable warmup/catchup instability is detected.
+In inspect mode, L2 forces `--retain-on-failure` for that run so failed-attempt VMs remain reachable for SSH inspection.
+
+Example debug run (single case):
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-l2-guardrails.sh \
+  --only-case swap_precheck_interhost_ssh_blocked \
+  --stop-on-error \
+  --inspect-on-instability \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+Current L2 cases:
+- Catchup gate blocks swap when entrypoint RPC is intentionally stopped before pre-swap checks.
+- Swap precheck fails when destination `primary-target-identity.json` is intentionally mismatched.
+- Swap precheck fails when source-to-destination SSH (`:2522`) is intentionally blocked.
+
+These tests rely on `PRE_SWAP_INJECTION_MODE` hooks in `verify-vm-hot-swap.sh` and assert:
+- harness exits non-zero
+- `checks_passed.pre_swap_runtime_and_client` matches expectation
+- `checks_passed.hot_swap_playbook_completed` matches expectation
+- expected failure signal appears in console/report output
+
+### VM L3 End-to-End Suite
+
+For slow end-to-end regression runs:
+
+Canary single case:
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-l3-e2e.sh \
+  --mode canary \
+  --source-flavor agave \
+  --destination-flavor jito-bam \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+Full flavor matrix:
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-l3-e2e.sh \
+  --mode matrix \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+L3 uses the same shared-bridge + entrypoint-VM defaults as L2.
+Unlike L2, shared entrypoint reuse is disabled by default in L3; enable with `--shared-entrypoint`.
+L3 now reuses prepared source/destination VM caches by default (per flavor-pair and image/arch key):
+- disable with `--no-vm-reuse`
+- force rebuild with `--refresh-vm-reuse`
+- override cache namespace with `--prepared-cache-key <text>`
+
+### VM Run Retention / Disk Control
+
+To avoid manual cleanup during repeated VM runs, L2/L3 now auto-prune old run directories before execution:
+- keep newest `6` runs per suite root
+- additionally prune oldest runs until at least `40GB` is free under `test-harness/work`
+- cache directories prefixed with `_` (for example `_shared-entrypoint-vm`, `_prepared-vms`) are preserved by the pruner
+
+Override via environment or flags:
+- `PRUNE_OLD_RUNS=false` or `--no-prune`
+- `PRUNE_KEEP_RUNS=<n>` or `--prune-keep-runs <n>`
+- `PRUNE_MIN_FREE_GB=<n>` or `--prune-min-free-gb <n>`
+- `KILL_STALE_QEMU=false` or `--no-kill-stale-qemu` (default behavior is to clear stale QEMU processes that still hold the shared tap interfaces)
+
+You can also run the pruner directly:
+
+```bash
+./test-harness/scripts/prune-vm-test-runs.sh \
+  --work-root test-harness/work \
+  --keep-runs 6 \
+  --min-free-gb 40
+```
+
+### VM Directory Ownership
+
+Current split is intentional and should stay for now:
+- `scripts/vm-test/`: substrate primitives (qemu launchers, disk/seed/network helpers, cloud-init assets).
+- `test-harness/`: suite orchestration (scenarios, profiles, matrix/suite runners, reporting, CI-facing entrypoints).
+
+This keeps VM runtime mechanics reusable outside harness flows while letting the
+harness evolve independently as a test suite.
+
 ### VM Localnet Entrypoint Behavior
 
 For `SOLANA_CLUSTER=localnet`, VM verifier scripts now load cluster-specific vars from:

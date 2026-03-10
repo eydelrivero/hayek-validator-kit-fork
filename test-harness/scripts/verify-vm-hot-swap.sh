@@ -18,6 +18,7 @@ VM_DISK_ACCOUNTS_GB="${VM_DISK_ACCOUNTS_GB:-10}"
 VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-5}"
 VM_QEMU_EFI="${VM_QEMU_EFI:-}"
 VM_NETWORK_MODE="${VM_NETWORK_MODE:-usernet}"
+VM_BRIDGE_NAME="${VM_BRIDGE_NAME:-br-hvk}"
 VM_BRIDGE_CIDR_PREFIX="${VM_BRIDGE_CIDR_PREFIX:-24}"
 VM_BRIDGE_GATEWAY_IP="${VM_BRIDGE_GATEWAY_IP:-}"
 VM_BRIDGE_DNS_IP="${VM_BRIDGE_DNS_IP:-}"
@@ -48,6 +49,8 @@ CITY_GROUP_VARS_FILE="${CITY_GROUP_VARS_FILE:-$REPO_ROOT/ansible/group_vars/${CI
 SWAP_EPOCH_END_THRESHOLD_SEC="${SWAP_EPOCH_END_THRESHOLD_SEC:-0}"
 PRE_SWAP_CATCHUP_TIMEOUT_SEC="${PRE_SWAP_CATCHUP_TIMEOUT_SEC:-900}"
 PRE_SWAP_TOWER_TIMEOUT_SEC="${PRE_SWAP_TOWER_TIMEOUT_SEC:-120}"
+REUSE_RUNTIME_READY_TIMEOUT_SEC="${REUSE_RUNTIME_READY_TIMEOUT_SEC:-900}"
+PRE_SWAP_INJECTION_MODE="${PRE_SWAP_INJECTION_MODE:-none}"
 VM_AUTHORIZED_IP="${VM_AUTHORIZED_IP:-10.0.2.2}"
 SSH_COMMON_ARGS="${SSH_COMMON_ARGS:--o IdentitiesOnly=yes -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no}"
 ENABLE_VM_TEST_SYSADMIN_NOPASSWD="${ENABLE_VM_TEST_SYSADMIN_NOPASSWD:-true}"
@@ -75,6 +78,13 @@ ENTRYPOINT_VM_GUEST_GOSSIP_PORT="${ENTRYPOINT_VM_GUEST_GOSSIP_PORT:-8001}"
 ENTRYPOINT_VM_GUEST_FAUCET_PORT="${ENTRYPOINT_VM_GUEST_FAUCET_PORT:-9900}"
 ENTRYPOINT_VM_BASE_IMAGE="${ENTRYPOINT_VM_BASE_IMAGE:-}"
 ENTRYPOINT_VM_SKIP_CLI_INSTALL="${ENTRYPOINT_VM_SKIP_CLI_INSTALL:-auto}"
+SHARED_ENTRYPOINT_VM="${SHARED_ENTRYPOINT_VM:-false}"
+VM_SOURCE_DISK_PARENT_PREFIX="${VM_SOURCE_DISK_PARENT_PREFIX:-}"
+VM_DESTINATION_DISK_PARENT_PREFIX="${VM_DESTINATION_DISK_PARENT_PREFIX:-}"
+VM_PREPARE_ONLY="${VM_PREPARE_ONLY:-false}"
+VM_PREPARE_EXPORT_DIR="${VM_PREPARE_EXPORT_DIR:-}"
+VM_ENTRYPOINT_PREPARE_ONLY="${VM_ENTRYPOINT_PREPARE_ONLY:-false}"
+PREPARED_VM_REUSE_MODE=false
 ENTRYPOINT_VM_BRIDGE_IP="${ENTRYPOINT_VM_BRIDGE_IP:-}"
 ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-}"
 ENTRYPOINT_VM_MAC_ADDRESS="${ENTRYPOINT_VM_MAC_ADDRESS:-52:54:00:10:00:13}"
@@ -188,6 +198,14 @@ Optional:
   --destination-ssh-port-alt <int>   (default: 3522)
   --retain-always
   --retain-on-failure
+
+Environment:
+  PRE_SWAP_INJECTION_MODE=none|stop_source_validator_service|mismatch_destination_primary_identity|block_source_to_destination_ssh
+    (backward-compat alias: stop_entrypoint_rpc)
+  SHARED_ENTRYPOINT_VM=true|false (default: false; keeps a shared entrypoint VM under <workdir> across runs)
+  VM_SOURCE_DISK_PARENT_PREFIX=<abs-prefix> and VM_DESTINATION_DISK_PARENT_PREFIX=<abs-prefix> (reuse prepared source/destination disks via qcow2 overlays)
+  VM_PREPARE_ONLY=true with VM_PREPARE_EXPORT_DIR=<dir> (prepare source/destination VM disks and exit before swap)
+  VM_ENTRYPOINT_PREPARE_ONLY=true (prepare shared entrypoint VM cache [CLI + launcher], do not start localnet runtime)
 EOF
 }
 
@@ -258,6 +276,14 @@ if [[ -z "$SOURCE_FLAVOR" || -z "$DESTINATION_FLAVOR" ]]; then
   exit 2
 fi
 
+if [[ -n "$VM_SOURCE_DISK_PARENT_PREFIX" || -n "$VM_DESTINATION_DISK_PARENT_PREFIX" ]]; then
+  if [[ -z "$VM_SOURCE_DISK_PARENT_PREFIX" || -z "$VM_DESTINATION_DISK_PARENT_PREFIX" ]]; then
+    echo "Both VM_SOURCE_DISK_PARENT_PREFIX and VM_DESTINATION_DISK_PARENT_PREFIX must be set together." >&2
+    exit 2
+  fi
+  PREPARED_VM_REUSE_MODE=true
+fi
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -266,7 +292,7 @@ require_cmd() {
   fi
 }
 
-for cmd in ansible-playbook ansible jq qemu-img ssh-keygen; do
+for cmd in ansible-playbook ansible jq qemu-img ssh-keygen ssh-keyscan; do
   require_cmd "$cmd"
 done
 
@@ -459,6 +485,52 @@ vm_uses_shared_bridge() {
   [[ "${VM_NETWORK_MODE}" == "shared-bridge" ]]
 }
 
+assert_shared_bridge_network_ready() {
+  local missing=false
+  local iface
+  local required_ifaces=("$VM_SOURCE_TAP_IFACE" "$VM_DESTINATION_TAP_IFACE")
+
+  if ! vm_uses_shared_bridge; then
+    return 0
+  fi
+
+  if ! command -v ip >/dev/null 2>&1; then
+    echo "VM_NETWORK_MODE=shared-bridge requires the 'ip' command (iproute2)." >&2
+    exit 3
+  fi
+
+  if ! ip link show "$VM_BRIDGE_NAME" >/dev/null 2>&1; then
+    echo "[vm-hot-swap] Missing shared bridge interface: ${VM_BRIDGE_NAME}" >&2
+    missing=true
+  fi
+
+  if entrypoint_mode_uses_vm; then
+    required_ifaces+=("$ENTRYPOINT_VM_TAP_IFACE")
+  fi
+
+  for iface in "${required_ifaces[@]}"; do
+    if [[ -z "$iface" ]]; then
+      continue
+    fi
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+      echo "[vm-hot-swap] Missing shared-bridge TAP interface: ${iface}" >&2
+      missing=true
+    fi
+  done
+
+  if [[ "$missing" == "true" ]]; then
+    EARLY_FAILURE_REASON="Shared bridge/tap networking is not ready"
+    ENTRYPOINT_BOOTSTRAP_OUTPUT="Missing bridge/tap interfaces for VM_NETWORK_MODE=shared-bridge"
+    cat >&2 <<EOF
+[vm-hot-swap] Shared bridge/tap networking is not ready.
+[vm-hot-swap] Recreate it with:
+  ./scripts/vm-test/setup-shared-bridge.sh
+[vm-hot-swap] If that asks for privileges, run it with sudo.
+EOF
+    exit 3
+  fi
+}
+
 vm_bootstrap_host_for() {
   local host="$1"
   if vm_uses_shared_bridge; then
@@ -538,6 +610,52 @@ derive_report_diagnosis() {
   fi
 }
 
+wait_for_ssh_or_qemu_exit() {
+  local label="$1"
+  local host="$2"
+  local port="$3"
+  local timeout="$4"
+  local pid_file="$5"
+  local qemu_log="$6"
+  local start_ts now elapsed pid=""
+  local qemu_log_tail=""
+
+  start_ts="$(date +%s)"
+  while true; do
+    if ssh-keyscan -T 5 -p "$port" "$host" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      qemu_log_tail="$(tail -n 120 "$qemu_log" 2>/dev/null || true)"
+      EARLY_FAILURE_REASON="${label} QEMU process exited before SSH became reachable at ${host}:${port}."
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="${qemu_log_tail:-qemu log not captured}"
+      echo "[vm-hot-swap] ${label} QEMU process exited before SSH became reachable at ${host}:${port}." >&2
+      echo "[vm-hot-swap] Last ${label} QEMU log lines:" >&2
+      if [[ -n "$qemu_log_tail" ]]; then
+        printf '%s\n' "$qemu_log_tail" >&2
+      fi
+      exit 4
+    fi
+
+    now="$(date +%s)"
+    elapsed=$((now - start_ts))
+    if (( elapsed >= timeout )); then
+      qemu_log_tail="$(tail -n 120 "$qemu_log" 2>/dev/null || true)"
+      EARLY_FAILURE_REASON="Timeout waiting for ${label} SSH at ${host}:${port} (${timeout}s)"
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="${qemu_log_tail:-qemu log not captured}"
+      echo "[vm-hot-swap] Timeout waiting for ${label} SSH at ${host}:${port} (${timeout}s)." >&2
+      echo "[vm-hot-swap] Last ${label} QEMU log lines:" >&2
+      if [[ -n "$qemu_log_tail" ]]; then
+        printf '%s\n' "$qemu_log_tail" >&2
+      fi
+      exit 4
+    fi
+    sleep 1
+  done
+}
+
 is_local_address() {
   local host="${1,,}"
   [[ "$host" == "127.0.0.1" || "$host" == "localhost" || "$host" == "0.0.0.0" ]]
@@ -553,7 +671,7 @@ kill_stale_localnet_entrypoint_listener_pids() {
   local pid
   for pid in $(
     lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
-      | awk 'NR > 1 && ($0 ~ /solana-test-validator/ || $0 ~ /agave-test-validator/) { print $2 }' \
+      | awk 'NR > 1 && ($0 ~ /solana-test-validator/) { print $2 }' \
       | sort -u
   ); do
     if [[ -n "$pid" ]]; then
@@ -914,6 +1032,7 @@ ensure_entrypoint_vm_localnet_service() {
   local rpc_url
   local tries=0
   local install_output=""
+  local install_log_file=""
   local copy_output=""
   local start_output=""
   local entrypoint_bootstrap_host
@@ -921,28 +1040,47 @@ ensure_entrypoint_vm_localnet_service() {
   local entrypoint_operator_port
   local cli_probe_cmd
   local skip_cli_install=false
+  local entrypoint_pid=""
 
   rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
-  if [[ -f "$ENTRYPOINT_VM_PID_FILE" ]] && kill -0 "$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)" >/dev/null 2>&1 && localnet_rpc_ready "$rpc_url"; then
-    capture_entrypoint_vm_log
-    return 0
-  fi
-
   entrypoint_bootstrap_host="$(vm_bootstrap_host_for vm-entrypoint)"
   entrypoint_bootstrap_port="$(vm_bootstrap_port_for vm-entrypoint)"
   entrypoint_operator_port="$(vm_operator_port_for vm-entrypoint)"
+
+  if [[ -f "$ENTRYPOINT_VM_PID_FILE" ]]; then
+    entrypoint_pid="$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$entrypoint_pid" ]] && kill -0 "$entrypoint_pid" >/dev/null 2>&1; then
+    if localnet_rpc_ready "$rpc_url"; then
+      capture_entrypoint_vm_log
+      return 0
+    fi
+
+    if ! "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" 20 >/dev/null 2>&1; then
+      echo "[vm-hot-swap] Existing entrypoint VM process ${entrypoint_pid} is unhealthy (SSH unreachable); restarting it." >&2
+      kill "$entrypoint_pid" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "$entrypoint_pid" >/dev/null 2>&1; then
+        kill -9 "$entrypoint_pid" >/dev/null 2>&1 || true
+      fi
+      rm -f "$ENTRYPOINT_VM_PID_FILE"
+      entrypoint_pid=""
+    fi
+  fi
+
   if vm_uses_shared_bridge; then
     extra_host_fwds=""
   else
     extra_host_fwds="hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_RPC_PORT}-:${ENTRYPOINT_VM_GUEST_RPC_PORT},hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}-:${ENTRYPOINT_VM_GUEST_GOSSIP_PORT},hostfwd=udp::${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}-:${ENTRYPOINT_VM_GUEST_GOSSIP_PORT},hostfwd=tcp::${VM_LOCALNET_ENTRYPOINT_FAUCET_PORT}-:${ENTRYPOINT_VM_GUEST_FAUCET_PORT}"
   fi
 
-  if [[ ! -f "$ENTRYPOINT_VM_PID_FILE" ]] || ! kill -0 "$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)" >/dev/null 2>&1; then
+  if [[ -z "$entrypoint_pid" ]] || ! kill -0 "$entrypoint_pid" >/dev/null 2>&1; then
     echo "[vm-hot-swap] Starting isolated entrypoint VM..." >&2
     start_vm "vm-entrypoint" "$ENTRYPOINT_VM_NAME" "$ENTRYPOINT_VM_DIR" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" "$entrypoint_operator_port" "$ENTRYPOINT_VM_QEMU_LOG" "$ENTRYPOINT_VM_PID_FILE" "$(vm_tap_iface_for vm-entrypoint)" "$extra_host_fwds" "$ENTRYPOINT_VM_BASE_IMAGE"
   fi
 
-  cli_probe_cmd="[ -x /opt/solana/active_release/bin/solana-test-validator ] || [ -x /opt/solana/active_release/bin/agave-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/agave-test-validator ]"
+  cli_probe_cmd="[ -x /opt/solana/active_release/bin/solana-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator ]"
   case "$ENTRYPOINT_VM_SKIP_CLI_INSTALL" in
     true)
       skip_cli_install=true
@@ -964,26 +1102,28 @@ ensure_entrypoint_vm_localnet_service() {
 
   if [[ "$skip_cli_install" != "true" ]]; then
     echo "[vm-hot-swap] Ensuring Agave CLI is available inside the isolated entrypoint VM..." >&2
-    install_output="$(
-      ansible-playbook \
-        -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" \
-        "$REPO_ROOT/ansible/playbooks/pb_install_solana_cli_agave.yml" \
-        -e "@$REPO_ROOT/ansible/group_vars/all.yml" \
-        -e "@$REPO_ROOT/ansible/group_vars/solana.yml" \
-        -e "@$REPO_ROOT/ansible/group_vars/solana_localnet.yml" \
-        -e "solana_cluster=localnet" \
-        -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
-        -e "target_host=vm-entrypoint" \
-        -e "operator_user=$BOOTSTRAP_USER" \
-        -e "agave_version=$AGAVE_VERSION" \
-        -e "build_from_source=$BUILD_FROM_SOURCE" 2>&1
-    )" || {
+    install_log_file="$ARTIFACTS_DIR/entrypoint-cli-install.log"
+    : >"$install_log_file"
+    echo "[vm-hot-swap] Entrypoint CLI install log: $install_log_file" >&2
+    if ! ansible-playbook \
+      -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" \
+      "$REPO_ROOT/ansible/playbooks/pb_install_solana_cli_agave.yml" \
+      -e "@$REPO_ROOT/ansible/group_vars/all.yml" \
+      -e "@$REPO_ROOT/ansible/group_vars/solana.yml" \
+      -e "@$REPO_ROOT/ansible/group_vars/solana_localnet.yml" \
+      -e "solana_cluster=localnet" \
+      -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
+      -e "target_host=vm-entrypoint" \
+      -e "operator_user=$BOOTSTRAP_USER" \
+      -e "agave_version=$AGAVE_VERSION" \
+      -e "build_from_source=$BUILD_FROM_SOURCE" 2>&1 | tee -a "$install_log_file"; then
       EARLY_FAILURE_REASON="Failed to install Agave CLI in isolated entrypoint VM"
-      ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$install_output" | tail -n 80)"
+      install_output="$(tail -n 80 "$install_log_file" 2>/dev/null || true)"
+      ENTRYPOINT_BOOTSTRAP_OUTPUT="${install_output:-not captured}"
       echo "$EARLY_FAILURE_REASON" >&2
       echo "$ENTRYPOINT_BOOTSTRAP_OUTPUT" >&2
       exit 1
-    }
+    fi
   else
     echo "[vm-hot-swap] Reusing preinstalled Solana CLI in the isolated entrypoint VM." >&2
   fi
@@ -999,10 +1139,15 @@ ensure_entrypoint_vm_localnet_service() {
     exit 1
   }
 
+  if [[ "$VM_ENTRYPOINT_PREPARE_ONLY" == "true" ]]; then
+    echo "[vm-hot-swap] Prepared shared entrypoint VM cache (CLI + launcher only); skipping localnet runtime start." >&2
+    return 0
+  fi
+
   echo "[vm-hot-swap] Starting localnet entrypoint inside the isolated entrypoint VM..." >&2
   start_output="$(
     ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
-      -m shell -a "pkill -P 1 -f '/usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh|solana-test-validator|agave-test-validator' >/dev/null 2>&1 || true; export PATH='/opt/solana/active_release/bin:/home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin:'\"\$PATH\"; export SLOTS_PER_EPOCH='${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH}'; export LIMIT_LEDGER_SIZE='${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE}'; export DYNAMIC_PORT_RANGE='${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}'; export RPC_PORT='${ENTRYPOINT_VM_GUEST_RPC_PORT}'; export FAUCET_PORT='${ENTRYPOINT_VM_GUEST_FAUCET_PORT}'; export BIND_ADDRESS='0.0.0.0'; export GOSSIP_HOST=\"\$(hostname -I | awk '{print \$1}')\"; export GOSSIP_PORT='${ENTRYPOINT_VM_GUEST_GOSSIP_PORT}'; export LEDGER_DIR='/var/tmp/test-ledger'; export RESET_FLAG='--reset'; nohup /usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh >/var/tmp/localnet-entrypoint.log 2>&1 </dev/null &" -o 2>&1
+      -m shell -a "pkill -P 1 -f '/usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh|solana-test-validator' >/dev/null 2>&1 || true; export PATH='/opt/solana/active_release/bin:/home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin:'\"\$PATH\"; export SLOTS_PER_EPOCH='${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH}'; export LIMIT_LEDGER_SIZE='${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE}'; export DYNAMIC_PORT_RANGE='${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}'; export RPC_PORT='${ENTRYPOINT_VM_GUEST_RPC_PORT}'; export FAUCET_PORT='${ENTRYPOINT_VM_GUEST_FAUCET_PORT}'; export BIND_ADDRESS='0.0.0.0'; export GOSSIP_HOST=\"\$(hostname -I | awk '{print \$1}')\"; export GOSSIP_PORT='${ENTRYPOINT_VM_GUEST_GOSSIP_PORT}'; export LEDGER_DIR='/var/tmp/test-ledger'; export RESET_FLAG='--reset'; nohup /usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh >/var/tmp/localnet-entrypoint.log 2>&1 </dev/null &" -o 2>&1
   )" || {
     EARLY_FAILURE_REASON="Failed to start localnet entrypoint inside isolated entrypoint VM"
     ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$start_output" | tail -n 80)"
@@ -1298,6 +1443,33 @@ assert_host_can_query_localnet_entrypoint() {
   fi
 }
 
+sync_host_expected_genesis_hash() {
+  local host="$1"
+  local update_cmd
+  local output
+  local rc=0
+
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
+    return 0
+  fi
+  if [[ -z "${LOCALNET_ENTRYPOINT_GENESIS_HASH:-}" ]]; then
+    echo "[vm-hot-swap] Localnet genesis hash not captured yet; cannot align host ${host}." >&2
+    exit 1
+  fi
+
+  update_cmd="set -eu; script='/opt/validator/scripts/run-${VALIDATOR_NAME}.sh'; if [ ! -f \"\$script\" ]; then echo \"missing startup script: \$script\" >&2; exit 1; fi; if grep -q -- '--expected-genesis-hash ${LOCALNET_ENTRYPOINT_GENESIS_HASH}' \"\$script\"; then echo 'already-aligned'; exit 0; fi; sed -i -E \"s#(--expected-genesis-hash[[:space:]]+)[^[:space:]\\\\]+#\\1${LOCALNET_ENTRYPOINT_GENESIS_HASH}#g\" \"\$script\"; grep -q -- '--expected-genesis-hash ${LOCALNET_ENTRYPOINT_GENESIS_HASH}' \"\$script\"; systemctl daemon-reload; systemctl restart sol; echo 'updated-and-restarted'"
+  output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$update_cmd" -o 2>&1
+  )" || rc=$?
+
+  if (( rc != 0 )); then
+    echo "[vm-hot-swap] Failed to align expected genesis hash on ${host}." >&2
+    echo "$output" >&2
+    exit 1
+  fi
+}
+
 CASE_DIR="$WORKDIR/$RUN_ID"
 SRC_VM_NAME="hvk-src-${RUN_ID}"
 DST_VM_NAME="hvk-dst-${RUN_ID}"
@@ -1318,12 +1490,24 @@ ENTRYPOINT_VM_BOOTSTRAP_INVENTORY="$CASE_DIR/inventory.entrypoint.bootstrap.yml"
 LOCALNET_ENTRYPOINT_PID_FILE="$CASE_DIR/localnet-entrypoint.pid"
 LOCALNET_ENTRYPOINT_LOG="$ARTIFACTS_DIR/localnet-entrypoint.log"
 
+if [[ "$SHARED_ENTRYPOINT_VM" == "true" ]]; then
+  SHARED_ENTRYPOINT_ROOT="$WORKDIR/_shared-entrypoint-vm"
+  ENTRYPOINT_VM_NAME="hvk-entry-shared-${VM_ARCH}"
+  ENTRYPOINT_VM_DIR="$SHARED_ENTRYPOINT_ROOT/vm"
+  ENTRYPOINT_VM_QEMU_LOG="$SHARED_ENTRYPOINT_ROOT/entrypoint-qemu.log"
+  ENTRYPOINT_VM_PID_FILE="$SHARED_ENTRYPOINT_ROOT/entrypoint-qemu.pid"
+  ENTRYPOINT_VM_BOOTSTRAP_INVENTORY="$SHARED_ENTRYPOINT_ROOT/inventory.entrypoint.bootstrap.yml"
+  mkdir -p "$ENTRYPOINT_VM_DIR"
+fi
+
 emit_test_report() {
   local result="${1:-}"
   local report_file="$ARTIFACTS_DIR/test-report.txt"
   local json_report_file="$ARTIFACTS_DIR/test-report.json"
 
-  capture_runtime_diagnostics_if_possible
+  if declare -f capture_runtime_diagnostics_if_possible >/dev/null 2>&1; then
+    capture_runtime_diagnostics_if_possible
+  fi
 
   if [[ -z "$result" ]]; then
     if [[ "$EXEC_OK" == "true" ]]; then
@@ -1333,7 +1517,6 @@ emit_test_report() {
     fi
   fi
   TOTAL_DURATION_SEC=$(( $(date +%s) - SCRIPT_START_TS ))
-  derive_report_diagnosis
   derive_report_diagnosis
 
   cat >"$report_file" <<EOF
@@ -1498,10 +1681,12 @@ kill_conflicting_qemu_listener() {
 }
 
 cleanup() {
-  capture_container_entrypoint_log || true
-  capture_entrypoint_vm_log || true
-  stop_container_localnet_entrypoint_if_started
-  stop_localnet_entrypoint_if_started
+  if [[ "$VM_ENTRYPOINT_PREPARE_ONLY" != "true" ]]; then
+    capture_container_entrypoint_log || true
+    capture_entrypoint_vm_log || true
+    stop_container_localnet_entrypoint_if_started
+    stop_localnet_entrypoint_if_started
+  fi
   if [[ "${REPORT_EMITTED:-false}" != "true" && -n "${ARTIFACTS_DIR:-}" && -d "${ARTIFACTS_DIR:-}" ]]; then
     emit_test_report || true
   fi
@@ -1515,7 +1700,9 @@ cleanup() {
     echo "[vm-hot-swap] retaining VM processes/artifacts at $CASE_DIR" >&2
     return 0
   fi
-  cleanup_vm "$ENTRYPOINT_VM_PID_FILE"
+  if [[ "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
+    cleanup_vm "$ENTRYPOINT_VM_PID_FILE"
+  fi
   cleanup_vm "$SRC_PID_FILE"
   cleanup_vm "$DST_PID_FILE"
 }
@@ -1539,6 +1726,26 @@ if [[ ! -x "$RUN_SCRIPT" ]]; then
   exit 3
 fi
 
+assert_disk_parent_prefix_ready() {
+  local prefix="$1"
+  local label="$2"
+  local path
+  for suffix in ".qcow2" "-ledger.qcow2" "-accounts.qcow2" "-snapshots.qcow2"; do
+    path="${prefix}${suffix}"
+    if [[ ! -r "$path" ]]; then
+      echo "[vm-hot-swap] Missing ${label} parent disk: $path" >&2
+      exit 3
+    fi
+  done
+}
+
+if [[ -n "$VM_SOURCE_DISK_PARENT_PREFIX" ]]; then
+  assert_disk_parent_prefix_ready "$VM_SOURCE_DISK_PARENT_PREFIX" "source"
+fi
+if [[ -n "$VM_DESTINATION_DISK_PARENT_PREFIX" ]]; then
+  assert_disk_parent_prefix_ready "$VM_DESTINATION_DISK_PARENT_PREFIX" "destination"
+fi
+
 start_vm() {
   local vm_role="$1"
   local vm_name="$2"
@@ -1551,7 +1758,10 @@ start_vm() {
   local tap_iface="$9"
   local extra_host_fwds="${10:-}"
   local base_image="${11:-$VM_BASE_IMAGE}"
+  local disk_parent_prefix="${12:-}"
+  local ssh_wait_port="${13:-$ssh_port}"
   local vm_mac_address
+  local reuse_existing_disks=false
 
   vm_mac_address="$(vm_mac_address_for "$vm_role")"
 
@@ -1566,12 +1776,37 @@ start_vm() {
   else
     WORK_DIR="$vm_dir" "$REPO_ROOT/scripts/vm-test/make-seed.sh" "$vm_name" "$SSH_PUBLIC_KEY"
   fi
-  WORK_DIR="$vm_dir" \
-  VM_DISK_SYSTEM_GB="$VM_DISK_SYSTEM_GB" \
-  VM_DISK_LEDGER_GB="$VM_DISK_LEDGER_GB" \
-  VM_DISK_ACCOUNTS_GB="$VM_DISK_ACCOUNTS_GB" \
-  VM_DISK_SNAPSHOTS_GB="$VM_DISK_SNAPSHOTS_GB" \
-  "$REPO_ROOT/scripts/vm-test/create-disks.sh" "$VM_ARCH" "$vm_name" "$base_image"
+
+  if [[ "$vm_role" == "vm-entrypoint" && "$SHARED_ENTRYPOINT_VM" == "true" ]] \
+    && [[ -z "$disk_parent_prefix" ]] \
+    && [[ -r "$vm_dir/${vm_name}.qcow2" ]] \
+    && [[ -r "$vm_dir/${vm_name}-ledger.qcow2" ]] \
+    && [[ -r "$vm_dir/${vm_name}-accounts.qcow2" ]] \
+    && [[ -r "$vm_dir/${vm_name}-snapshots.qcow2" ]]; then
+    reuse_existing_disks=true
+  fi
+
+  if [[ -n "$disk_parent_prefix" ]]; then
+    WORK_DIR="$vm_dir" \
+    VM_DISK_SYSTEM_GB="$VM_DISK_SYSTEM_GB" \
+    VM_DISK_LEDGER_GB="$VM_DISK_LEDGER_GB" \
+    VM_DISK_ACCOUNTS_GB="$VM_DISK_ACCOUNTS_GB" \
+    VM_DISK_SNAPSHOTS_GB="$VM_DISK_SNAPSHOTS_GB" \
+    VM_DISK_SYSTEM_PARENT="${disk_parent_prefix}.qcow2" \
+    VM_DISK_LEDGER_PARENT="${disk_parent_prefix}-ledger.qcow2" \
+    VM_DISK_ACCOUNTS_PARENT="${disk_parent_prefix}-accounts.qcow2" \
+    VM_DISK_SNAPSHOTS_PARENT="${disk_parent_prefix}-snapshots.qcow2" \
+    "$REPO_ROOT/scripts/vm-test/create-disks.sh" "$VM_ARCH" "$vm_name"
+  elif [[ "$reuse_existing_disks" != "true" ]]; then
+    WORK_DIR="$vm_dir" \
+    VM_DISK_SYSTEM_GB="$VM_DISK_SYSTEM_GB" \
+    VM_DISK_LEDGER_GB="$VM_DISK_LEDGER_GB" \
+    VM_DISK_ACCOUNTS_GB="$VM_DISK_ACCOUNTS_GB" \
+    VM_DISK_SNAPSHOTS_GB="$VM_DISK_SNAPSHOTS_GB" \
+    "$REPO_ROOT/scripts/vm-test/create-disks.sh" "$VM_ARCH" "$vm_name" "$base_image"
+  else
+    echo "[vm-hot-swap] Reusing existing shared entrypoint VM disks from ${vm_dir}" >&2
+  fi
 
   (
     export WORK_DIR="$vm_dir"
@@ -1593,12 +1828,12 @@ start_vm() {
     echo $! >"$pid_file"
   )
 
-  "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$ssh_host" "$ssh_port" "$SSH_WAIT_TIMEOUT" >/dev/null
+  wait_for_ssh_or_qemu_exit "$vm_role" "$ssh_host" "$ssh_wait_port" "$SSH_WAIT_TIMEOUT" "$pid_file" "$qemu_log"
 
   local pid
   pid="$(cat "$pid_file" 2>/dev/null || true)"
   if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-    echo "[vm-hot-swap] QEMU process for $vm_name is not running after startup (port $ssh_port)." >&2
+    echo "[vm-hot-swap] QEMU process for $vm_name is not running after startup (port $ssh_wait_port)." >&2
     echo "[vm-hot-swap] Last QEMU log lines:" >&2
     tail -n 80 "$qemu_log" >&2 || true
     exit 4
@@ -1622,12 +1857,50 @@ assert_vm_alive_and_ssh_ready() {
     exit 4
   fi
 
-  if ! "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$host" "$port" "$timeout" >/dev/null; then
-    echo "[vm-hot-swap] ${label} SSH not reachable at ${host}:${port}." >&2
-    echo "[vm-hot-swap] Last ${label} QEMU log lines:" >&2
-    tail -n 120 "$qemu_log" >&2 || true
-    exit 4
+  wait_for_ssh_or_qemu_exit "$label" "$host" "$port" "$timeout" "$pid_file" "$qemu_log"
+}
+
+export_prepared_vm_disks() {
+  local export_dir="$1"
+  local source_prefix="$export_dir/source"
+  local destination_prefix="$export_dir/destination"
+  local quiesce_cmd
+
+  if [[ -z "$export_dir" ]]; then
+    echo "VM_PREPARE_EXPORT_DIR must be set when VM_PREPARE_ONLY=true." >&2
+    exit 2
   fi
+
+  mkdir -p "$export_dir"
+
+  # Ensure prepared disks are exported from a clean validator state.
+  quiesce_cmd="set -eu; systemctl stop sol || true; for _ in \$(seq 1 90); do if ! systemctl is-active --quiet sol; then break; fi; sleep 1; done; if systemctl is-active --quiet sol; then systemctl kill sol || true; fi; rm -rf /mnt/ledger/* /mnt/accounts/* /mnt/snapshots/* /opt/validator/logs/*; mkdir -p /mnt/ledger /mnt/accounts /mnt/snapshots/remote /opt/validator/logs; chown -R sol:sol /mnt/ledger /mnt/accounts /mnt/snapshots /opt/validator/logs || true; sync"
+  ansible "all" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m shell -a "$quiesce_cmd" -o >/dev/null
+
+  cleanup_vm "$SRC_PID_FILE"
+  cleanup_vm "$DST_PID_FILE"
+
+  cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}.qcow2" "${source_prefix}.qcow2"
+  cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-ledger.qcow2" "${source_prefix}-ledger.qcow2"
+  cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-accounts.qcow2" "${source_prefix}-accounts.qcow2"
+  cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-snapshots.qcow2" "${source_prefix}-snapshots.qcow2"
+
+  cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}.qcow2" "${destination_prefix}.qcow2"
+  cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-ledger.qcow2" "${destination_prefix}-ledger.qcow2"
+  cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-accounts.qcow2" "${destination_prefix}-accounts.qcow2"
+  cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-snapshots.qcow2" "${destination_prefix}-snapshots.qcow2"
+
+  cat >"$export_dir/metadata.env" <<EOF
+source_prefix=${source_prefix}
+destination_prefix=${destination_prefix}
+vm_arch=${VM_ARCH}
+source_flavor=${SOURCE_FLAVOR}
+destination_flavor=${DESTINATION_FLAVOR}
+created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  touch "$export_dir/.ready"
+  echo "[vm-hot-swap] Prepared VM disk cache exported at $export_dir" >&2
 }
 
 SOURCE_BOOTSTRAP_HOST="$(vm_bootstrap_host_for vm-source)"
@@ -1641,6 +1914,14 @@ DESTINATION_OPERATOR_PORT_EFFECTIVE="$(vm_operator_port_for vm-destination)"
 ENTRYPOINT_BOOTSTRAP_HOST_EFFECTIVE="$(vm_bootstrap_host_for vm-entrypoint)"
 ENTRYPOINT_BOOTSTRAP_PORT_EFFECTIVE="$(vm_bootstrap_port_for vm-entrypoint)"
 ENTRYPOINT_OPERATOR_PORT_EFFECTIVE="$(vm_operator_port_for vm-entrypoint)"
+SOURCE_START_WAIT_PORT="$SOURCE_BOOTSTRAP_PORT_EFFECTIVE"
+DESTINATION_START_WAIT_PORT="$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE"
+
+if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
+  SOURCE_START_WAIT_PORT="$SOURCE_OPERATOR_PORT_EFFECTIVE"
+  DESTINATION_START_WAIT_PORT="$DESTINATION_OPERATOR_PORT_EFFECTIVE"
+  echo "[vm-hot-swap] Prepared VM reuse enabled: waiting for operator SSH ports (${SOURCE_START_WAIT_PORT}/${DESTINATION_START_WAIT_PORT}) during VM boot." >&2
+fi
 
 if [[ "$AUTO_KILL_CONFLICTING_QEMU" == "true" ]]; then
   for port in "$SOURCE_SSH_PORT" "$SOURCE_SSH_PORT_ALT" "$DESTINATION_SSH_PORT" "$DESTINATION_SSH_PORT_ALT"; do
@@ -1653,10 +1934,40 @@ if [[ "$AUTO_KILL_CONFLICTING_QEMU" == "true" ]]; then
   fi
 fi
 
+assert_shared_bridge_network_ready
+
+cat >"$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" <<EOF
+all:
+  hosts:
+    vm-entrypoint:
+      ansible_host: ${ENTRYPOINT_BOOTSTRAP_HOST_EFFECTIVE}
+      ansible_port: ${ENTRYPOINT_BOOTSTRAP_PORT_EFFECTIVE}
+      ansible_user: ${BOOTSTRAP_USER}
+      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
+      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
+      ansible_become: true
+EOF
+
+if [[ "$VM_ENTRYPOINT_PREPARE_ONLY" == "true" ]]; then
+  CURRENT_PHASE="entrypoint cache prepare"
+  ensure_entrypoint_vm_localnet_service
+  if [[ "$SHARED_ENTRYPOINT_VM" == "true" ]]; then
+    touch "$SHARED_ENTRYPOINT_ROOT/.cli-cache-ready"
+  fi
+  cleanup_vm "$ENTRYPOINT_VM_PID_FILE"
+  EXEC_OK=true
+  REPORT_EMITTED=true
+  echo "[vm-hot-swap] Entrypoint VM prepare-only run completed successfully." >&2
+  exit 0
+fi
+
+# Bring entrypoint up first so prepared validators don't fail startup while entrypoint is still down.
+ensure_localnet_entrypoint
+
 echo "[vm-hot-swap] Starting source VM..." >&2
-start_vm "vm-source" "$SRC_VM_NAME" "$SRC_VM_DIR" "$SOURCE_BOOTSTRAP_HOST" "$SOURCE_BOOTSTRAP_PORT_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_QEMU_LOG" "$SRC_PID_FILE" "$(vm_tap_iface_for vm-source)"
+start_vm "vm-source" "$SRC_VM_NAME" "$SRC_VM_DIR" "$SOURCE_BOOTSTRAP_HOST" "$SOURCE_BOOTSTRAP_PORT_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_QEMU_LOG" "$SRC_PID_FILE" "$(vm_tap_iface_for vm-source)" "" "${VM_BASE_IMAGE}" "${VM_SOURCE_DISK_PARENT_PREFIX}" "$SOURCE_START_WAIT_PORT"
 echo "[vm-hot-swap] Starting destination VM..." >&2
-start_vm "vm-destination" "$DST_VM_NAME" "$DST_VM_DIR" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_QEMU_LOG" "$DST_PID_FILE" "$(vm_tap_iface_for vm-destination)"
+start_vm "vm-destination" "$DST_VM_NAME" "$DST_VM_DIR" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_QEMU_LOG" "$DST_PID_FILE" "$(vm_tap_iface_for vm-destination)" "" "${VM_BASE_IMAGE}" "${VM_DESTINATION_DISK_PARENT_PREFIX}" "$DESTINATION_START_WAIT_PORT"
 
 ensure_local_keyset
 
@@ -1715,20 +2026,6 @@ all:
         vm-destination:
 EOF
 
-cat >"$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" <<EOF
-all:
-  hosts:
-    vm-entrypoint:
-      ansible_host: ${ENTRYPOINT_BOOTSTRAP_HOST_EFFECTIVE}
-      ansible_port: ${ENTRYPOINT_BOOTSTRAP_PORT_EFFECTIVE}
-      ansible_user: ${BOOTSTRAP_USER}
-      ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
-      ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
-      ansible_become: true
-EOF
-
-ensure_localnet_entrypoint
-
 cat >"$OPERATOR_INVENTORY" <<EOF
 all:
   hosts:
@@ -1762,42 +2059,50 @@ all:
 EOF
 
 phase_start_ts="$(date +%s)"
-CURRENT_PHASE="users-then-metal-box bootstrap"
-echo "[vm-hot-swap] Running users -> metal-box (requested order)..." >&2
-if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
-  echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy for VM automation..." >&2
+if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
+  CURRENT_PHASE="prepared-vm operator SSH readiness"
+  echo "[vm-hot-swap] Prepared VM reuse: skipping users/metal bootstrap and validating operator SSH..." >&2
+else
+  CURRENT_PHASE="users-then-metal-box bootstrap"
+  echo "[vm-hot-swap] Running users -> metal-box (requested order)..." >&2
+  if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
+    echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy for VM automation..." >&2
+    for vm_target in vm-source vm-destination; do
+      echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy on ${vm_target}..." >&2
+      ansible-playbook \
+        -i "$BOOTSTRAP_INVENTORY" \
+        "$REPO_ROOT/test-harness/ansible/pb_prepare_vm_sysadmin_nopasswd.yml" \
+        -e "target_hosts=$vm_target" \
+        -e "bootstrap_user=$BOOTSTRAP_USER"
+    done
+  fi
+
   for vm_target in vm-source vm-destination; do
-    echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy on ${vm_target}..." >&2
-    ansible-playbook \
-      -i "$BOOTSTRAP_INVENTORY" \
-      "$REPO_ROOT/test-harness/ansible/pb_prepare_vm_sysadmin_nopasswd.yml" \
-      -e "target_hosts=$vm_target" \
+    echo "[vm-hot-swap] Running users -> metal-box on ${vm_target}..." >&2
+    users_metal_args=(
+      -i "$BOOTSTRAP_INVENTORY"
+      "$REPO_ROOT/test-harness/ansible/pb_vm_users_then_metal_box.yml"
+      --skip-tags "$VM_METAL_BOX_SKIP_TAGS"
+      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
+      -e "target_host=$vm_target"
       -e "bootstrap_user=$BOOTSTRAP_USER"
+      -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
+      -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE"
+      -e "users_csv_file=$(basename "$IAM_CSV")"
+      -e "users_base_dir=$(dirname "$IAM_CSV")"
+      -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+      -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+      -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+    )
+    ansible-playbook "${users_metal_args[@]}"
   done
+
+  echo "[vm-hot-swap] Waiting for post-metal SSH ports..." >&2
+  CURRENT_PHASE="post-metal SSH readiness"
 fi
 
-for vm_target in vm-source vm-destination; do
-  echo "[vm-hot-swap] Running users -> metal-box on ${vm_target}..." >&2
-  ansible-playbook \
-    -i "$BOOTSTRAP_INVENTORY" \
-    "$REPO_ROOT/test-harness/ansible/pb_vm_users_then_metal_box.yml" \
-    --skip-tags "$VM_METAL_BOX_SKIP_TAGS" \
-    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
-    -e "target_host=$vm_target" \
-    -e "bootstrap_user=$BOOTSTRAP_USER" \
-    -e "metal_box_user=$METAL_BOX_SYSADMIN_USER" \
-    -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE" \
-    -e "users_csv_file=$(basename "$IAM_CSV")" \
-    -e "users_base_dir=$(dirname "$IAM_CSV")" \
-    -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")" \
-    -e "authorized_access_csv=$AUTHORIZED_IPS_CSV" \
-    -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
-done
-
-echo "[vm-hot-swap] Waiting for post-metal SSH ports..." >&2
-CURRENT_PHASE="post-metal SSH readiness"
-"$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" 300 >/dev/null
-"$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" 300 >/dev/null
+wait_for_ssh_or_qemu_exit "source-post-metal" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" 300 "$SRC_PID_FILE" "$SRC_QEMU_LOG"
+wait_for_ssh_or_qemu_exit "destination-post-metal" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" 300 "$DST_PID_FILE" "$DST_QEMU_LOG"
 USERS_METAL_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
 phase_start_ts="$(date +%s)"
@@ -1956,6 +2261,87 @@ assert_host_validator_runtime() {
   fi
 }
 
+wait_for_host_validator_runtime_ready() {
+  local host="$1"
+  local timeout="${2:-$REUSE_RUNTIME_READY_TIMEOUT_SEC}"
+  local first_timeout="$timeout"
+  local second_timeout=0
+  local service_cmd
+  local state_cmd
+  local journal_cmd
+  local state_output=""
+  local journal_output=""
+  local rc=0
+
+  service_cmd="set -eu; if ! systemctl is-active --quiet sol; then systemctl start sol; fi"
+  state_cmd="set -eu; systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --property=MainPID --no-pager"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true"
+
+  if (( timeout >= 120 )); then
+    first_timeout=$(( timeout / 2 ))
+    if (( first_timeout < 60 )); then
+      first_timeout=60
+    fi
+    second_timeout=$(( timeout - first_timeout ))
+  fi
+
+  ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m shell -a "$service_cmd" -o >/dev/null || true
+
+  ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m wait_for -a "host=127.0.0.1 port=8899 timeout=${first_timeout} state=started" -o >/dev/null || rc=$?
+
+  if (( rc == 0 )); then
+    return 0
+  fi
+
+  state_output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$state_cmd" -o 2>&1 || true
+  )"
+  journal_output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$journal_cmd" -o 2>&1 || true
+  )"
+  if [[ -z "$journal_output" ]]; then
+    journal_output="runtime warmup diagnostic probe failed with no output"
+  fi
+  echo "[vm-hot-swap] Host $host validator RPC warmup attempt 1/${timeout}s failed; restarting sol.service and retrying." >&2
+  echo "$state_output" >&2
+  echo "$journal_output" >&2
+
+  if (( second_timeout > 0 )); then
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "set -eu; systemctl restart sol" -o >/dev/null || true
+    rc=0
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m wait_for -a "host=127.0.0.1 port=8899 timeout=${second_timeout} state=started" -o >/dev/null || rc=$?
+    if (( rc == 0 )); then
+      return 0
+    fi
+  fi
+
+  state_output="$(
+    ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "$state_cmd" -o 2>&1 || true
+  )"
+  journal_output="$(
+      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$journal_cmd" -o 2>&1 || true
+  )"
+  if [[ -z "$journal_output" ]]; then
+    journal_output="runtime warmup diagnostic probe failed with no output"
+  fi
+  case "$host" in
+    vm-source) HOST_DIAGNOSTIC_VM_SOURCE="$journal_output" ;;
+    vm-destination) HOST_DIAGNOSTIC_VM_DESTINATION="$journal_output" ;;
+  esac
+  echo "Host $host validator RPC port 8899 did not become ready within ${timeout}s." >&2
+  echo "$state_output" >&2
+  echo "$journal_output" >&2
+  exit 1
+}
+
 wait_for_host_validator_catchup() {
   local host="$1"
   local rpc_url
@@ -2022,6 +2408,44 @@ wait_for_source_tower_file() {
     echo "$journal_output" >&2
     exit 1
   fi
+}
+
+apply_pre_swap_injection() {
+  local mode="${PRE_SWAP_INJECTION_MODE:-none}"
+  local inject_cmd
+  local destination_operator_port
+
+  if [[ -z "$mode" || "$mode" == "none" ]]; then
+    return 0
+  fi
+
+  echo "[vm-hot-swap] Applying pre-swap injection mode: ${mode}" >&2
+  case "$mode" in
+    stop_entrypoint_rpc|stop_source_validator_service)
+      inject_cmd="set -eu; systemctl stop sol; systemctl is-active --quiet sol && exit 1 || true; echo 'Injected source validator service stop (sol.service)'"
+      ansible "vm-source" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$inject_cmd" -o >/dev/null
+      ;;
+    mismatch_destination_primary_identity)
+      inject_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; key=\"\$kdir/primary-target-identity.json\"; /opt/solana/active_release/bin/solana-keygen new --no-bip39-passphrase --force -o \"\$key\" >/dev/null"
+      ansible "vm-destination" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$inject_cmd" -o >/dev/null
+      ;;
+    block_source_to_destination_ssh)
+      if ! vm_uses_shared_bridge || [[ -z "$VM_SOURCE_BRIDGE_IP" || -z "$VM_DESTINATION_BRIDGE_IP" ]]; then
+        echo "PRE_SWAP_INJECTION_MODE=block_source_to_destination_ssh requires VM_NETWORK_MODE=shared-bridge, VM_SOURCE_BRIDGE_IP, and VM_DESTINATION_BRIDGE_IP." >&2
+        exit 2
+      fi
+      destination_operator_port="$(vm_operator_port_for vm-destination)"
+      inject_cmd="set -eu; if command -v ufw >/dev/null 2>&1; then ufw --force insert 1 deny out proto tcp to '$VM_DESTINATION_BRIDGE_IP' port '$destination_operator_port' >/dev/null; else iptables -I OUTPUT -p tcp -d '$VM_DESTINATION_BRIDGE_IP' --dport '$destination_operator_port' -j REJECT; fi"
+      ansible "vm-source" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$inject_cmd" -o >/dev/null
+      ;;
+    *)
+      echo "Unsupported PRE_SWAP_INJECTION_MODE: $mode" >&2
+      exit 2
+      ;;
+  esac
 }
 
 assert_swap_identity_state() {
@@ -2234,6 +2658,7 @@ Environment
 - Source SSH (bootstrap/post-metal): ${SOURCE_SSH_PORT} / ${SOURCE_SSH_PORT_ALT}
 - Destination SSH (bootstrap/post-metal): ${DESTINATION_SSH_PORT} / ${DESTINATION_SSH_PORT_ALT}
 - Localnet entrypoint mode: ${VM_LOCALNET_ENTRYPOINT_MODE}
+- Pre-swap injection mode: ${PRE_SWAP_INJECTION_MODE}
 - Localnet RPC: http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}
 - Localnet gossip for VMs: ${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}
 - Localnet genesis hash: ${LOCALNET_ENTRYPOINT_GENESIS_HASH:-unknown}
@@ -2341,6 +2766,7 @@ EOF
     --argjson entrypoint_preflight_vm_source "$ENTRYPOINT_PREFLIGHT_VM_SOURCE" \
     --argjson entrypoint_preflight_vm_destination "$ENTRYPOINT_PREFLIGHT_VM_DESTINATION" \
     --argjson pre_swap_verified "$PRE_SWAP_VERIFIED" \
+    --argjson hot_swap_completed "$HOT_SWAP_COMPLETED" \
     --argjson swap_identity_verified "$SWAP_IDENTITY_VERIFIED" \
     --argjson post_swap_verified "$POST_SWAP_VERIFIED" \
     --arg source_ssh_port "$SOURCE_SSH_PORT" \
@@ -2348,6 +2774,7 @@ EOF
     --arg destination_ssh_port "$DESTINATION_SSH_PORT" \
     --arg destination_ssh_port_alt "$DESTINATION_SSH_PORT_ALT" \
     --arg localnet_entrypoint_mode "$VM_LOCALNET_ENTRYPOINT_MODE" \
+    --arg pre_swap_injection_mode "$PRE_SWAP_INJECTION_MODE" \
     --arg localnet_rpc_url "http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
     --arg localnet_gossip_endpoint "${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT}" \
     --arg localnet_genesis_hash "${LOCALNET_ENTRYPOINT_GENESIS_HASH:-unknown}" \
@@ -2409,6 +2836,7 @@ EOF
         },
         localnet_entrypoint: {
           mode: $localnet_entrypoint_mode,
+          pre_swap_injection_mode: $pre_swap_injection_mode,
           rpc_url: $localnet_rpc_url,
           gossip_endpoint_for_vms: $localnet_gossip_endpoint,
           genesis_hash: $localnet_genesis_hash
@@ -2428,6 +2856,7 @@ EOF
         localnet_entrypoint_preflight_source: $entrypoint_preflight_vm_source,
         localnet_entrypoint_preflight_destination: $entrypoint_preflight_vm_destination,
         pre_swap_runtime_and_client: $pre_swap_verified,
+        hot_swap_playbook_completed: $hot_swap_completed,
         post_swap_identity: $swap_identity_verified,
         post_swap_runtime_and_client: $post_swap_verified
       },
@@ -2512,26 +2941,43 @@ EOF
   REPORT_EMITTED=true
 }
 
-phase_start_ts="$(date +%s)"
-CURRENT_PHASE="configure source flavor"
-echo "[vm-hot-swap] Configuring source flavor: $SOURCE_FLAVOR" >&2
-assert_vm_alive_and_ssh_ready "source" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
-ensure_localnet_entrypoint
-setup_host_flavor "vm-source" "$SOURCE_FLAVOR" "primary"
-assert_host_can_query_localnet_entrypoint "vm-source" "source"
-SOURCE_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
+  echo "[vm-hot-swap] Prepared VM reuse: skipping source/destination flavor setup (already baked into prepared disks)." >&2
+  assert_vm_alive_and_ssh_ready "source" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
+  assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
+  if [[ "$SOLANA_CLUSTER_NORMALIZED" == "localnet" ]]; then
+    echo "[vm-hot-swap] Prepared VM reuse: aligning validator expected genesis hash to ${LOCALNET_ENTRYPOINT_GENESIS_HASH}..." >&2
+    sync_host_expected_genesis_hash "vm-source"
+    sync_host_expected_genesis_hash "vm-destination"
+  fi
+  echo "[vm-hot-swap] Prepared VM reuse: waiting for validator RPC warmup..." >&2
+  wait_for_host_validator_runtime_ready "vm-source" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+  wait_for_host_validator_runtime_ready "vm-destination" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+  SOURCE_SETUP_DURATION_SEC=0
+  DESTINATION_SETUP_DURATION_SEC=0
+else
+  phase_start_ts="$(date +%s)"
+  CURRENT_PHASE="configure source flavor"
+  echo "[vm-hot-swap] Configuring source flavor: $SOURCE_FLAVOR" >&2
+  assert_vm_alive_and_ssh_ready "source" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
+  ensure_localnet_entrypoint
+  setup_host_flavor "vm-source" "$SOURCE_FLAVOR" "primary"
+  assert_host_can_query_localnet_entrypoint "vm-source" "source"
+  SOURCE_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
-phase_start_ts="$(date +%s)"
-CURRENT_PHASE="configure destination flavor"
-echo "[vm-hot-swap] Configuring destination flavor: $DESTINATION_FLAVOR" >&2
-assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
-ensure_localnet_entrypoint
-setup_host_flavor "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
-assert_host_can_query_localnet_entrypoint "vm-destination" "destination"
-DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+  phase_start_ts="$(date +%s)"
+  CURRENT_PHASE="configure destination flavor"
+  echo "[vm-hot-swap] Configuring destination flavor: $DESTINATION_FLAVOR" >&2
+  assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
+  ensure_localnet_entrypoint
+  setup_host_flavor "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
+  assert_host_can_query_localnet_entrypoint "vm-destination" "destination"
+  DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+fi
 
 phase_start_ts="$(date +%s)"
 CURRENT_PHASE="pre-swap verification"
+apply_pre_swap_injection
 echo "[vm-hot-swap] Capturing pre-swap identity state..." >&2
 capture_host_identity_state "vm-source" "before"
 capture_host_identity_state "vm-destination" "before"
@@ -2551,6 +2997,15 @@ wait_for_source_tower_file
 capture_cluster_snapshots "before"
 PRE_SWAP_VERIFIED=true
 PRE_SWAP_VERIFY_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+
+if [[ "$VM_PREPARE_ONLY" == "true" ]]; then
+  CURRENT_PHASE="prepare export"
+  export_prepared_vm_disks "$VM_PREPARE_EXPORT_DIR"
+  EXEC_OK=true
+  emit_test_report
+  echo "[vm-hot-swap] Prepare-only run completed successfully." >&2
+  exit 0
+fi
 
 phase_start_ts="$(date +%s)"
 CURRENT_PHASE="hot-swap"
