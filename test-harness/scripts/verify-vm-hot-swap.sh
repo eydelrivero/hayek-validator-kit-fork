@@ -1041,6 +1041,9 @@ ensure_entrypoint_vm_localnet_service() {
   local cli_probe_cmd
   local skip_cli_install=false
   local entrypoint_pid=""
+  local install_attempt=0
+  local install_max_attempts=3
+  local install_ok=false
 
   rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
   entrypoint_bootstrap_host="$(vm_bootstrap_host_for vm-entrypoint)"
@@ -1105,18 +1108,35 @@ ensure_entrypoint_vm_localnet_service() {
     install_log_file="$ARTIFACTS_DIR/entrypoint-cli-install.log"
     : >"$install_log_file"
     echo "[vm-hot-swap] Entrypoint CLI install log: $install_log_file" >&2
-    if ! ansible-playbook \
-      -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" \
-      "$REPO_ROOT/ansible/playbooks/pb_install_solana_cli_agave.yml" \
-      -e "@$REPO_ROOT/ansible/group_vars/all.yml" \
-      -e "@$REPO_ROOT/ansible/group_vars/solana.yml" \
-      -e "@$REPO_ROOT/ansible/group_vars/solana_localnet.yml" \
-      -e "solana_cluster=localnet" \
-      -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
-      -e "target_host=vm-entrypoint" \
-      -e "operator_user=$BOOTSTRAP_USER" \
-      -e "agave_version=$AGAVE_VERSION" \
-      -e "build_from_source=$BUILD_FROM_SOURCE" 2>&1 | tee -a "$install_log_file"; then
+    while (( install_attempt < install_max_attempts )); do
+      install_attempt=$((install_attempt + 1))
+      echo "[vm-hot-swap] Entrypoint CLI install attempt ${install_attempt}/${install_max_attempts}..." >&2
+      if ansible-playbook \
+        -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" \
+        "$REPO_ROOT/ansible/playbooks/pb_install_solana_cli_agave.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/all.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/solana.yml" \
+        -e "@$REPO_ROOT/ansible/group_vars/solana_localnet.yml" \
+        -e "solana_cluster=localnet" \
+        -e "solana_rpc_url=http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" \
+        -e "target_host=vm-entrypoint" \
+        -e "operator_user=$BOOTSTRAP_USER" \
+        -e "agave_version=$AGAVE_VERSION" \
+        -e "build_from_source=$BUILD_FROM_SOURCE" 2>&1 | tee -a "$install_log_file"; then
+        install_ok=true
+        break
+      fi
+
+      install_output="$(tail -n 120 "$install_log_file" 2>/dev/null || true)"
+      if grep -Eiq "Failed to connect to the host via ssh: ssh: connect to host .* port .*: Connection refused|Connection timed out|No route to host" <<<"$install_output"; then
+        echo "[vm-hot-swap] Entrypoint CLI install hit transient SSH failure; waiting for SSH and retrying..." >&2
+        "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" 60 >/dev/null 2>&1 || true
+        continue
+      fi
+      break
+    done
+
+    if [[ "$install_ok" != "true" ]]; then
       EARLY_FAILURE_REASON="Failed to install Agave CLI in isolated entrypoint VM"
       install_output="$(tail -n 80 "$install_log_file" 2>/dev/null || true)"
       ENTRYPOINT_BOOTSTRAP_OUTPUT="${install_output:-not captured}"

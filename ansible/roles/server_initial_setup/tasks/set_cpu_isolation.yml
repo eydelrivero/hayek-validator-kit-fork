@@ -4,15 +4,15 @@
   ansible.builtin.apt:
     name: hwloc
     state: present
-  when: ansible_facts['architecture'] == "x86_64"
+  when: (ansible_facts.architecture | default(ansible_architecture | default(''))) == "x86_64"
 
 - name: Configure GRUB for CPU isolation
   ansible.builtin.lineinfile:
     path: /etc/default/grub
     regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
     line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_pstate={{ cpu_config.pstate }} nohz_full={{ cpu_config.isolated_cores }} isolcpus=domain,managed_irq,{{ cpu_config.isolated_cores }} irqaffinity={{ cpu_config.irq_cores }}"'
-  when: ansible_facts['architecture'] == "x86_64"
+  when: (ansible_facts.architecture | default(ansible_architecture | default(''))) == "x86_64"
 
 - name: Update GRUB
   ansible.builtin.command: update-grub
-  when: ansible_facts['architecture'] == "x86_64"
+  when: (ansible_facts.architecture | default(ansible_architecture | default(''))) == "x86_64"

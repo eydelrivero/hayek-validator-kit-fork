@@ -87,7 +87,7 @@
         fail_msg: "ERROR! AMD SMT/Hyperthreading is not enabled. Current status: {{ smt_check.stdout }}"
         success_msg: "AMD SMT/Hyperthreading correctly enabled"
   when:
-    - ansible_facts['architecture'] == "x86_64"
+    - (ansible_facts.architecture | default(ansible_architecture | default(''))) == "x86_64"
     - manage_cpu_governor_service | default(true) | bool
   tags: [precheck, hardware-precheck]
 
