@@ -17,10 +17,13 @@ RETAIN_ALWAYS=false
 PRUNE_OLD_RUNS="${PRUNE_OLD_RUNS:-true}"
 PRUNE_KEEP_RUNS="${PRUNE_KEEP_RUNS:-6}"
 PRUNE_MIN_FREE_GB="${PRUNE_MIN_FREE_GB:-40}"
+PRUNE_MUTABLE_CACHE_DIRS="${PRUNE_MUTABLE_CACHE_DIRS:-auto}"
 KILL_STALE_QEMU="${KILL_STALE_QEMU:-true}"
 REUSE_PREPARED_VMS="${REUSE_PREPARED_VMS:-true}"
 REFRESH_PREPARED_VMS=false
 PREPARED_CACHE_KEY_OVERRIDE="${PREPARED_CACHE_KEY_OVERRIDE:-}"
+IMMUTABLE_VM_CACHE_ROOT="${IMMUTABLE_VM_CACHE_ROOT:-$REPO_ROOT/test-harness/work/_vm-immutable-cache}"
+ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT="${ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT:-$IMMUTABLE_VM_CACHE_ROOT/entrypoint-vm-cli}"
 PROGRESS_INTERVAL_SEC="${PROGRESS_INTERVAL_SEC:-30}"
 
 VM_NETWORK_MODE="${VM_NETWORK_MODE:-shared-bridge}"
@@ -41,6 +44,7 @@ AGAVE_VERSION="${AGAVE_VERSION:-3.1.9}"
 BAM_JITO_VERSION="${BAM_JITO_VERSION:-3.1.9}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 CITY_GROUP="${CITY_GROUP:-city_dal}"
+ENTRYPOINT_CLI_CACHE_PREFIX=""
 
 usage() {
   cat <<'EOF'
@@ -60,6 +64,8 @@ Options:
   --no-prune
   --prune-keep-runs <n>            (default: 6)
   --prune-min-free-gb <n>          (default: 40)
+  --prune-mutable-caches           Remove mutable legacy caches (_shared-entrypoint-vm, _prepared-vms) before runs
+  --no-prune-mutable-caches        Keep mutable legacy caches
   --no-kill-stale-qemu
   --shared-entrypoint
   --no-shared-entrypoint
@@ -118,6 +124,14 @@ while (($# > 0)); do
     --prune-min-free-gb)
       PRUNE_MIN_FREE_GB="${2:-}"
       shift 2
+      ;;
+    --prune-mutable-caches)
+      PRUNE_MUTABLE_CACHE_DIRS=true
+      shift
+      ;;
+    --no-prune-mutable-caches)
+      PRUNE_MUTABLE_CACHE_DIRS=false
+      shift
       ;;
     --no-kill-stale-qemu)
       KILL_STALE_QEMU=false
@@ -215,6 +229,163 @@ prepared_cache_ready() {
   [[ -r "$dir/destination-snapshots.qcow2" ]] || return 1
 }
 
+build_entrypoint_cache_key() {
+  local verifier_hash
+  verifier_hash="$(
+    sha256sum "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh" \
+      | awk '{print substr($1, 1, 16)}'
+  )"
+  printf '%s' "${VM_ARCH}|${VM_BASE_IMAGE}|${AGAVE_VERSION}|${BUILD_FROM_SOURCE}|${verifier_hash}" \
+    | sha256sum | awk '{print substr($1, 1, 16)}'
+}
+
+entrypoint_immutable_cache_ready() {
+  local cache_dir="$1"
+  local expected_key="${2:-}"
+  local key_file="$cache_dir/.cache-key"
+
+  [[ -f "$cache_dir/.ready" ]] || return 1
+  if [[ -n "$expected_key" ]]; then
+    [[ -r "$key_file" ]] || return 1
+    [[ "$(cat "$key_file" 2>/dev/null)" == "$expected_key" ]] || return 1
+  fi
+  [[ -r "$cache_dir/entrypoint.qcow2" ]] || return 1
+  [[ -r "$cache_dir/entrypoint-ledger.qcow2" ]] || return 1
+  [[ -r "$cache_dir/entrypoint-accounts.qcow2" ]] || return 1
+  [[ -r "$cache_dir/entrypoint-snapshots.qcow2" ]] || return 1
+}
+
+ensure_stateless_entrypoint_cli_cache() {
+  local cache_key
+  local cache_dir
+  local cache_prefix
+  local build_workdir
+  local run_id
+  local log_file
+  local source_prefix
+  local args=()
+  local start_ts
+  local elapsed_now
+  local elapsed_aligned
+  local progress_line
+  local pid
+  local rc=0
+
+  ENTRYPOINT_CLI_CACHE_PREFIX=""
+
+  if [[ "$VM_LOCALNET_ENTRYPOINT_MODE" != "vm" ]]; then
+    return 0
+  fi
+
+  cache_key="$(build_entrypoint_cache_key)"
+  cache_dir="$ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT/${VM_ARCH:-auto}-${cache_key}"
+  cache_prefix="$cache_dir/entrypoint"
+  ENTRYPOINT_CLI_CACHE_PREFIX="$cache_prefix"
+
+  if [[ "$REFRESH_PREPARED_VMS" != "true" ]] && entrypoint_immutable_cache_ready "$cache_dir" "$cache_key"; then
+    echo "==> [L3] Reusing immutable entrypoint CLI cache: $cache_dir" >&2
+    return 0
+  fi
+
+  rm -rf "$cache_dir"
+  mkdir -p "$cache_dir" "$WORKDIR/logs"
+  build_workdir="$WORKDIR/_entrypoint-cli-cache-build"
+  rm -rf "$build_workdir"
+  mkdir -p "$build_workdir"
+
+  if [[ "$KILL_STALE_QEMU" == true ]]; then
+    pkill -f "qemu-system-.*ifname=${ENTRYPOINT_VM_TAP_IFACE}" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+
+  run_id="${RUN_ID_PREFIX}-prepare-entrypoint-cli-$(date +%Y%m%d-%H%M%S)"
+  log_file="$WORKDIR/logs/${run_id}.log"
+  args=(
+    "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh"
+    --run-id "$run_id"
+    --workdir "$build_workdir"
+    --source-flavor "${SOURCE_FLAVOR}"
+    --destination-flavor "${DESTINATION_FLAVOR}"
+  )
+  if [[ -n "$VM_ARCH" ]]; then args+=(--vm-arch "$VM_ARCH"); fi
+  if [[ -n "$VM_BASE_IMAGE" ]]; then args+=(--vm-base-image "$VM_BASE_IMAGE"); fi
+
+  echo "==> [L3] Preparing immutable entrypoint CLI cache (stateless)..." >&2
+  start_ts="$(date +%s)"
+  set +e
+  env \
+    VM_NETWORK_MODE="$VM_NETWORK_MODE" \
+    VM_LOCALNET_ENTRYPOINT_MODE="$VM_LOCALNET_ENTRYPOINT_MODE" \
+    VM_SOURCE_BRIDGE_IP="$VM_SOURCE_BRIDGE_IP" \
+    VM_DESTINATION_BRIDGE_IP="$VM_DESTINATION_BRIDGE_IP" \
+    ENTRYPOINT_VM_BRIDGE_IP="$ENTRYPOINT_VM_BRIDGE_IP" \
+    VM_BRIDGE_GATEWAY_IP="$VM_BRIDGE_GATEWAY_IP" \
+    VM_SOURCE_TAP_IFACE="$VM_SOURCE_TAP_IFACE" \
+    VM_DESTINATION_TAP_IFACE="$VM_DESTINATION_TAP_IFACE" \
+    ENTRYPOINT_VM_TAP_IFACE="$ENTRYPOINT_VM_TAP_IFACE" \
+    ENTRYPOINT_VM_SKIP_CLI_INSTALL="false" \
+    SHARED_ENTRYPOINT_VM="true" \
+    AGAVE_VERSION="$AGAVE_VERSION" \
+    BUILD_FROM_SOURCE="$BUILD_FROM_SOURCE" \
+    CITY_GROUP="$CITY_GROUP" \
+    VM_ENTRYPOINT_PREPARE_ONLY="true" \
+    PRE_SWAP_INJECTION_MODE="none" \
+    "${args[@]}" >"$log_file" 2>&1 &
+  pid=$!
+
+  while is_verify_prepare_alive "$pid" "$run_id"; do
+    sleep "$PROGRESS_INTERVAL_SEC"
+    if ! is_verify_prepare_alive "$pid" "$run_id"; then
+      break
+    fi
+    elapsed_now=$(( $(date +%s) - start_ts ))
+    elapsed_aligned="$(format_duration_aligned "$elapsed_now")"
+    progress_line="$(
+      tail -n 80 "$log_file" 2>/dev/null \
+        | awk '/^\[vm-hot-swap\]/ {line=$0} END {print line}' \
+        || true
+    )"
+    if [[ -z "$progress_line" ]]; then
+      progress_line="$(tail -n 1 "$log_file" 2>/dev/null || true)"
+    fi
+    echo "    [L3] entrypoint-immutable-cache elapsed=${elapsed_aligned} ${progress_line}" >&2
+  done
+
+  wait "$pid"
+  rc=$?
+  set -e
+  if (( rc != 0 )); then
+    echo "FAIL: L3 immutable entrypoint cache prepare failed (log: $log_file)" >&2
+    return 1
+  fi
+
+  source_prefix="$build_workdir/_shared-entrypoint-vm/vm/hvk-entry-shared-${VM_ARCH}"
+  if [[ ! -r "${source_prefix}.qcow2" ]]; then
+    source_prefix="$(ls "$build_workdir/_shared-entrypoint-vm/vm"/hvk-entry-shared-*.qcow2 2>/dev/null | sed 's/\.qcow2$//' | head -n1 || true)"
+  fi
+  if [[ -z "$source_prefix" ]]; then
+    echo "FAIL: L3 immutable entrypoint cache source prefix not found under $build_workdir/_shared-entrypoint-vm/vm" >&2
+    return 1
+  fi
+
+  for suffix in ".qcow2" "-ledger.qcow2" "-accounts.qcow2" "-snapshots.qcow2"; do
+    if [[ ! -r "${source_prefix}${suffix}" ]]; then
+      echo "FAIL: L3 immutable entrypoint cache source disk missing: ${source_prefix}${suffix}" >&2
+      return 1
+    fi
+  done
+
+  cp --reflink=auto -f "${source_prefix}.qcow2" "${cache_prefix}.qcow2"
+  cp --reflink=auto -f "${source_prefix}-ledger.qcow2" "${cache_prefix}-ledger.qcow2"
+  cp --reflink=auto -f "${source_prefix}-accounts.qcow2" "${cache_prefix}-accounts.qcow2"
+  cp --reflink=auto -f "${source_prefix}-snapshots.qcow2" "${cache_prefix}-snapshots.qcow2"
+  printf '%s\n' "$cache_key" >"$cache_dir/.cache-key"
+  touch "$cache_dir/.ready"
+  rm -rf "$build_workdir"
+
+  echo "==> [L3] Immutable entrypoint CLI cache ready: $cache_dir ($(format_duration "$(( $(date +%s) - start_ts ))"))" >&2
+}
+
 is_verify_prepare_alive() {
   local pid="$1"
   local run_id="$2"
@@ -224,6 +395,17 @@ is_verify_prepare_alive() {
   [[ -n "$args" ]] || return 1
   [[ "$args" == *"verify-vm-hot-swap.sh"* ]] || return 1
   [[ "$args" == *"--run-id ${run_id}"* ]] || return 1
+}
+
+effective_entrypoint_skip_cli_install() {
+  local requested="$ENTRYPOINT_VM_SKIP_CLI_INSTALL"
+  if [[ "$requested" == "auto" \
+    && "$VM_LOCALNET_ENTRYPOINT_MODE" == "vm" \
+    && -n "$ENTRYPOINT_CLI_CACHE_PREFIX" ]]; then
+    printf 'true\n'
+    return 0
+  fi
+  printf '%s\n' "$requested"
 }
 
 ensure_prepared_vm_cache() {
@@ -241,6 +423,7 @@ ensure_prepared_vm_cache() {
   local prepare_elapsed_aligned
   local progress_line
   local rc
+  local resolved_entrypoint_skip_cli_install
   local prepare_args=()
 
   if [[ "$REUSE_PREPARED_VMS" != "true" ]]; then
@@ -248,7 +431,7 @@ ensure_prepared_vm_cache() {
   fi
 
   cache_key="$(build_prepared_cache_key "$source_flavor" "$destination_flavor")"
-  prepared_dir="$WORKDIR/_prepared-vms/${VM_ARCH:-auto}-${source_flavor}-${destination_flavor}-${cache_key}"
+  prepared_dir="$IMMUTABLE_VM_CACHE_ROOT/prepared-vms/${VM_ARCH:-auto}-${source_flavor}-${destination_flavor}-${cache_key}"
 
   PREPARED_CACHE_DIR="$prepared_dir"
   PREPARED_SOURCE_PREFIX="$prepared_dir/source"
@@ -292,6 +475,7 @@ ensure_prepared_vm_cache() {
   fi
 
   prepare_start_ts="$(date +%s)"
+  resolved_entrypoint_skip_cli_install="$(effective_entrypoint_skip_cli_install)"
   set +e
   env \
     VM_NETWORK_MODE="$VM_NETWORK_MODE" \
@@ -303,7 +487,8 @@ ensure_prepared_vm_cache() {
     VM_SOURCE_TAP_IFACE="$VM_SOURCE_TAP_IFACE" \
     VM_DESTINATION_TAP_IFACE="$VM_DESTINATION_TAP_IFACE" \
     ENTRYPOINT_VM_TAP_IFACE="$ENTRYPOINT_VM_TAP_IFACE" \
-    ENTRYPOINT_VM_SKIP_CLI_INSTALL="$ENTRYPOINT_VM_SKIP_CLI_INSTALL" \
+    ENTRYPOINT_VM_SKIP_CLI_INSTALL="$resolved_entrypoint_skip_cli_install" \
+    VM_ENTRYPOINT_DISK_PARENT_PREFIX="$ENTRYPOINT_CLI_CACHE_PREFIX" \
     SHARED_ENTRYPOINT_VM="$SHARED_ENTRYPOINT_VM" \
     PRE_SWAP_CATCHUP_TIMEOUT_SEC="$PRE_SWAP_CATCHUP_TIMEOUT_SEC" \
     PRE_SWAP_TOWER_TIMEOUT_SEC="$PRE_SWAP_TOWER_TIMEOUT_SEC" \
@@ -360,10 +545,20 @@ if [[ "$KILL_STALE_QEMU" == true ]]; then
 fi
 
 if [[ "$PRUNE_OLD_RUNS" == true ]]; then
-  "$REPO_ROOT/test-harness/scripts/prune-vm-test-runs.sh" \
-    --work-root "$REPO_ROOT/test-harness/work" \
-    --keep-runs "$PRUNE_KEEP_RUNS" \
-    --min-free-gb "$PRUNE_MIN_FREE_GB" >/dev/null
+  prune_args=(
+    --work-root "$REPO_ROOT/test-harness/work"
+    --keep-runs "$PRUNE_KEEP_RUNS"
+    --min-free-gb "$PRUNE_MIN_FREE_GB"
+  )
+  if [[ "$PRUNE_MUTABLE_CACHE_DIRS" == "true" ]] \
+    || [[ "$PRUNE_MUTABLE_CACHE_DIRS" == "auto" && "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
+    prune_args+=(--prune-mutable-cache-dirs)
+  fi
+  "$REPO_ROOT/test-harness/scripts/prune-vm-test-runs.sh" "${prune_args[@]}" >/dev/null
+fi
+
+if [[ "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
+  ensure_stateless_entrypoint_cli_cache
 fi
 
 run_single_case() {
@@ -372,6 +567,7 @@ run_single_case() {
   local destination_flavor="$3"
   local source_parent_prefix=""
   local destination_parent_prefix=""
+  local resolved_entrypoint_skip_cli_install
   local args=()
 
   if [[ "$REUSE_PREPARED_VMS" == "true" ]]; then
@@ -399,6 +595,8 @@ run_single_case() {
     args+=(--retain-always)
   fi
 
+  resolved_entrypoint_skip_cli_install="$(effective_entrypoint_skip_cli_install)"
+
   env \
     VM_NETWORK_MODE="$VM_NETWORK_MODE" \
     VM_LOCALNET_ENTRYPOINT_MODE="$VM_LOCALNET_ENTRYPOINT_MODE" \
@@ -409,7 +607,8 @@ run_single_case() {
     VM_SOURCE_TAP_IFACE="$VM_SOURCE_TAP_IFACE" \
     VM_DESTINATION_TAP_IFACE="$VM_DESTINATION_TAP_IFACE" \
     ENTRYPOINT_VM_TAP_IFACE="$ENTRYPOINT_VM_TAP_IFACE" \
-    ENTRYPOINT_VM_SKIP_CLI_INSTALL="$ENTRYPOINT_VM_SKIP_CLI_INSTALL" \
+    ENTRYPOINT_VM_SKIP_CLI_INSTALL="$resolved_entrypoint_skip_cli_install" \
+    VM_ENTRYPOINT_DISK_PARENT_PREFIX="$ENTRYPOINT_CLI_CACHE_PREFIX" \
     SHARED_ENTRYPOINT_VM="$SHARED_ENTRYPOINT_VM" \
     PRE_SWAP_CATCHUP_TIMEOUT_SEC="$PRE_SWAP_CATCHUP_TIMEOUT_SEC" \
     PRE_SWAP_TOWER_TIMEOUT_SEC="$PRE_SWAP_TOWER_TIMEOUT_SEC" \
