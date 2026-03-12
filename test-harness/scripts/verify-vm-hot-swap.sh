@@ -50,6 +50,9 @@ SWAP_EPOCH_END_THRESHOLD_SEC="${SWAP_EPOCH_END_THRESHOLD_SEC:-0}"
 PRE_SWAP_CATCHUP_TIMEOUT_SEC="${PRE_SWAP_CATCHUP_TIMEOUT_SEC:-900}"
 PRE_SWAP_TOWER_TIMEOUT_SEC="${PRE_SWAP_TOWER_TIMEOUT_SEC:-120}"
 REUSE_RUNTIME_READY_TIMEOUT_SEC="${REUSE_RUNTIME_READY_TIMEOUT_SEC:-900}"
+VM_ENTRYPOINT_PREFLIGHT_TIMEOUT_SEC="${VM_ENTRYPOINT_PREFLIGHT_TIMEOUT_SEC:-60}"
+VM_ENTRYPOINT_PREFLIGHT_RETRIES="${VM_ENTRYPOINT_PREFLIGHT_RETRIES:-3}"
+VM_ENTRYPOINT_PREFLIGHT_RETRY_SLEEP_SEC="${VM_ENTRYPOINT_PREFLIGHT_RETRY_SLEEP_SEC:-3}"
 PRE_SWAP_INJECTION_MODE="${PRE_SWAP_INJECTION_MODE:-none}"
 VM_AUTHORIZED_IP="${VM_AUTHORIZED_IP:-10.0.2.2}"
 SSH_COMMON_ARGS="${SSH_COMMON_ARGS:--o IdentitiesOnly=yes -o IdentityAgent=none -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no}"
@@ -1407,8 +1410,14 @@ assert_vm_can_reach_localnet_entrypoint() {
   local vm_entrypoint_host="$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS"
   local rpc_port="$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
   local gossip_port="$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT"
-  local wait_timeout="${3:-20}"
+  local wait_timeout="${3:-$VM_ENTRYPOINT_PREFLIGHT_TIMEOUT_SEC}"
+  local max_attempts="$VM_ENTRYPOINT_PREFLIGHT_RETRIES"
+  local retry_sleep="$VM_ENTRYPOINT_PREFLIGHT_RETRY_SLEEP_SEC"
   local resolve_cmd
+  local rpc_check_output=""
+  local gossip_check_output=""
+  local attempt=0
+  local rc=0
 
   if [[ "$SOLANA_CLUSTER_NORMALIZED" != "localnet" ]]; then
     return 0
@@ -1431,7 +1440,7 @@ assert_vm_can_reach_localnet_entrypoint() {
 
   if ! is_ip_literal "$vm_entrypoint_host"; then
     resolve_cmd="set -eu; getent ahostsv4 \"$vm_entrypoint_host\" >/dev/null 2>&1 || getent hosts \"$vm_entrypoint_host\" >/dev/null 2>&1"
-    if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -e "ansible_become=false" \
       -m shell -a "$resolve_cmd" -o >/dev/null; then
       echo "[vm-hot-swap] ${label} VM cannot resolve entrypoint host ${vm_entrypoint_host}." >&2
       print_localnet_entrypoint_debug
@@ -1439,16 +1448,64 @@ assert_vm_can_reach_localnet_entrypoint() {
     fi
   fi
 
-  if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
-    -m wait_for -a "host=${vm_entrypoint_host} port=${rpc_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o >/dev/null; then
+  if ! [[ "$wait_timeout" =~ ^[0-9]+$ ]] || (( wait_timeout < 1 )); then
+    wait_timeout=60
+  fi
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || (( max_attempts < 1 )); then
+    max_attempts=1
+  fi
+  if ! [[ "$retry_sleep" =~ ^[0-9]+$ ]] || (( retry_sleep < 0 )); then
+    retry_sleep=3
+  fi
+
+  rc=0
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    rc=0
+    rpc_check_output="$(
+      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" \
+        -e "ansible_become=false" \
+        -m wait_for -a "host=${vm_entrypoint_host} port=${rpc_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o 2>&1
+    )" || rc=$?
+    if (( rc == 0 )); then
+      break
+    fi
+    if (( attempt < max_attempts )); then
+      echo "[vm-hot-swap] ${label} VM RPC reachability attempt ${attempt}/${max_attempts} failed for ${vm_entrypoint_host}:${rpc_port}; retrying in ${retry_sleep}s." >&2
+      sleep "$retry_sleep"
+    fi
+  done
+  if (( rc != 0 )); then
     echo "[vm-hot-swap] ${label} VM cannot reach localnet entrypoint RPC at ${vm_entrypoint_host}:${rpc_port}." >&2
+    if [[ -n "$rpc_check_output" ]]; then
+      echo "[vm-hot-swap] Ansible wait_for output (RPC):" >&2
+      printf '%s\n' "$rpc_check_output" | tail -n 80 >&2 || true
+    fi
     print_localnet_entrypoint_debug
     exit 1
   fi
 
-  if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
-    -m wait_for -a "host=${vm_entrypoint_host} port=${gossip_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o >/dev/null; then
+  rc=0
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    rc=0
+    gossip_check_output="$(
+      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" \
+        -e "ansible_become=false" \
+        -m wait_for -a "host=${vm_entrypoint_host} port=${gossip_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o 2>&1
+    )" || rc=$?
+    if (( rc == 0 )); then
+      break
+    fi
+    if (( attempt < max_attempts )); then
+      echo "[vm-hot-swap] ${label} VM gossip reachability attempt ${attempt}/${max_attempts} failed for ${vm_entrypoint_host}:${gossip_port}; retrying in ${retry_sleep}s." >&2
+      sleep "$retry_sleep"
+    fi
+  done
+  if (( rc != 0 )); then
     echo "[vm-hot-swap] ${label} VM cannot reach localnet entrypoint gossip TCP/IP-echo at ${vm_entrypoint_host}:${gossip_port}." >&2
+    if [[ -n "$gossip_check_output" ]]; then
+      echo "[vm-hot-swap] Ansible wait_for output (gossip):" >&2
+      printf '%s\n' "$gossip_check_output" | tail -n 80 >&2 || true
+    fi
     print_localnet_entrypoint_debug
     exit 1
   fi
@@ -1929,8 +1986,8 @@ export_prepared_vm_disks() {
 
   mkdir -p "$export_dir"
 
-  # Ensure prepared disks are exported from a clean validator state.
-  quiesce_cmd="set -eu; systemctl stop sol || true; for _ in \$(seq 1 90); do if ! systemctl is-active --quiet sol; then break; fi; sleep 1; done; if systemctl is-active --quiet sol; then systemctl kill sol || true; fi; rm -rf /mnt/ledger/* /mnt/accounts/* /mnt/snapshots/* /opt/validator/logs/*; mkdir -p /mnt/ledger /mnt/accounts /mnt/snapshots/remote /opt/validator/logs; chown -R sol:sol /mnt/ledger /mnt/accounts /mnt/snapshots /opt/validator/logs || true; sync"
+  # Ensure prepared disks are exported from a clean validator state while preserving RBAC ownership.
+  quiesce_cmd="set -eu; systemctl stop sol || true; for _ in \$(seq 1 90); do if ! systemctl is-active --quiet sol; then break; fi; sleep 1; done; if systemctl is-active --quiet sol; then systemctl kill sol || true; fi; rm -rf /mnt/ledger/* /mnt/accounts/* /mnt/snapshots/* /opt/validator/logs/*; mkdir -p /mnt/ledger /mnt/accounts /mnt/snapshots/remote /opt/validator/logs; chown -R sol:validator_operators /mnt/ledger /mnt/accounts /mnt/snapshots /opt/validator/logs || true; chmod 2775 /mnt/ledger /mnt/accounts /mnt/snapshots /mnt/snapshots/remote || true; chmod 2770 /opt/validator/logs || true; sync"
   ansible "all" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
     -m shell -a "$quiesce_cmd" -o >/dev/null
 
