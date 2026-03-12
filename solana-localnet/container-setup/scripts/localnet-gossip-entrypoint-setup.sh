@@ -17,13 +17,29 @@ RESOLVED_BIND_ADDRESS="$BIND_ADDRESS"
 if [[ -z "$TEST_VALIDATOR_BIN" ]]; then
   if command -v solana-test-validator >/dev/null 2>&1; then
     TEST_VALIDATOR_BIN="$(command -v solana-test-validator)"
-  elif command -v agave-test-validator >/dev/null 2>&1; then
-    TEST_VALIDATOR_BIN="$(command -v agave-test-validator)"
   else
-    echo "Neither solana-test-validator nor agave-test-validator is available on PATH." >&2
+    echo "solana-test-validator is not available on PATH." >&2
     exit 1
   fi
 fi
+
+resolve_non_loopback_ipv4() {
+  local candidate=""
+
+  if command -v ip >/dev/null 2>&1; then
+    candidate="$(ip -o -4 addr show scope global up | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  fi
+
+  if [[ -z "$candidate" ]]; then
+    candidate="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+
+  if [[ -z "$candidate" || "$candidate" == 127.* ]]; then
+    candidate="$(hostname -i 2>/dev/null | awk '{print $1}')"
+  fi
+
+  printf '%s' "$candidate"
+}
 
 args=(
   --slots-per-epoch "$SLOTS_PER_EPOCH"
@@ -39,8 +55,13 @@ if "$TEST_VALIDATOR_BIN" --help 2>&1 | grep -q -- '--gossip-host'; then
 elif [[ "$RESOLVED_BIND_ADDRESS" == "0.0.0.0" ]]; then
   # Older solana-test-validator builds use --bind-address as the external
   # gossip address when --gossip-host is unavailable, and they panic if it is
-  # still 0.0.0.0. Bind to a concrete container-local IP instead.
-  RESOLVED_BIND_ADDRESS="$(hostname -i | awk '{print $1}')"
+  # still 0.0.0.0. Prefer configured gossip host, then resolve a non-loopback
+  # interface IP; fallback to hostname lookup as a last resort.
+  if [[ -n "$GOSSIP_HOST" && "$GOSSIP_HOST" != "0.0.0.0" && "$GOSSIP_HOST" != 127.* ]]; then
+    RESOLVED_BIND_ADDRESS="$GOSSIP_HOST"
+  else
+    RESOLVED_BIND_ADDRESS="$(resolve_non_loopback_ipv4)"
+  fi
 fi
 
 args+=(--bind-address "$RESOLVED_BIND_ADDRESS")
