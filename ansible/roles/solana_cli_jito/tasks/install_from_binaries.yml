@@ -107,6 +107,12 @@
   ignore_errors: "{{ ansible_check_mode }}"
   become: true
 
+- name: Remove existing Jito-Solana release payload before unarchive
+  ansible.builtin.file:
+    path: "{{ solana_installed_release_dir }}/solana-release"
+    state: absent
+  become: true
+
 - name: Fail when jito-solana archive download is unavailable
   ansible.builtin.fail:
     msg: >-
