@@ -37,12 +37,12 @@
 
     - name: Verify Solana CLI - Extract installed version number
       ansible.builtin.set_fact:
-        installed_jito_version: "{{ installed_version.stdout | regex_search('solana-cli ([0-9.]+)', '\\1') | first }}"
+        installed_jito_version: "{{ ((installed_version.stdout | regex_search('solana-cli ([0-9.]+)', '\\1')) or []) | first | default('') }}"
       when: installed_version.stdout is defined
 
     - name: Verify Solana CLI - Extract installed client identifier
       ansible.builtin.set_fact:
-        installed_jito_client: "{{ installed_version.stdout | regex_search('client:([A-Za-z0-9]+)', '\\1') | first }}"
+        installed_jito_client: "{{ ((installed_version.stdout | regex_search('client:([A-Za-z0-9]+)', '\\1')) or []) | first | default('') }}"
       when: installed_version.stdout is defined
 
     - name: Verify Solana CLI - Debug short summary

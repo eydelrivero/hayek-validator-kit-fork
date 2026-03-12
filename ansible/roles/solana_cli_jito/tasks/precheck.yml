@@ -61,12 +61,12 @@
     # - agave-validator 3.0.10 (src:90240211; feat:3073396398, client:Bam)
     - name: Precheck - Extract installed version number
       ansible.builtin.set_fact:
-        installed_jito_version: "{{ installed_version.stdout | regex_search('(?:solana-cli|agave-validator) ([0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta)\\.[0-9]+)?)', '\\1') | first }}"
+        installed_jito_version: "{{ ((installed_version.stdout | regex_search('(?:solana-cli|agave-validator) ([0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta)\\.[0-9]+)?)', '\\1')) or []) | first | default('') }}"
       when: solana_binary.stat.exists and installed_version.stdout is defined
 
     - name: Precheck - Extract installed client identifier
       ansible.builtin.set_fact:
-        installed_jito_client: "{{ installed_version.stdout | regex_search('client:([A-Za-z0-9]+)', '\\1') | first }}"
+        installed_jito_client: "{{ ((installed_version.stdout | regex_search('client:([A-Za-z0-9]+)', '\\1')) or []) | first | default('') }}"
       when: solana_binary.stat.exists and installed_version.stdout is defined
 
     - name: Precheck - Set fact for Jito-Solana CLI already installed

@@ -1,14 +1,34 @@
 ---
+- name: Ensure architecture facts are available
+  ansible.builtin.setup:
+    gather_subset:
+      - '!all'
+      - '!min'
+      - hardware
+      - system
+  when:
+    - ansible_facts.architecture is not defined
+    - ansible_architecture is not defined
+
+- name: Detect machine architecture via uname (fallback)
+  ansible.builtin.command: uname -m
+  register: uname_arch_result
+  changed_when: false
+
 - name: Set host architecture based on system facts
   ansible.builtin.set_fact:
     host_arch: >-
-      {%- if ansible_facts['architecture'] == 'aarch64' and ansible_facts['os_family'] in ['Linux', 'Debian'] -%}
+      {%- set detected_arch = ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default(uname_arch_result.stdout | default('')))) -%}
+      {%- set detected_os_family = ansible_facts.os_family | default(ansible_os_family | default('')) -%}
+      {%- if detected_arch == 'aarch64' and detected_os_family in ['Linux', 'Debian'] -%}
         aarch64-unknown-linux-gnu
-      {%- elif ansible_facts['architecture'] == 'x86_64' and ansible_facts['os_family'] in ['Linux', 'Debian'] -%}
+      {%- elif detected_arch == 'x86_64' and detected_os_family in ['Linux', 'Debian'] -%}
         x86_64-unknown-linux-gnu
-      {%- elif ansible_facts['architecture'] == 'x86_64' and ansible_facts['os_family'] == 'Darwin' -%}
+      {%- elif detected_arch == 'amd64' and detected_os_family in ['Linux', 'Debian'] -%}
+        x86_64-unknown-linux-gnu
+      {%- elif detected_arch == 'x86_64' and detected_os_family == 'Darwin' -%}
         x86_64-apple-darwin
-      {%- elif ansible_facts['architecture'] == 'arm64' and ansible_facts['os_family'] == 'Darwin' -%}
+      {%- elif detected_arch == 'arm64' and detected_os_family == 'Darwin' -%}
         aarch64-apple-darwin
       {%- else -%}
         unsupported
@@ -20,5 +40,9 @@
 
 - name: Fail if architecture is unsupported
   ansible.builtin.fail:
-    msg: "Unsupported architecture: {{ ansible_facts['architecture'] }} on {{ ansible_facts['os_family'] }}"
+    msg: >-
+      Unsupported architecture:
+      {{ ansible_facts.architecture | default(ansible_architecture | default('unknown-arch')) }}
+      on
+      {{ ansible_facts.os_family | default(ansible_os_family | default('unknown-os-family')) }}
   when: host_arch == 'unsupported'
