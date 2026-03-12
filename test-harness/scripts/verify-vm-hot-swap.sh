@@ -81,6 +81,7 @@ ENTRYPOINT_VM_SKIP_CLI_INSTALL="${ENTRYPOINT_VM_SKIP_CLI_INSTALL:-auto}"
 SHARED_ENTRYPOINT_VM="${SHARED_ENTRYPOINT_VM:-false}"
 VM_SOURCE_DISK_PARENT_PREFIX="${VM_SOURCE_DISK_PARENT_PREFIX:-}"
 VM_DESTINATION_DISK_PARENT_PREFIX="${VM_DESTINATION_DISK_PARENT_PREFIX:-}"
+VM_ENTRYPOINT_DISK_PARENT_PREFIX="${VM_ENTRYPOINT_DISK_PARENT_PREFIX:-}"
 VM_PREPARE_ONLY="${VM_PREPARE_ONLY:-false}"
 VM_PREPARE_EXPORT_DIR="${VM_PREPARE_EXPORT_DIR:-}"
 VM_ENTRYPOINT_PREPARE_ONLY="${VM_ENTRYPOINT_PREPARE_ONLY:-false}"
@@ -204,6 +205,7 @@ Environment:
     (backward-compat alias: stop_entrypoint_rpc)
   SHARED_ENTRYPOINT_VM=true|false (default: false; keeps a shared entrypoint VM under <workdir> across runs)
   VM_SOURCE_DISK_PARENT_PREFIX=<abs-prefix> and VM_DESTINATION_DISK_PARENT_PREFIX=<abs-prefix> (reuse prepared source/destination disks via qcow2 overlays)
+  VM_ENTRYPOINT_DISK_PARENT_PREFIX=<abs-prefix> (reuse a stateless entrypoint VM disk cache via qcow2 overlays)
   VM_PREPARE_ONLY=true with VM_PREPARE_EXPORT_DIR=<dir> (prepare source/destination VM disks and exit before swap)
   VM_ENTRYPOINT_PREPARE_ONLY=true (prepare shared entrypoint VM cache [CLI + launcher], do not start localnet runtime)
 EOF
@@ -1035,6 +1037,7 @@ ensure_entrypoint_vm_localnet_service() {
   local install_log_file=""
   local copy_output=""
   local start_output=""
+  local start_cmd=""
   local entrypoint_bootstrap_host
   local entrypoint_bootstrap_port
   local entrypoint_operator_port
@@ -1080,10 +1083,10 @@ ensure_entrypoint_vm_localnet_service() {
 
   if [[ -z "$entrypoint_pid" ]] || ! kill -0 "$entrypoint_pid" >/dev/null 2>&1; then
     echo "[vm-hot-swap] Starting isolated entrypoint VM..." >&2
-    start_vm "vm-entrypoint" "$ENTRYPOINT_VM_NAME" "$ENTRYPOINT_VM_DIR" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" "$entrypoint_operator_port" "$ENTRYPOINT_VM_QEMU_LOG" "$ENTRYPOINT_VM_PID_FILE" "$(vm_tap_iface_for vm-entrypoint)" "$extra_host_fwds" "$ENTRYPOINT_VM_BASE_IMAGE"
+    start_vm "vm-entrypoint" "$ENTRYPOINT_VM_NAME" "$ENTRYPOINT_VM_DIR" "$entrypoint_bootstrap_host" "$entrypoint_bootstrap_port" "$entrypoint_operator_port" "$ENTRYPOINT_VM_QEMU_LOG" "$ENTRYPOINT_VM_PID_FILE" "$(vm_tap_iface_for vm-entrypoint)" "$extra_host_fwds" "$ENTRYPOINT_VM_BASE_IMAGE" "$VM_ENTRYPOINT_DISK_PARENT_PREFIX"
   fi
 
-  cli_probe_cmd="[ -x /opt/solana/active_release/bin/solana-test-validator ] || [ -x /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator ]"
+  cli_probe_cmd="set -eu; for candidate in /opt/solana/active_release/bin/solana-test-validator /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator; do if [ -x \"\$candidate\" ] && [ -s \"\$candidate\" ] && \"\$candidate\" --version >/dev/null 2>&1; then exit 0; fi; done; exit 1"
   case "$ENTRYPOINT_VM_SKIP_CLI_INSTALL" in
     true)
       skip_cli_install=true
@@ -1165,9 +1168,39 @@ ensure_entrypoint_vm_localnet_service() {
   fi
 
   echo "[vm-hot-swap] Starting localnet entrypoint inside the isolated entrypoint VM..." >&2
+  start_cmd="$(cat <<EOF
+set -eu
+pkill -x solana-test-validator >/dev/null 2>&1 || true
+export PATH='/opt/solana/active_release/bin:/home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin:'"\$PATH"
+export SLOTS_PER_EPOCH='${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH}'
+export LIMIT_LEDGER_SIZE='${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE}'
+export DYNAMIC_PORT_RANGE='${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}'
+export RPC_PORT='${ENTRYPOINT_VM_GUEST_RPC_PORT}'
+export FAUCET_PORT='${ENTRYPOINT_VM_GUEST_FAUCET_PORT}'
+export BIND_ADDRESS='0.0.0.0'
+export GOSSIP_HOST='${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}'
+export GOSSIP_PORT='${ENTRYPOINT_VM_GUEST_GOSSIP_PORT}'
+export LEDGER_DIR='/var/tmp/test-ledger'
+export RESET_FLAG='--reset'
+for candidate in \
+  /opt/solana/active_release/bin/solana-test-validator \
+  /home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin/solana-test-validator; do
+  if [ -x "\$candidate" ] && [ -s "\$candidate" ] && "\$candidate" --version >/dev/null 2>&1; then
+    export TEST_VALIDATOR_BIN="\$candidate"
+    break
+  fi
+done
+if [ -z "\${TEST_VALIDATOR_BIN:-}" ]; then
+  echo "No working solana-test-validator binary found in expected install paths." >&2
+  exit 1
+fi
+rm -f /var/tmp/localnet-entrypoint.log
+nohup /usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh >/var/tmp/localnet-entrypoint.log 2>&1 </dev/null &
+EOF
+)"
   start_output="$(
     ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
-      -m shell -a "pkill -P 1 -f '/usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh|solana-test-validator' >/dev/null 2>&1 || true; export PATH='/opt/solana/active_release/bin:/home/${BOOTSTRAP_USER}/.local/share/solana/install/active_release/bin:'\"\$PATH\"; export SLOTS_PER_EPOCH='${VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH}'; export LIMIT_LEDGER_SIZE='${VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE}'; export DYNAMIC_PORT_RANGE='${VM_LOCALNET_ENTRYPOINT_DYNAMIC_PORT_RANGE}'; export RPC_PORT='${ENTRYPOINT_VM_GUEST_RPC_PORT}'; export FAUCET_PORT='${ENTRYPOINT_VM_GUEST_FAUCET_PORT}'; export BIND_ADDRESS='0.0.0.0'; export GOSSIP_HOST=\"\$(hostname -I | awk '{print \$1}')\"; export GOSSIP_PORT='${ENTRYPOINT_VM_GUEST_GOSSIP_PORT}'; export LEDGER_DIR='/var/tmp/test-ledger'; export RESET_FLAG='--reset'; nohup /usr/local/bin/hvk-localnet-gossip-entrypoint-setup.sh >/var/tmp/localnet-entrypoint.log 2>&1 </dev/null &" -o 2>&1
+      -m shell -a "$start_cmd" -o 2>&1
   )" || {
     EARLY_FAILURE_REASON="Failed to start localnet entrypoint inside isolated entrypoint VM"
     ENTRYPOINT_BOOTSTRAP_OUTPUT="$(printf '%s\n' "$start_output" | tail -n 80)"
@@ -1765,6 +1798,9 @@ fi
 if [[ -n "$VM_DESTINATION_DISK_PARENT_PREFIX" ]]; then
   assert_disk_parent_prefix_ready "$VM_DESTINATION_DISK_PARENT_PREFIX" "destination"
 fi
+if [[ -n "$VM_ENTRYPOINT_DISK_PARENT_PREFIX" ]]; then
+  assert_disk_parent_prefix_ready "$VM_ENTRYPOINT_DISK_PARENT_PREFIX" "entrypoint"
+fi
 
 start_vm() {
   local vm_role="$1"
@@ -1974,6 +2010,16 @@ if [[ "$VM_ENTRYPOINT_PREPARE_ONLY" == "true" ]]; then
   if [[ "$SHARED_ENTRYPOINT_VM" == "true" ]]; then
     touch "$SHARED_ENTRYPOINT_ROOT/.cli-cache-ready"
   fi
+  # Flush and power off cleanly so cached disks persist installed CLI artifacts.
+  ansible "vm-entrypoint" -i "$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" -u "$BOOTSTRAP_USER" -b \
+    -m shell -a "set -eu; sync; nohup sh -c 'sleep 1; systemctl poweroff' >/dev/null 2>&1 </dev/null &" -o >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    entrypoint_prepare_pid="$(cat "$ENTRYPOINT_VM_PID_FILE" 2>/dev/null || true)"
+    if [[ -z "$entrypoint_prepare_pid" ]] || ! kill -0 "$entrypoint_prepare_pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
   cleanup_vm "$ENTRYPOINT_VM_PID_FILE"
   EXEC_OK=true
   REPORT_EMITTED=true
@@ -2233,7 +2279,7 @@ assert_host_validator_runtime() {
 
   service_cmd="set -eu; active=\$(systemctl show sol --property=ActiveState --value --no-pager); sub=\$(systemctl show sol --property=SubState --value --no-pager); exec_status=\$(systemctl show sol --property=ExecMainStatus --value --no-pager); if [ \"\$active\" != 'active' ] || [ \"\$sub\" != 'running' ] || [ \"\$exec_status\" != '0' ]; then echo \"Validator service unhealthy: \${active}/\${sub}/\${exec_status}\" >&2; exit 1; fi"
   state_cmd="set -eu; systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --value --no-pager | tr '\n' '/' | sed 's#/*\$##'"
-  journal_cmd="set -eu; journalctl -u sol -n 80 --no-pager || true"
+  journal_cmd="set -eu; journalctl -u sol -n 80 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 80 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
 
   state_output="$(
     ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
@@ -2295,7 +2341,7 @@ wait_for_host_validator_runtime_ready() {
 
   service_cmd="set -eu; if ! systemctl is-active --quiet sol; then systemctl start sol; fi"
   state_cmd="set -eu; systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --property=MainPID --no-pager"
-  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 120 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
 
   if (( timeout >= 120 )); then
     first_timeout=$(( timeout / 2 ))
@@ -2373,7 +2419,7 @@ wait_for_host_validator_catchup() {
 
   rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
   catchup_cmd="set -eu; export PATH='/opt/solana/active_release/bin:'\"\$PATH\"; timeout ${PRE_SWAP_CATCHUP_TIMEOUT_SEC}s solana catchup -u '${rpc_url}' --our-localhost 8899"
-  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 120 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
 
   output="$(
     ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
@@ -2407,7 +2453,7 @@ wait_for_source_tower_file() {
   local rc=0
 
   tower_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; pub=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); tower=\"/mnt/ledger/tower-1_9-\${pub}.bin\"; remaining=${PRE_SWAP_TOWER_TIMEOUT_SEC}; while [ \"\$remaining\" -gt 0 ]; do if [ -s \"\$tower\" ]; then printf '%s\n' \"\$tower\"; exit 0; fi; sleep 2; remaining=\$((remaining - 2)); done; echo \"Tower file not ready: \$tower\" >&2; ls -l \"\$(dirname \"\$tower\")\" >&2 || true; exit 1"
-  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 120 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
 
   output="$(
     ansible "vm-source" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
@@ -2584,7 +2630,7 @@ capture_host_runtime_diagnostic_summary() {
   local cmd
   local output
 
-  cmd="set -eu; active=\$(systemctl show sol --property=ActiveState --value --no-pager 2>/dev/null || printf 'unknown'); sub=\$(systemctl show sol --property=SubState --value --no-pager 2>/dev/null || printf 'unknown'); exec_status=\$(systemctl show sol --property=ExecMainStatus --value --no-pager 2>/dev/null || printf 'unknown'); pid=\$(systemctl show sol --property=MainPID --value --no-pager 2>/dev/null || printf 'unknown'); printf 'service=%s/%s/%s pid=%s\n' \"\$active\" \"\$sub\" \"\$exec_status\" \"\$pid\"; ident=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info 2>/dev/null | head -1 | sed 's/^Identity: //' || true); if [ -n \"\$ident\" ]; then printf 'ledger_identity=%s\n' \"\$ident\"; fi; printf -- '-- recent journal --\n'; journalctl -u sol -n 12 --no-pager 2>/dev/null | tail -n 12 || true"
+  cmd="set -eu; active=\$(systemctl show sol --property=ActiveState --value --no-pager 2>/dev/null || printf 'unknown'); sub=\$(systemctl show sol --property=SubState --value --no-pager 2>/dev/null || printf 'unknown'); exec_status=\$(systemctl show sol --property=ExecMainStatus --value --no-pager 2>/dev/null || printf 'unknown'); pid=\$(systemctl show sol --property=MainPID --value --no-pager 2>/dev/null || printf 'unknown'); printf 'service=%s/%s/%s pid=%s\n' \"\$active\" \"\$sub\" \"\$exec_status\" \"\$pid\"; ident=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info 2>/dev/null | head -1 | sed 's/^Identity: //' || true); if [ -n \"\$ident\" ]; then printf 'ledger_identity=%s\n' \"\$ident\"; fi; printf -- '-- recent journal --\n'; journalctl -u sol -n 12 --no-pager 2>/dev/null | tail -n 12 || true; printf -- '\n-- validator log tail --\n'; tail -n 40 /opt/validator/logs/agave-validator.log 2>/dev/null | tail -n 40 || true"
   output="$(
     ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
       -m shell -a "$cmd" -o 2>&1 | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' | sed 's/\\\\n/\

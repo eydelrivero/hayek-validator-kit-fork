@@ -101,8 +101,11 @@ To run a single adversarial case during iteration:
 L2 defaults to:
 - `VM_NETWORK_MODE=shared-bridge`
 - `VM_LOCALNET_ENTRYPOINT_MODE=vm`
-- `SHARED_ENTRYPOINT_VM=true` (reuse a single entrypoint VM across L2 cases)
+- `SHARED_ENTRYPOINT_VM=false` (default: do not reuse mutable entrypoint runtime across cases)
+- `ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT=./test-harness/work/_vm-immutable-cache/entrypoint-vm-cli` (reuse stateless entrypoint CLI-only VM disks across L2/L3 runs)
 - `REUSE_PREPARED_VMS=true` (prepare source/destination once, then run each case from qcow2 overlays)
+- `IMMUTABLE_VM_CACHE_ROOT=./test-harness/work/_vm-immutable-cache` (shared immutable prepared-cache root reused by L2/L3)
+- `PRUNE_MUTABLE_CACHE_DIRS=auto` (when `SHARED_ENTRYPOINT_VM=false`, prune legacy mutable caches before runs)
 - bridge/tap tuple:
   - source `192.168.100.11` / `tap-hvk-src`
   - destination `192.168.100.12` / `tap-hvk-dst`
@@ -110,7 +113,8 @@ L2 defaults to:
   - gateway `192.168.100.1`
 
 These can still be overridden via environment variables.
-Use `--no-shared-entrypoint` to force per-case entrypoint VM isolation.
+Use `--shared-entrypoint` to opt into reusing a single mutable entrypoint VM across cases.
+Without `--shared-entrypoint`, each case still gets an isolated entrypoint VM runtime, but the VM boots from immutable CLI-prepared parent disks so CLI reinstall is skipped.
 Use `--no-vm-reuse` to disable prepared source/destination cache reuse.
 Use `--refresh-vm-reuse` to rebuild the prepared cache before running cases.
 Use `--inspect-on-instability` to pause before the automatic cache-refresh retry when a recoverable warmup/catchup instability is detected.
@@ -162,12 +166,14 @@ Full flavor matrix:
   --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
 ```
 
-L3 uses the same shared-bridge + entrypoint-VM defaults as L2.
-Unlike L2, shared entrypoint reuse is disabled by default in L3; enable with `--shared-entrypoint`.
+L3 uses the same shared-bridge + entrypoint-VM defaults as L2, including `SHARED_ENTRYPOINT_VM=false`.
 L3 now reuses prepared source/destination VM caches by default (per flavor-pair and image/arch key):
 - disable with `--no-vm-reuse`
 - force rebuild with `--refresh-vm-reuse`
 - override cache namespace with `--prepared-cache-key <text>`
+- immutable cache root is shared with L2 via `IMMUTABLE_VM_CACHE_ROOT` (default: `./test-harness/work/_vm-immutable-cache`)
+- immutable stateless entrypoint CLI cache is also shared with L2 via `ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT` (default: `./test-harness/work/_vm-immutable-cache/entrypoint-vm-cli`)
+- `PRUNE_MUTABLE_CACHE_DIRS=auto` by default (with `SHARED_ENTRYPOINT_VM=false`, this prunes legacy mutable caches before runs)
 
 ### VM Run Retention / Disk Control
 
@@ -180,6 +186,7 @@ Override via environment or flags:
 - `PRUNE_OLD_RUNS=false` or `--no-prune`
 - `PRUNE_KEEP_RUNS=<n>` or `--prune-keep-runs <n>`
 - `PRUNE_MIN_FREE_GB=<n>` or `--prune-min-free-gb <n>`
+- `PRUNE_MUTABLE_CACHE_DIRS=true|false|auto` or `--prune-mutable-caches` / `--no-prune-mutable-caches`
 - `KILL_STALE_QEMU=false` or `--no-kill-stale-qemu` (default behavior is to clear stale QEMU processes that still hold the shared tap interfaces)
 
 You can also run the pruner directly:
@@ -188,7 +195,8 @@ You can also run the pruner directly:
 ./test-harness/scripts/prune-vm-test-runs.sh \
   --work-root test-harness/work \
   --keep-runs 6 \
-  --min-free-gb 40
+  --min-free-gb 40 \
+  --prune-mutable-cache-dirs
 ```
 
 ### VM Directory Ownership
