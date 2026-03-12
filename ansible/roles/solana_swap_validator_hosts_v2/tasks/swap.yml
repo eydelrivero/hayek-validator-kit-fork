@@ -207,7 +207,6 @@
     - name: swap - Rsync tower file from source to destination
       ansible.builtin.shell: |
         rsync --delay-updates -F --archive --delete \
-          --rsync-path="sudo -n rsync" \
           -e "ssh -i {{ source_ssh_key_path }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o LogLevel=ERROR -o BatchMode=yes -p {{ destination_host_port }}" \
           "{{ tower_file_src }}" "{{ ansible_user }}@{{ destination_host_address }}:{{ tower_file_dest }}"
       delegate_to: "{{ source_host }}"
