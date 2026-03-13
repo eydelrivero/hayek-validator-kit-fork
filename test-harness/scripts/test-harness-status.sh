@@ -10,6 +10,9 @@ SOLANA_RPC_URL="http://${ENTRYPOINT_VM_IP}:8899"
 PRIMARY_TARGET_IDENTITY="demoneTKvfN3Bx2jhZoAHhNbJAzt2rom61xyqMe5Fcw"
 WATCH_ENABLED=0
 WATCH_INTERVAL=30
+WATCH_DEBUG=0
+WATCH_DEBUG_ROOT="${EXPECTED_QEMU_ROOT}/status-debug"
+WATCH_DEBUG_RUN_DIR=""
 WATCH_SSH_KEY="/home/ubuntu/workdir/repos/hayek-validator-kit-fork/scripts/vm-test/work/id_ed25519"
 WATCH_VALIDATOR_OPERATOR_USER="bob"
 WATCH_SOURCE_SSH_PORT=2522
@@ -162,7 +165,7 @@ run_solana() {
 usage() {
   cat <<EOF
 Usage:
-  $(basename "$0") [--watch [SECONDS]]
+  $(basename "$0") [--watch [SECONDS]] [--debug]
 
 Options:
   --watch           Repeat every 30 seconds until Ctrl+C
@@ -170,6 +173,7 @@ Options:
   --watch=SECONDS   Same as above
   --watch off       Run once
   --watch 0         Run once
+  --debug           Write raw catchup probe output under test-harness/work/status-debug/
   -h, --help        Show this help
 
 Default behavior:
@@ -221,6 +225,10 @@ parse_args() {
             fi
             ;;
         esac
+        shift
+        ;;
+      --debug)
+        WATCH_DEBUG=1
         shift
         ;;
       -h|--help)
@@ -952,45 +960,65 @@ collect_validator_watch_metrics() {
 collect_single_catchup_marker() {
   local host_ip="$1"
   local host_port="$2"
-  local remote_timeout=""
+  local probe_label="${3:-probe}"
   local output=""
+  local marker="?"
 
   if ! command_exists ssh || [[ ! -r "$WATCH_SSH_KEY" ]]; then
     printf '?'
     return 0
   fi
 
-  remote_timeout=$(( WATCH_CATCHUP_TIMEOUT_SEC - 2 ))
-  if (( remote_timeout < 1 )); then
-    remote_timeout=1
-  fi
-
   output="$(
-    timeout "$WATCH_CATCHUP_TIMEOUT_SEC" \
-      ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout=5 \
-        -o IdentitiesOnly=yes \
-        -o IdentityAgent=none \
-        -o LogLevel=ERROR \
-        -o UserKnownHostsFile=/dev/null \
-        -o StrictHostKeyChecking=no \
-        -i "$WATCH_SSH_KEY" \
-        -p "$host_port" \
-        "${WATCH_VALIDATOR_OPERATOR_USER}@${host_ip}" \
-        "timeout ${remote_timeout}s /opt/solana/active_release/bin/solana -u '$SOLANA_RPC_URL' catchup --our-localhost 8899" \
-      2>&1 || true
+    (
+      timeout "$WATCH_CATCHUP_TIMEOUT_SEC" \
+        ssh \
+          -n \
+          -o BatchMode=yes \
+          -o ConnectTimeout=5 \
+          -o IdentitiesOnly=yes \
+          -o IdentityAgent=none \
+          -o LogLevel=ERROR \
+          -o UserKnownHostsFile=/dev/null \
+          -o StrictHostKeyChecking=no \
+          -i "$WATCH_SSH_KEY" \
+          -p "$host_port" \
+          "${WATCH_VALIDATOR_OPERATOR_USER}@${host_ip}" \
+          "script -qefc \"/opt/solana/active_release/bin/solana -u '$SOLANA_RPC_URL' catchup --our-localhost 8899\" /dev/null" \
+        2>&1 || true
+    ) | tr '\r' '\n' | sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g'
   )"
 
-  if grep -qi 'caught up' <<< "$output"; then
-    printf 'C'
-  elif grep -qiE 'has not caught up|behind| us:[0-9]+ .* them:[0-9]+' <<< "$output"; then
-    printf '~'
+  if grep -qiE 'caught up|0 slot\(s\) behind' <<< "$output"; then
+    marker='C'
+  elif grep -qiE '[1-9][0-9]* slot\(s\) behind|has not caught up|falling behind|gaining at|ETA:|behind at|behind \(us:|us:[0-9]+ them:[0-9]+' <<< "$output"; then
+    marker='~'
   elif [[ -n "${output// }" ]]; then
-    printf '!'
+    marker='!'
   else
-    printf '?'
+    marker='?'
   fi
+
+  if (( WATCH_DEBUG )) && [[ -n "$WATCH_DEBUG_RUN_DIR" ]]; then
+    {
+      printf 'timestamp=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      printf 'label=%s\n' "$probe_label"
+      printf 'host=%s\n' "$host_ip"
+      printf 'port=%s\n' "$host_port"
+      printf 'marker=%s\n' "$marker"
+      printf -- '--- raw output ---\n'
+      printf '%s\n' "$output"
+    } > "${WATCH_DEBUG_RUN_DIR}/${probe_label}.latest.log"
+
+    {
+      printf 'timestamp=%s label=%s host=%s port=%s marker=%s\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$probe_label" "$host_ip" "$host_port" "$marker"
+      printf '%s\n' "$output"
+      printf -- '---\n'
+    } >> "${WATCH_DEBUG_RUN_DIR}/${probe_label}.history.log"
+  fi
+
+  printf '%s' "$marker"
 }
 
 collect_catchup_watch_metrics() {
@@ -1002,13 +1030,13 @@ collect_catchup_watch_metrics() {
     if [[ "$WATCH_SRC_PID" == "?" ]]; then
       WATCH_SRC_CATCHUP="?"
     else
-      WATCH_SRC_CATCHUP="$(collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT")"
+      WATCH_SRC_CATCHUP="$(collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT" "src")"
     fi
 
     if [[ "$WATCH_DST_PID" == "?" ]]; then
       WATCH_DST_CATCHUP="?"
     else
-      WATCH_DST_CATCHUP="$(collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT")"
+      WATCH_DST_CATCHUP="$(collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT" "dst")"
     fi
     return 0
   fi
@@ -1020,7 +1048,7 @@ collect_catchup_watch_metrics() {
     WATCH_SRC_CATCHUP="?"
   else
     (
-      collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT" >"$src_file"
+      collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT" "src" >"$src_file"
     ) &
     src_probe_pid=$!
   fi
@@ -1029,7 +1057,7 @@ collect_catchup_watch_metrics() {
     WATCH_DST_CATCHUP="?"
   else
     (
-      collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT" >"$dst_file"
+      collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT" "dst" >"$dst_file"
     ) &
     dst_probe_pid=$!
   fi
@@ -1421,6 +1449,14 @@ main() {
   local latest_inventory=""
 
   parse_args "$@"
+  if (( WATCH_DEBUG )); then
+    WATCH_DEBUG_RUN_DIR="${WATCH_DEBUG_ROOT}/latest"
+    mkdir -p "$WATCH_DEBUG_RUN_DIR"
+    rm -f "${WATCH_DEBUG_RUN_DIR}/src.latest.log" \
+      "${WATCH_DEBUG_RUN_DIR}/src.history.log" \
+      "${WATCH_DEBUG_RUN_DIR}/dst.latest.log" \
+      "${WATCH_DEBUG_RUN_DIR}/dst.history.log"
+  fi
   latest_inventory="$(discover_latest_operator_inventory)"
   load_watch_ssh_targets_from_inventory "$latest_inventory"
 
