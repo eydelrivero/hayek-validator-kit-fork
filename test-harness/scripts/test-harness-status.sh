@@ -1099,14 +1099,19 @@ build_role_cell() {
   local stake="$4"
   local catchup_marker="${5:-}"
 
-  printf '%s · %s · %s · %s' \
-    "${pid:-?}" \
-    "$(shorten_address "${identity:-?}")" \
-    "${version:-?}" \
-    "$(rounded_stake "$stake")"
-
   if [[ -n "$catchup_marker" ]]; then
-    printf ' · %s' "$catchup_marker"
+    printf '%s · %s · %s · %s · %s' \
+      "${pid:-?}" \
+      "${version:-?}" \
+      "${catchup_marker:-?}" \
+      "$(shorten_address "${identity:-?}")" \
+      "$(rounded_stake "$stake")"
+  else
+    printf '%s · %s · %s · %s' \
+      "${pid:-?}" \
+      "$(shorten_address "${identity:-?}")" \
+      "${version:-?}" \
+      "$(rounded_stake "$stake")"
   fi
 }
 
@@ -1117,7 +1122,7 @@ format_role_cell() {
   local version="$4"
   local stake="$5"
   local catchup_marker="${6:-}"
-  local padded="" shortened_identity="" highlighted_identity=""
+  local padded="" shortened_identity="" highlighted_identity="" marker_color="" highlighted_marker=""
 
   padded="$(fit_cell "$width" "$(build_role_cell "$pid" "$identity" "$version" "$stake" "$catchup_marker")")"
 
@@ -1132,6 +1137,21 @@ format_role_cell() {
     padded="${padded/"$shortened_identity"/"$highlighted_identity"}"
   fi
 
+  if [[ -n "$catchup_marker" ]]; then
+    case "$catchup_marker" in
+      C) marker_color="${BOLD}${GREEN}" ;;
+      '~') marker_color="${BOLD}${YELLOW}" ;;
+      '!') marker_color="${BOLD}${RED}" ;;
+      '?') marker_color="${DIM}" ;;
+      *) marker_color="" ;;
+    esac
+
+    if [[ -n "$marker_color" ]]; then
+      highlighted_marker="${marker_color}${catchup_marker}${RESET}"
+      padded="${padded/ · $catchup_marker · / · $highlighted_marker · }"
+    fi
+  fi
+
   printf '%s' "$padded"
 }
 
@@ -1143,15 +1163,32 @@ clear_watch_screen() {
 
 move_watch_cursor_to_rows() {
   if (( CAN_COLOR )); then
-    printf '\033[2;1H'
+    printf '\033[3;1H'
   fi
+}
+
+format_catchup_legend() {
+  local c_caught='C'
+  local c_catching='~'
+  local c_failed='!'
+  local c_unknown='?'
+
+  if (( CAN_COLOR )); then
+    c_caught="${BOLD}${GREEN}C${RESET}"
+    c_catching="${BOLD}${YELLOW}~${RESET}"
+    c_failed="${BOLD}${RED}!${RESET}"
+    c_unknown="${DIM}?${RESET}"
+  fi
+
+  printf 'Catchup marker: %s=caught up  %s=catching up  %s=probe failed  %s=unavailable' \
+    "$c_caught" "$c_catching" "$c_failed" "$c_unknown"
 }
 
 initialize_watch_screen() {
   if (( CAN_COLOR )) && (( ! WATCH_SCREEN_INITIALIZED )); then
     clear_watch_screen
     printf 'Live updates every %ss. Newest sample last.\n' "$WATCH_INTERVAL"
-    printf 'Catchup marker: C=caught up  ~=catching up  !=probe failed  ?=unavailable\n'
+    printf '%s\n' "$(format_catchup_legend)"
     WATCH_SCREEN_INITIALIZED=1
   fi
 }
@@ -1167,7 +1204,7 @@ build_watch_sample_block() {
   local line1
   local sample_width=0
   local role_width_ep=42
-  local role_width_validator=44
+  local role_width_validator=45
 
   line1="$(
     printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
@@ -1196,7 +1233,7 @@ build_watch_sample_block() {
 render_watch_screen() {
   local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i watch_header watch_width legend_line updates_line
   local role_width_ep=42
-  local role_width_validator=44
+  local role_width_validator=45
   term_lines="$(get_terminal_lines)"
   [[ "$term_lines" =~ ^[0-9]+$ ]] || term_lines=24
 
@@ -1226,12 +1263,12 @@ render_watch_screen() {
       "$(fit_cell 8 "Epoch%")" \
       "$(fit_cell 9 "In gossip")" \
       "$(fit_cell "$role_width_ep" "EP13 pid · id · ver · stake")" \
-      "$(fit_cell "$role_width_validator" "SRC11 pid · id · ver · stake · c")" \
-      "$(fit_cell "$role_width_validator" "DST12 pid · id · ver · stake · c")"
+      "$(fit_cell "$role_width_validator" "SRC11 pid · ver · c · id · stake")" \
+      "$(fit_cell "$role_width_validator" "DST12 pid · ver · c · id · stake")"
   )"
 
   updates_line="Live updates every ${WATCH_INTERVAL}s. Newest sample last."
-  legend_line="Catchup marker: C=caught up  ~=catching up  !=probe failed  ?=unavailable"
+  legend_line="$(format_catchup_legend)"
   watch_width="$(visible_length "$watch_header")"
   if (( WATCH_TABLE_WIDTH > watch_width )); then
     watch_width="$WATCH_TABLE_WIDTH"
