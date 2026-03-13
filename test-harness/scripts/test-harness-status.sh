@@ -25,6 +25,7 @@ WATCH_TABLE_WIDTH=0
 if [[ -t 1 ]]; then
   BOLD=$'\033[1m'
   DIM=$'\033[2m'
+  GRAY=$'\033[90m'
   RED=$'\033[31m'
   GREEN=$'\033[32m'
   YELLOW=$'\033[33m'
@@ -35,6 +36,7 @@ if [[ -t 1 ]]; then
 else
   BOLD=""
   DIM=""
+  GRAY=""
   RED=""
   GREEN=""
   YELLOW=""
@@ -65,6 +67,17 @@ strip_ansi() {
 visible_length() {
   local text="${1:-}"
   printf '%s' "$text" | strip_ansi | awk '{ print length }'
+}
+
+gray_middle_dots() {
+  local text="${1:-}"
+
+  if (( ! CAN_COLOR )); then
+    printf '%s' "$text"
+    return 0
+  fi
+
+  printf '%s' "${text// · / ${GRAY}·${RESET} }"
 }
 
 header() {
@@ -981,17 +994,65 @@ collect_single_catchup_marker() {
 }
 
 collect_catchup_watch_metrics() {
+  local temp_dir="" src_file="" dst_file=""
+  local src_probe_pid="" dst_probe_pid=""
+
+  temp_dir="$(mktemp -d 2>/dev/null || true)"
+  if [[ -z "$temp_dir" || ! -d "$temp_dir" ]]; then
+    if [[ "$WATCH_SRC_PID" == "?" ]]; then
+      WATCH_SRC_CATCHUP="?"
+    else
+      WATCH_SRC_CATCHUP="$(collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT")"
+    fi
+
+    if [[ "$WATCH_DST_PID" == "?" ]]; then
+      WATCH_DST_CATCHUP="?"
+    else
+      WATCH_DST_CATCHUP="$(collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT")"
+    fi
+    return 0
+  fi
+
+  src_file="${temp_dir}/src.marker"
+  dst_file="${temp_dir}/dst.marker"
+
   if [[ "$WATCH_SRC_PID" == "?" ]]; then
     WATCH_SRC_CATCHUP="?"
   else
-    WATCH_SRC_CATCHUP="$(collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT")"
+    (
+      collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT" >"$src_file"
+    ) &
+    src_probe_pid=$!
   fi
 
   if [[ "$WATCH_DST_PID" == "?" ]]; then
     WATCH_DST_CATCHUP="?"
   else
-    WATCH_DST_CATCHUP="$(collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT")"
+    (
+      collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT" >"$dst_file"
+    ) &
+    dst_probe_pid=$!
   fi
+
+  if [[ -n "$src_probe_pid" ]]; then
+    wait "$src_probe_pid" 2>/dev/null || true
+    if [[ -r "$src_file" ]]; then
+      WATCH_SRC_CATCHUP="$(<"$src_file")"
+    else
+      WATCH_SRC_CATCHUP="?"
+    fi
+  fi
+
+  if [[ -n "$dst_probe_pid" ]]; then
+    wait "$dst_probe_pid" 2>/dev/null || true
+    if [[ -r "$dst_file" ]]; then
+      WATCH_DST_CATCHUP="$(<"$dst_file")"
+    else
+      WATCH_DST_CATCHUP="?"
+    fi
+  fi
+
+  rm -rf "$temp_dir"
 }
 
 collect_watch_metrics() {
@@ -1152,7 +1213,7 @@ format_role_cell() {
     fi
   fi
 
-  printf '%s' "$padded"
+  printf '%s' "$(gray_middle_dots "$padded")"
 }
 
 clear_watch_screen() {
@@ -1266,6 +1327,7 @@ render_watch_screen() {
       "$(fit_cell "$role_width_validator" "SRC11 pid · ver · c · id · stake")" \
       "$(fit_cell "$role_width_validator" "DST12 pid · ver · c · id · stake")"
   )"
+  watch_header="$(gray_middle_dots "$watch_header")"
 
   updates_line="Live updates every ${WATCH_INTERVAL}s. Newest sample last."
   legend_line="$(format_catchup_legend)"
