@@ -83,6 +83,18 @@ gray_middle_dots() {
   printf '%s' "${text// · / ${GRAY}·${RESET} }"
 }
 
+blue_ip_in_header() {
+  local text="${1:-}"
+  local ip="${2:-}"
+
+  if (( ! CAN_COLOR )) || [[ -z "$ip" ]]; then
+    printf '%s' "$text"
+    return 0
+  fi
+
+  printf '%s' "${text/"$ip"/"${BLUE}${ip}${RESET}"}"
+}
+
 header() {
   local title="$1"
   echo
@@ -1320,14 +1332,16 @@ build_watch_sample_block() {
 }
 
 render_watch_screen() {
-  local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i watch_header watch_width legend_line updates_line
+  local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i
+  local watch_header_plain watch_header watch_header_ip watch_width legend_line updates_line
+  local role1_pos=0 role2_pos=0 role3_pos=0
   local role_width_ep=42
   local role_width_validator=45
   term_lines="$(get_terminal_lines)"
   [[ "$term_lines" =~ ^[0-9]+$ ]] || term_lines=24
 
   top_lines=2
-  header_lines=2
+  header_lines=3
   row_lines=1
   available_lines=$((term_lines - top_lines - header_lines))
   (( available_lines < row_lines )) && available_lines=$row_lines
@@ -1340,7 +1354,7 @@ render_watch_screen() {
     start=$((total_samples - max_samples))
   fi
 
-  watch_header="$(
+  watch_header_plain="$(
     printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
       "$(fit_cell 8 "Time")" \
       "$(fit_cell 4 "CPU%")" \
@@ -1351,15 +1365,43 @@ render_watch_screen() {
       "$(fit_cell 5 "Epoch")" \
       "$(fit_cell 8 "Epoch%")" \
       "$(fit_cell 9 "In gossip")" \
-      "$(fit_cell "$role_width_ep" "EP13 pid · id · ver · stake")" \
-      "$(fit_cell "$role_width_validator" "SRC11 pid · c · ver · id · stake")" \
-      "$(fit_cell "$role_width_validator" "DST12 pid · c · ver · id · stake")"
+      "$(fit_cell "$role_width_ep" "pid · id · ver · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")"
   )"
-  watch_header="$(gray_middle_dots "$watch_header")"
+  watch_header="$(gray_middle_dots "$watch_header_plain")"
+
+  read -r role1_pos role2_pos role3_pos <<EOF
+$(awk -v s="$watch_header_plain" '
+  BEGIN {
+    p1 = index(s, "pid · id · ver · stake");
+    p2 = index(substr(s, p1 + 1), "pid · c · ver · id · stake");
+    if (p2 > 0) {
+      p2 += p1;
+    }
+    p3 = index(substr(s, p2 + 1), "pid · c · ver · id · stake");
+    if (p3 > 0) {
+      p3 += p2;
+    }
+    print p1, p2, p3;
+  }
+')
+EOF
+
+  watch_header_ip="$(printf '%*s' "$(visible_length "$watch_header_plain")" "")"
+  watch_header_ip="${watch_header_ip:0:$((role1_pos - 1))}ep ${ENTRYPOINT_VM_IP}${watch_header_ip:$((role1_pos - 1 + ${#ENTRYPOINT_VM_IP} + 3))}"
+  watch_header_ip="${watch_header_ip:0:$((role2_pos - 1))}src ${SOURCE_VM_IP}${watch_header_ip:$((role2_pos - 1 + ${#SOURCE_VM_IP} + 4))}"
+  watch_header_ip="${watch_header_ip:0:$((role3_pos - 1))}dst ${DESTINATION_VM_IP}${watch_header_ip:$((role3_pos - 1 + ${#DESTINATION_VM_IP} + 4))}"
+  watch_header_ip="$(blue_ip_in_header "$watch_header_ip" "$ENTRYPOINT_VM_IP")"
+  watch_header_ip="$(blue_ip_in_header "$watch_header_ip" "$SOURCE_VM_IP")"
+  watch_header_ip="$(blue_ip_in_header "$watch_header_ip" "$DESTINATION_VM_IP")"
 
   updates_line="Live updates every ${WATCH_INTERVAL}s. Newest sample last."
   legend_line="$(format_catchup_legend)"
   watch_width="$(visible_length "$watch_header")"
+  if (( $(visible_length "$watch_header_ip") > watch_width )); then
+    watch_width="$(visible_length "$watch_header_ip")"
+  fi
   if (( WATCH_TABLE_WIDTH > watch_width )); then
     watch_width="$WATCH_TABLE_WIDTH"
   fi
@@ -1392,6 +1434,7 @@ render_watch_screen() {
   printf '%b%s%b\n' "$BOLD" \
     "$watch_header" \
     "$RESET"
+  printf '%s\n' "$watch_header_ip"
 }
 
 print_watch_sample() {
