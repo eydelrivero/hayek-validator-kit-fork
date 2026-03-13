@@ -1191,8 +1191,8 @@ build_role_cell() {
   if [[ -n "$catchup_marker" ]]; then
     printf '%s · %s · %s · %s · %s' \
       "${pid:-?}" \
-      "${version:-?}" \
       "${catchup_marker:-?}" \
+      "${version:-?}" \
       "$(shorten_address "${identity:-?}")" \
       "$(rounded_stake "$stake")"
   else
@@ -1352,8 +1352,8 @@ render_watch_screen() {
       "$(fit_cell 8 "Epoch%")" \
       "$(fit_cell 9 "In gossip")" \
       "$(fit_cell "$role_width_ep" "EP13 pid · id · ver · stake")" \
-      "$(fit_cell "$role_width_validator" "SRC11 pid · ver · c · id · stake")" \
-      "$(fit_cell "$role_width_validator" "DST12 pid · ver · c · id · stake")"
+      "$(fit_cell "$role_width_validator" "SRC11 pid · c · ver · id · stake")" \
+      "$(fit_cell "$role_width_validator" "DST12 pid · c · ver · id · stake")"
   )"
   watch_header="$(gray_middle_dots "$watch_header")"
 
