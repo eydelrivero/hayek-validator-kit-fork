@@ -10,10 +10,16 @@ SOLANA_RPC_URL="http://${ENTRYPOINT_VM_IP}:8899"
 PRIMARY_TARGET_IDENTITY="demoneTKvfN3Bx2jhZoAHhNbJAzt2rom61xyqMe5Fcw"
 WATCH_ENABLED=0
 WATCH_INTERVAL=30
+WATCH_SSH_KEY="/home/ubuntu/workdir/repos/hayek-validator-kit-fork/scripts/vm-test/work/id_ed25519"
+WATCH_VALIDATOR_OPERATOR_USER="bob"
+WATCH_SOURCE_SSH_PORT=2522
+WATCH_DESTINATION_SSH_PORT=2522
+WATCH_CATCHUP_TIMEOUT_SEC=8
 WATCH_SAMPLE_HISTORY=()
 WATCH_SCREEN_INITIALIZED=0
 WATCH_PREV_ENT_PID=""
 WATCH_TESTCASE_BOUNDARY_MARKER="__WATCH_TESTCASE_BOUNDARY__"
+WATCH_TABLE_WIDTH=0
 
 # Colors
 if [[ -t 1 ]]; then
@@ -52,6 +58,15 @@ watch_line() {
   awk -v n="$width" 'BEGIN { for (i = 0; i < n; i++) printf "─"; printf "\n" }'
 }
 
+strip_ansi() {
+  sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g'
+}
+
+visible_length() {
+  local text="${1:-}"
+  printf '%s' "$text" | strip_ansi | awk '{ print length }'
+}
+
 header() {
   local title="$1"
   echo
@@ -78,6 +93,49 @@ err() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+discover_latest_operator_inventory() {
+  find "$EXPECTED_QEMU_ROOT" -type f -name 'inventory.operator.yml' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -nr \
+    | awk 'NR==1 { print $2 }'
+}
+
+load_watch_ssh_targets_from_inventory() {
+  local inventory_file="${1:-}"
+  local parsed=""
+
+  [[ -n "$inventory_file" && -r "$inventory_file" ]] || return 0
+
+  parsed="$(
+    awk '
+      $1 == "vm-source:" { host="src"; next }
+      $1 == "vm-destination:" { host="dst"; next }
+      host == "src" && $1 == "ansible_host:" { src_host=$2; next }
+      host == "src" && $1 == "ansible_port:" { src_port=$2; host=""; next }
+      host == "dst" && $1 == "ansible_host:" { dst_host=$2; next }
+      host == "dst" && $1 == "ansible_port:" { dst_port=$2; host=""; next }
+      END {
+        print src_host
+        print src_port
+        print dst_host
+        print dst_port
+      }
+    ' "$inventory_file"
+  )"
+
+  if [[ -n "$(sed -n '1p' <<< "$parsed")" ]]; then
+    SOURCE_VM_IP="$(sed -n '1p' <<< "$parsed")"
+  fi
+  if [[ "$(sed -n '2p' <<< "$parsed")" =~ ^[0-9]+$ ]]; then
+    WATCH_SOURCE_SSH_PORT="$(sed -n '2p' <<< "$parsed")"
+  fi
+  if [[ -n "$(sed -n '3p' <<< "$parsed")" ]]; then
+    DESTINATION_VM_IP="$(sed -n '3p' <<< "$parsed")"
+  fi
+  if [[ "$(sed -n '4p' <<< "$parsed")" =~ ^[0-9]+$ ]]; then
+    WATCH_DESTINATION_SSH_PORT="$(sed -n '4p' <<< "$parsed")"
+  fi
 }
 
 run_solana() {
@@ -509,10 +567,12 @@ reset_watch_metrics() {
   WATCH_SRC_IDENTITY="?"
   WATCH_SRC_VERSION="?"
   WATCH_SRC_ACTIVE_STAKE="?"
+  WATCH_SRC_CATCHUP="?"
   WATCH_DST_IP="$DESTINATION_VM_IP"
   WATCH_DST_IDENTITY="?"
   WATCH_DST_VERSION="?"
   WATCH_DST_ACTIVE_STAKE="?"
+  WATCH_DST_CATCHUP="?"
 }
 
 collect_cpu_watch_metrics() {
@@ -876,6 +936,64 @@ collect_validator_watch_metrics() {
   [[ -z "${WATCH_DST_ACTIVE_STAKE// }" ]] && WATCH_DST_ACTIVE_STAKE="?"
 }
 
+collect_single_catchup_marker() {
+  local host_ip="$1"
+  local host_port="$2"
+  local remote_timeout=""
+  local output=""
+
+  if ! command_exists ssh || [[ ! -r "$WATCH_SSH_KEY" ]]; then
+    printf '?'
+    return 0
+  fi
+
+  remote_timeout=$(( WATCH_CATCHUP_TIMEOUT_SEC - 2 ))
+  if (( remote_timeout < 1 )); then
+    remote_timeout=1
+  fi
+
+  output="$(
+    timeout "$WATCH_CATCHUP_TIMEOUT_SEC" \
+      ssh \
+        -o BatchMode=yes \
+        -o ConnectTimeout=5 \
+        -o IdentitiesOnly=yes \
+        -o IdentityAgent=none \
+        -o LogLevel=ERROR \
+        -o UserKnownHostsFile=/dev/null \
+        -o StrictHostKeyChecking=no \
+        -i "$WATCH_SSH_KEY" \
+        -p "$host_port" \
+        "${WATCH_VALIDATOR_OPERATOR_USER}@${host_ip}" \
+        "timeout ${remote_timeout}s /opt/solana/active_release/bin/solana -u '$SOLANA_RPC_URL' catchup --our-localhost 8899" \
+      2>&1 || true
+  )"
+
+  if grep -qi 'caught up' <<< "$output"; then
+    printf 'C'
+  elif grep -qiE 'has not caught up|behind| us:[0-9]+ .* them:[0-9]+' <<< "$output"; then
+    printf '~'
+  elif [[ -n "${output// }" ]]; then
+    printf '!'
+  else
+    printf '?'
+  fi
+}
+
+collect_catchup_watch_metrics() {
+  if [[ "$WATCH_SRC_PID" == "?" ]]; then
+    WATCH_SRC_CATCHUP="?"
+  else
+    WATCH_SRC_CATCHUP="$(collect_single_catchup_marker "$SOURCE_VM_IP" "$WATCH_SOURCE_SSH_PORT")"
+  fi
+
+  if [[ "$WATCH_DST_PID" == "?" ]]; then
+    WATCH_DST_CATCHUP="?"
+  else
+    WATCH_DST_CATCHUP="$(collect_single_catchup_marker "$DESTINATION_VM_IP" "$WATCH_DESTINATION_SSH_PORT")"
+  fi
+}
+
 collect_watch_metrics() {
   reset_watch_metrics
   WATCH_TS="$(date '+%H:%M:%S')"
@@ -887,6 +1005,7 @@ collect_watch_metrics() {
   collect_epoch_watch_metrics
   collect_gossip_watch_metrics
   collect_validator_watch_metrics
+  collect_catchup_watch_metrics
 }
 
 shorten_middle() {
@@ -978,12 +1097,17 @@ build_role_cell() {
   local identity="$2"
   local version="$3"
   local stake="$4"
+  local catchup_marker="${5:-}"
 
   printf '%s · %s · %s · %s' \
     "${pid:-?}" \
     "$(shorten_address "${identity:-?}")" \
     "${version:-?}" \
     "$(rounded_stake "$stake")"
+
+  if [[ -n "$catchup_marker" ]]; then
+    printf ' · %s' "$catchup_marker"
+  fi
 }
 
 format_role_cell() {
@@ -992,12 +1116,11 @@ format_role_cell() {
   local identity="$3"
   local version="$4"
   local stake="$5"
-  local raw padded
-  local left remainder middle1 middle2 right
-  local text_prefix="" text_suffix="" sep
+  local catchup_marker="${6:-}"
+  local padded=""
+  local cell_prefix="" cell_suffix=""
 
-  raw="$(build_role_cell "$pid" "$identity" "$version" "$stake")"
-  padded="$(fit_cell "$width" "$raw")"
+  padded="$(fit_cell "$width" "$(build_role_cell "$pid" "$identity" "$version" "$stake" "$catchup_marker")")"
 
   if (( ! CAN_COLOR )); then
     printf '%s' "$padded"
@@ -1005,27 +1128,11 @@ format_role_cell() {
   fi
 
   if [[ "$identity" == "$PRIMARY_TARGET_IDENTITY" ]]; then
-    text_prefix="${BOLD}${YELLOW}"
-    text_suffix="${RESET}"
+    cell_prefix="${BOLD}${YELLOW}"
+    cell_suffix="${RESET}"
   fi
 
-  sep="${DIM} · ${RESET}"
-
-  left="${padded%% · *}"
-  remainder="${padded#* · }"
-  middle1="${remainder%% · *}"
-  remainder="${remainder#* · }"
-  middle2="${remainder%% · *}"
-  right="${remainder#* · }"
-
-  printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' \
-    "$text_prefix" "$left" "$text_suffix" \
-    "$sep" \
-    "$text_prefix" "$middle1" "$text_suffix" \
-    "$sep" \
-    "$text_prefix" "$middle2" "$text_suffix" \
-    "$sep" \
-    "$text_prefix" "$right" "$text_suffix"
+  printf '%s%s%s' "$cell_prefix" "$padded" "$cell_suffix"
 }
 
 clear_watch_screen() {
@@ -1044,6 +1151,7 @@ initialize_watch_screen() {
   if (( CAN_COLOR )) && (( ! WATCH_SCREEN_INITIALIZED )); then
     clear_watch_screen
     printf 'Live updates every %ss. Newest sample last.\n' "$WATCH_INTERVAL"
+    printf 'Catchup marker: C=caught up  ~=catching up  !=probe failed  ?=unavailable\n'
     WATCH_SCREEN_INITIALIZED=1
   fi
 }
@@ -1057,6 +1165,9 @@ get_terminal_lines() {
 
 build_watch_sample_block() {
   local line1
+  local sample_width=0
+  local role_width_ep=42
+  local role_width_validator=44
 
   line1="$(
     printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
@@ -1069,20 +1180,27 @@ build_watch_sample_block() {
       "$(fit_cell 5 "$WATCH_EPOCH")" \
       "$(fit_cell 8 "$WATCH_EPOCH_PCT")" \
       "$(fit_cell 9 "$WATCH_GOSSIP_NODES")" \
-      "$(format_role_cell 40 "$WATCH_ENT_PID" "$WATCH_ENT_IDENTITY" "$WATCH_ENT_VERSION" "$WATCH_ENT_ACTIVE_STAKE")" \
-      "$(format_role_cell 40 "$WATCH_SRC_PID" "$WATCH_SRC_IDENTITY" "$WATCH_SRC_VERSION" "$WATCH_SRC_ACTIVE_STAKE")" \
-      "$(format_role_cell 40 "$WATCH_DST_PID" "$WATCH_DST_IDENTITY" "$WATCH_DST_VERSION" "$WATCH_DST_ACTIVE_STAKE")"
+      "$(format_role_cell "$role_width_ep" "$WATCH_ENT_PID" "$WATCH_ENT_IDENTITY" "$WATCH_ENT_VERSION" "$WATCH_ENT_ACTIVE_STAKE")" \
+      "$(format_role_cell "$role_width_validator" "$WATCH_SRC_PID" "$WATCH_SRC_IDENTITY" "$WATCH_SRC_VERSION" "$WATCH_SRC_ACTIVE_STAKE" "$WATCH_SRC_CATCHUP")" \
+      "$(format_role_cell "$role_width_validator" "$WATCH_DST_PID" "$WATCH_DST_IDENTITY" "$WATCH_DST_VERSION" "$WATCH_DST_ACTIVE_STAKE" "$WATCH_DST_CATCHUP")"
   )"
+
+  sample_width="$(visible_length "$line1")"
+  if (( sample_width > WATCH_TABLE_WIDTH )); then
+    WATCH_TABLE_WIDTH="$sample_width"
+  fi
 
   WATCH_SAMPLE_HISTORY+=("$line1")
 }
 
 render_watch_screen() {
-  local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i watch_header
+  local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i watch_header watch_width legend_line updates_line
+  local role_width_ep=42
+  local role_width_validator=44
   term_lines="$(get_terminal_lines)"
   [[ "$term_lines" =~ ^[0-9]+$ ]] || term_lines=24
 
-  top_lines=1
+  top_lines=2
   header_lines=2
   row_lines=1
   available_lines=$((term_lines - top_lines - header_lines))
@@ -1107,10 +1225,23 @@ render_watch_screen() {
       "$(fit_cell 5 "Epoch")" \
       "$(fit_cell 8 "Epoch%")" \
       "$(fit_cell 9 "In gossip")" \
-      "$(fit_cell 40 "EP13 pid · id · ver · stake")" \
-      "$(fit_cell 40 "SRC11 pid · id · ver · stake")" \
-      "$(fit_cell 40 "DST12 pid · id · ver · stake")"
+      "$(fit_cell "$role_width_ep" "EP13 pid · id · ver · stake")" \
+      "$(fit_cell "$role_width_validator" "SRC11 pid · id · ver · stake · c")" \
+      "$(fit_cell "$role_width_validator" "DST12 pid · id · ver · stake · c")"
   )"
+
+  updates_line="Live updates every ${WATCH_INTERVAL}s. Newest sample last."
+  legend_line="Catchup marker: C=caught up  ~=catching up  !=probe failed  ?=unavailable"
+  watch_width="$(visible_length "$watch_header")"
+  if (( WATCH_TABLE_WIDTH > watch_width )); then
+    watch_width="$WATCH_TABLE_WIDTH"
+  fi
+  if (( $(visible_length "$updates_line") > watch_width )); then
+    watch_width="$(visible_length "$updates_line")"
+  fi
+  if (( $(visible_length "$legend_line") > watch_width )); then
+    watch_width="$(visible_length "$legend_line")"
+  fi
 
   if (( CAN_COLOR )); then
     initialize_watch_screen
@@ -1118,18 +1249,19 @@ render_watch_screen() {
     printf '\033[J'
   else
     clear_watch_screen
-    printf 'Live updates every %ss. Newest sample last.\n' "$WATCH_INTERVAL"
+    printf '%s\n' "$updates_line"
+    printf '%s\n' "$legend_line"
   fi
 
   for ((i = start; i < total_samples; i++)); do
     if [[ "${WATCH_SAMPLE_HISTORY[i]}" == "$WATCH_TESTCASE_BOUNDARY_MARKER" ]]; then
-      watch_line "${#watch_header}"
+      watch_line "$watch_width"
     else
       printf '%s\n' "${WATCH_SAMPLE_HISTORY[i]}"
     fi
   done
 
-  watch_line "${#watch_header}"
+  watch_line "$watch_width"
   printf '%b%s%b\n' "$BOLD" \
     "$watch_header" \
     "$RESET"
@@ -1187,7 +1319,11 @@ run_once() {
 }
 
 main() {
+  local latest_inventory=""
+
   parse_args "$@"
+  latest_inventory="$(discover_latest_operator_inventory)"
+  load_watch_ssh_targets_from_inventory "$latest_inventory"
 
   if (( WATCH_ENABLED )); then
     trap 'echo; warn "Stopped."; exit 0' INT TERM
