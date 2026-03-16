@@ -175,6 +175,31 @@ L3 now reuses prepared source/destination VM caches by default (per flavor-pair 
 - immutable stateless entrypoint CLI cache is also shared with L2 via `ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT` (default: `./test-harness/work/_vm-immutable-cache/entrypoint-vm-cli`)
 - `PRUNE_MUTABLE_CACHE_DIRS=auto` by default (with `SHARED_ENTRYPOINT_VM=false`, this prunes legacy mutable caches before runs)
 
+### VM Manual Cluster Bring-Up / Teardown
+
+To bring up the same VM environment used by the L3 canary flow, but stop before
+the hot-swap playbook so you can test manually:
+
+```bash
+./test-harness/scripts/run-vm-hot-swap-manual-cluster.sh \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+This script:
+- reuses the same immutable entrypoint and prepared validator caches as L3
+- retains the case automatically
+- writes the current cluster state to `./test-harness/work/manual-vm-cluster/current.env`
+
+To tear down that retained cluster:
+
+```bash
+./test-harness/scripts/teardown-vm-hot-swap-manual-cluster.sh
+```
+
+Add `--purge-case-dir` if you also want to remove the retained run directory
+after shutdown.
+
 ### VM Run Retention / Disk Control
 
 To avoid manual cleanup during repeated VM runs, L2/L3 now auto-prune old run directories before execution:
