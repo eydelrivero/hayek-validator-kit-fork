@@ -88,6 +88,7 @@ VM_ENTRYPOINT_DISK_PARENT_PREFIX="${VM_ENTRYPOINT_DISK_PARENT_PREFIX:-}"
 VM_PREPARE_ONLY="${VM_PREPARE_ONLY:-false}"
 VM_PREPARE_EXPORT_DIR="${VM_PREPARE_EXPORT_DIR:-}"
 VM_ENTRYPOINT_PREPARE_ONLY="${VM_ENTRYPOINT_PREPARE_ONLY:-false}"
+VM_MANUAL_TEST_ONLY="${VM_MANUAL_TEST_ONLY:-false}"
 PREPARED_VM_REUSE_MODE=false
 ENTRYPOINT_VM_BRIDGE_IP="${ENTRYPOINT_VM_BRIDGE_IP:-}"
 ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-}"
@@ -211,6 +212,7 @@ Environment:
   VM_ENTRYPOINT_DISK_PARENT_PREFIX=<abs-prefix> (reuse a stateless entrypoint VM disk cache via qcow2 overlays)
   VM_PREPARE_ONLY=true with VM_PREPARE_EXPORT_DIR=<dir> (prepare source/destination VM disks and exit before swap)
   VM_ENTRYPOINT_PREPARE_ONLY=true (prepare shared entrypoint VM cache [CLI + launcher], do not start localnet runtime)
+  VM_MANUAL_TEST_ONLY=true (boot a full pre-swap cluster for manual testing, emit report, retain VMs if requested, and skip the swap)
 EOF
 }
 
@@ -3127,6 +3129,19 @@ if [[ "$VM_PREPARE_ONLY" == "true" ]]; then
   EXEC_OK=true
   emit_test_report
   echo "[vm-hot-swap] Prepare-only run completed successfully." >&2
+  exit 0
+fi
+
+if [[ "$VM_MANUAL_TEST_ONLY" == "true" ]]; then
+  CURRENT_PHASE="manual testing"
+  REPORT_DIAGNOSIS="Manual cluster is ready; hot-swap playbook intentionally skipped."
+  EXEC_OK=true
+  emit_test_report
+  echo "[vm-hot-swap] Manual-test-only run completed successfully." >&2
+  echo "[vm-hot-swap] Case directory: $CASE_DIR" >&2
+  echo "[vm-hot-swap] Bootstrap inventory: $BOOTSTRAP_INVENTORY" >&2
+  echo "[vm-hot-swap] Operator inventory: $OPERATOR_INVENTORY" >&2
+  echo "[vm-hot-swap] Entrypoint RPC: http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}" >&2
   exit 0
 fi
 
