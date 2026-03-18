@@ -88,7 +88,7 @@ Example run command:
 - `ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent`
 - `ENTRYPOINT_VM_SKIP_CLI_INSTALL=auto`
 
-Keep `AGAVE_VERSION=3.1.9`, `BAM_JITO_VERSION=3.1.9`, `BUILD_FROM_SOURCE=false` unless intentionally testing another binary source/version.
+Keep `AGAVE_VERSION=3.1.10`, `BAM_JITO_VERSION=3.1.10`, `BUILD_FROM_SOURCE=false` unless intentionally testing another binary source/version.
 
 ## Do-Not-Break Invariants
 - Harness command surface: `test-harness/bin/hvk-test` remains stable and additive.
@@ -139,7 +139,7 @@ Keep `AGAVE_VERSION=3.1.9`, `BAM_JITO_VERSION=3.1.9`, `BUILD_FROM_SOURCE=false` 
 - VM full hot-swap matrix (two hosts):
   - `./test-harness/scripts/run-vm-hot-swap-matrix.sh --vm-arch <amd64|arm64> --vm-base-image <path>`
 - Recommended Linux bridge/tap hot-swap run:
-  - `VM_NETWORK_MODE=shared-bridge VM_LOCALNET_ENTRYPOINT_MODE=vm VM_SOURCE_BRIDGE_IP=192.168.100.11 VM_DESTINATION_BRIDGE_IP=192.168.100.12 ENTRYPOINT_VM_BRIDGE_IP=192.168.100.13 VM_BRIDGE_GATEWAY_IP=192.168.100.1 VM_SOURCE_TAP_IFACE=tap-hvk-src VM_DESTINATION_TAP_IFACE=tap-hvk-dst ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent ENTRYPOINT_VM_SKIP_CLI_INSTALL=auto CITY_GROUP=city_dal ANSIBLE_BECOME_TIMEOUT=60 ANSIBLE_TIMEOUT=60 AGAVE_VERSION=3.1.9 BAM_JITO_VERSION=3.1.9 BUILD_FROM_SOURCE=false ./test-harness/scripts/verify-vm-hot-swap.sh --source-flavor agave --destination-flavor jito-bam --vm-arch arm64 --vm-base-image scripts/vm-test/work/ubuntu-arm64.img`
+  - `VM_NETWORK_MODE=shared-bridge VM_LOCALNET_ENTRYPOINT_MODE=vm VM_SOURCE_BRIDGE_IP=192.168.100.11 VM_DESTINATION_BRIDGE_IP=192.168.100.12 ENTRYPOINT_VM_BRIDGE_IP=192.168.100.13 VM_BRIDGE_GATEWAY_IP=192.168.100.1 VM_SOURCE_TAP_IFACE=tap-hvk-src VM_DESTINATION_TAP_IFACE=tap-hvk-dst ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent ENTRYPOINT_VM_SKIP_CLI_INSTALL=auto CITY_GROUP=city_dal ANSIBLE_BECOME_TIMEOUT=60 ANSIBLE_TIMEOUT=60 AGAVE_VERSION=3.1.10 BAM_JITO_VERSION=3.1.10 BUILD_FROM_SOURCE=false ./test-harness/scripts/verify-vm-hot-swap.sh --source-flavor agave --destination-flavor jito-bam --vm-arch arm64 --vm-base-image scripts/vm-test/work/ubuntu-arm64.img`
 
 ## Resume Checklist For Next Session
 Read these first:
