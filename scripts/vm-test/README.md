@@ -167,8 +167,8 @@ VM_SOURCE_TAP_IFACE=tap-hvk-src \
 VM_DESTINATION_TAP_IFACE=tap-hvk-dst \
 ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent \
 ENTRYPOINT_VM_SKIP_CLI_INSTALL=auto \
-AGAVE_VERSION=3.1.9 \
-BAM_JITO_VERSION=3.1.9 \
+AGAVE_VERSION=3.1.10 \
+BAM_JITO_VERSION=3.1.10 \
 BUILD_FROM_SOURCE=false \
 ./test-harness/scripts/verify-vm-hot-swap.sh \
   --source-flavor agave \

@@ -338,9 +338,9 @@ Run full identity transfer tests for:
 ```
 
 Tunable environment variables:
-- `AGAVE_VERSION` (default `2.3.11`)
+- `AGAVE_VERSION` (default `3.1.10`)
 - `JITO_VERSION` (default `2.3.6`)
-- `BAM_JITO_VERSION` (default `2.2.16`)
+- `BAM_JITO_VERSION` (default `3.1.10`)
 - `BAM_JITO_VERSION_PATCH` (optional)
 - `BAM_RELAYER_TYPE` (default `shared`)
 - `BAM_EXPECT_CLIENT_REGEX` (default `Bam`)
