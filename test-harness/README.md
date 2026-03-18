@@ -61,6 +61,54 @@ For VM target scenarios, `hvk-test run` now applies default verification when
 
 This order is intentional to preserve the current operational workflow.
 
+### VM Access-Validation Suite
+
+For focused VM coverage of PR #212 (`server_initial_setup` SSH/firewall/reboot
+transition), use:
+
+```bash
+./test-harness/scripts/verify-vm-access-validation.sh \
+  --inventory <path-to-vm-inventory>
+```
+
+If you are using the stock VM test flow, this works directly with
+`scripts/vm-test/inventory.vm.yml`:
+
+```bash
+./test-harness/scripts/verify-vm-access-validation.sh \
+  --inventory scripts/vm-test/inventory.vm.yml
+```
+
+Optional examples:
+
+```bash
+./test-harness/scripts/verify-vm-access-validation.sh \
+  --inventory <path-to-vm-inventory> \
+  --target-host vm-local \
+  --host-name validator-test-01
+```
+
+This verifier intentionally stays separate from the existing hot-swap suites. It:
+- runs `pb_setup_users_validator` once
+- runs `pb_setup_metal_box --tags access-validation` twice
+- asserts `ssh.service` is enabled and active after each run
+- asserts `ssh.socket` is disabled and inactive after each run when the unit exists
+- asserts SSH is listening on the configured post-metal port (`2522` by default)
+- requires a real first-run port switch by keeping the bootstrap inventory on the old SSH port
+
+By default it also requires the VM to start with an active `ssh.socket`, because
+that is the upstream regression path PR #212 is fixing. You can relax that guard
+for post-state-only checks with:
+
+```bash
+REQUIRE_SSH_SOCKET_PRECONDITION=false \
+./test-harness/scripts/verify-vm-access-validation.sh \
+  --inventory <path-to-vm-inventory>
+```
+
+Artifacts and probe output are written under `vm-access-validation/` next to the
+inventory by default, or under `--workdir <path>` if provided.
+
 ### VM Two-Host Hot-Swap Matrix
 
 To run full two-host VM identity-transfer tests (including
