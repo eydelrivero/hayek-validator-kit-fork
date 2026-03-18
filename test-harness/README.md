@@ -64,7 +64,32 @@ This order is intentional to preserve the current operational workflow.
 ### VM Access-Validation Suite
 
 For focused VM coverage of PR #212 (`server_initial_setup` SSH/firewall/reboot
-transition), use:
+transition), the recommended one-command entrypoint is:
+
+```bash
+./test-harness/scripts/run-vm-access-validation.sh \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
+```
+
+This wrapper:
+- boots a disposable VM in the background
+- waits for bootstrap SSH
+- runs `verify-vm-access-validation.sh`
+- tears the VM down automatically on success
+- retains the VM only when `--retain-on-failure` or `--retain-always` is used
+
+Useful options:
+
+```bash
+./test-harness/scripts/run-vm-access-validation.sh \
+  --vm-arch amd64 \
+  --vm-base-image scripts/vm-test/work/ubuntu-amd64.img \
+  --host-name validator-test-01 \
+  --retain-on-failure
+```
+
+If you already have a VM inventory and only want the verifier, use:
 
 ```bash
 ./test-harness/scripts/verify-vm-access-validation.sh \
