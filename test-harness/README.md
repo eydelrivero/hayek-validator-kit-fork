@@ -264,14 +264,14 @@ This script:
 - retains the case automatically
 - writes the current cluster state to `./test-harness/work/manual-vm-cluster/current.env`
 
-To tear down that retained cluster:
+To tear down that retained cluster, or any other harness-owned retained VMs:
 
 ```bash
-./test-harness/scripts/teardown-vm-hot-swap-manual-cluster.sh
+./test-harness/scripts/teardown-harness-vms.sh
 ```
 
 Add `--purge-case-dir` if you also want to remove the retained run directory
-after shutdown.
+after manual-cluster shutdown.
 
 ### VM Run Retention / Disk Control
 
