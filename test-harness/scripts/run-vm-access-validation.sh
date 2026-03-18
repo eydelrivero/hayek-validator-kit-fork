@@ -22,6 +22,7 @@ VM_SSH_PRIVATE_KEY_FILE="${VM_SSH_PRIVATE_KEY_FILE:-$REPO_ROOT/scripts/vm-test/w
 VM_QEMU_EFI="${VM_QEMU_EFI:-}"
 HOST_NAME="${HOST_NAME:-}"
 POST_METAL_SSH_PORT="${POST_METAL_SSH_PORT:-2522}"
+BOOTSTRAP_SSH_PORT="${BOOTSTRAP_SSH_PORT:-2222}"
 RETAIN_ON_FAILURE=false
 RETAIN_ALWAYS=false
 REQUIRE_SSH_SOCKET_PRECONDITION="${REQUIRE_SSH_SOCKET_PRECONDITION:-true}"
@@ -53,6 +54,7 @@ Options:
   --vm-qemu-efi <path>
   --host-name <name>
   --post-metal-ssh-port <port>      (default: 2522)
+  --bootstrap-ssh-port <port>       (default: 2222)
   --retain-on-failure
   --retain-always
   --no-require-ssh-socket-precondition
@@ -130,6 +132,10 @@ while (($# > 0)); do
       POST_METAL_SSH_PORT="${2:-}"
       shift 2
       ;;
+    --bootstrap-ssh-port)
+      BOOTSTRAP_SSH_PORT="${2:-}"
+      shift 2
+      ;;
     --retain-on-failure)
       RETAIN_ON_FAILURE=true
       shift
@@ -179,6 +185,56 @@ ensure_ssh_keypair() {
   fi
 }
 
+listener_lines_for_port() {
+  local port="$1"
+  ss -ltnp "( sport = :${port} )" 2>/dev/null | awk 'NR > 1'
+}
+
+assert_host_port_available() {
+  local port="$1"
+  local label="$2"
+  local listeners
+
+  listeners="$(listener_lines_for_port "$port")"
+  if [[ -n "$listeners" ]]; then
+    echo "[vm-access-validation] Cannot start disposable VM: ${label} port ${port} is already in use." >&2
+    echo "[vm-access-validation] Free that port or tear down the conflicting VM/process first." >&2
+    printf '%s\n' "$listeners" >&2
+    exit 4
+  fi
+}
+
+qemu_log_path() {
+  printf '%s\n' "$ADAPTER_WORKDIR/artifacts/vm/$RUN_ID/qemu.log"
+}
+
+qemu_pid_path() {
+  printf '%s\n' "$ADAPTER_WORKDIR/state/vm/$RUN_ID/qemu.pid"
+}
+
+assert_vm_started() {
+  local pid_file
+  local qemu_log
+  local pid=""
+
+  pid_file="$(qemu_pid_path)"
+  qemu_log="$(qemu_log_path)"
+  if [[ -f "$pid_file" ]]; then
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[vm-access-validation] Disposable VM failed to stay up long enough for SSH readiness checks." >&2
+  if [[ -f "$qemu_log" ]]; then
+    echo "[vm-access-validation] Recent QEMU log:" >&2
+    tail -n 20 "$qemu_log" >&2 || true
+  fi
+  exit 4
+}
+
 cleanup() {
   local exit_code="$1"
 
@@ -205,6 +261,7 @@ cleanup() {
 trap 'cleanup $?' EXIT
 
 require_cmd jq
+require_cmd ss
 require_cmd ssh-keygen
 require_cmd qemu-img
 require_cmd ansible-playbook
@@ -220,11 +277,16 @@ mkdir -p "$CASE_DIR" "$ADAPTER_WORKDIR" "$VERIFY_WORKDIR"
 
 ensure_ssh_keypair "$VM_SSH_PRIVATE_KEY_FILE" "$VM_SSH_PUBLIC_KEY_FILE"
 
+assert_host_port_available "$BOOTSTRAP_SSH_PORT" "bootstrap SSH"
+assert_host_port_available "$POST_METAL_SSH_PORT" "post-metal SSH"
+
 VM_TARGET_ARGS=(
   --scenario access_validation
   --run-id "$RUN_ID"
   --workdir "$ADAPTER_WORKDIR"
   --vm-profile "$VM_PROFILE"
+  --vm-ssh-port "$BOOTSTRAP_SSH_PORT"
+  --vm-ssh-port-alt "$POST_METAL_SSH_PORT"
   --vm-ssh-public-key-file "$VM_SSH_PUBLIC_KEY_FILE"
   --vm-ssh-private-key-file "$VM_SSH_PRIVATE_KEY_FILE"
 )
@@ -260,6 +322,8 @@ fi
 echo "[vm-access-validation] Launching disposable VM for run id: $RUN_ID" >&2
 "$REPO_ROOT/test-harness/targets/vm.sh" up "${VM_TARGET_ARGS[@]}" >/dev/null
 VM_RUN_ID="$RUN_ID"
+sleep 1
+assert_vm_started
 
 inventory_json="$("$REPO_ROOT/test-harness/targets/vm.sh" inventory "${VM_TARGET_ARGS[@]}")"
 inventory_path="$(jq -r '.inventory_path // empty' <<<"$inventory_json")"

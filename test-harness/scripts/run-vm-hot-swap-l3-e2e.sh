@@ -198,6 +198,46 @@ format_duration_aligned() {
   printf '%-8s' "$human"
 }
 
+resolve_default_vm_config() {
+  if [[ -z "$VM_ARCH" ]]; then
+    case "$(uname -m)" in
+      arm64|aarch64) VM_ARCH="arm64" ;;
+      *) VM_ARCH="amd64" ;;
+    esac
+  fi
+
+  if [[ -z "$VM_BASE_IMAGE" ]]; then
+    VM_BASE_IMAGE="$REPO_ROOT/scripts/vm-test/work/ubuntu-${VM_ARCH}.img"
+  fi
+}
+
+resolve_shared_entrypoint_source_prefix() {
+  local build_workdir="$1"
+  local candidate
+
+  candidate="$build_workdir/_shared-entrypoint-vm/vm/hvk-entry-shared-${VM_ARCH}"
+  if [[ -r "${candidate}.qcow2" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$(
+    find "$build_workdir/_shared-entrypoint-vm/vm" -maxdepth 1 -type f \
+      -name 'hvk-entry-shared-*.qcow2' \
+      ! -name '*-ledger.qcow2' \
+      ! -name '*-accounts.qcow2' \
+      ! -name '*-snapshots.qcow2' \
+      | LC_ALL=C sort \
+      | head -n 1
+  )"
+  if [[ -n "$candidate" ]]; then
+    printf '%s\n' "${candidate%.qcow2}"
+    return 0
+  fi
+
+  printf '\n'
+}
+
 build_prepared_cache_key() {
   local source_flavor="$1"
   local destination_flavor="$2"
@@ -359,10 +399,7 @@ ensure_stateless_entrypoint_cli_cache() {
     return 1
   fi
 
-  source_prefix="$build_workdir/_shared-entrypoint-vm/vm/hvk-entry-shared-${VM_ARCH}"
-  if [[ ! -r "${source_prefix}.qcow2" ]]; then
-    source_prefix="$(ls "$build_workdir/_shared-entrypoint-vm/vm"/hvk-entry-shared-*.qcow2 2>/dev/null | sed 's/\.qcow2$//' | head -n1 || true)"
-  fi
+  source_prefix="$(resolve_shared_entrypoint_source_prefix "$build_workdir")"
   if [[ -z "$source_prefix" ]]; then
     echo "FAIL: L3 immutable entrypoint cache source prefix not found under $build_workdir/_shared-entrypoint-vm/vm" >&2
     return 1
@@ -556,6 +593,8 @@ if [[ "$PRUNE_OLD_RUNS" == true ]]; then
   fi
   "$REPO_ROOT/test-harness/scripts/prune-vm-test-runs.sh" "${prune_args[@]}" >/dev/null
 fi
+
+resolve_default_vm_config
 
 if [[ "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
   ensure_stateless_entrypoint_cli_cache
