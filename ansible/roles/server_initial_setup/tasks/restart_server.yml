@@ -41,6 +41,7 @@
       Press Ctrl+C now to abort the playbook before reboot.
   delegate_to: localhost
   run_once: true
+  become: false
 
 - name: Capture current SSH connection port
   ansible.builtin.set_fact:
@@ -62,6 +63,7 @@
       -------------------------------------------------
   run_once: true
   delegate_to: localhost
+  become: false
 
 - name: Wait for configured SSH port to accept connections before reconnecting
   ansible.builtin.wait_for:
@@ -72,6 +74,7 @@
     sleep: 2
     timeout: 120
   delegate_to: localhost
+  become: false
   when:
     - firewall.ssh_port is defined
     - server_initial_setup_security_tasks_ran | default(false)
