@@ -240,4 +240,4 @@ echo "==> [manual] Cluster ready for manual testing." >&2
 echo "    state: $STATE_FILE" >&2
 echo "    case:  $case_dir" >&2
 echo "    rpc:   http://${ENTRYPOINT_VM_BRIDGE_IP}:8899" >&2
-echo "    stop:  $REPO_ROOT/test-harness/scripts/teardown-vm-hot-swap-manual-cluster.sh" >&2
+echo "    stop:  $REPO_ROOT/test-harness/scripts/teardown-harness-vms.sh" >&2
