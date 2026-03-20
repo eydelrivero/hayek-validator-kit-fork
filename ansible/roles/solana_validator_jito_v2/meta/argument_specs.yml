@@ -63,3 +63,58 @@ argument_specs:
         required: false
         default: true
         description: "Run shared NUMA placement assessment between XDP retransmit cores and PoH pinned core"
+      solana_validator_ha_enabled:
+        type: bool
+        required: false
+        default: true
+        description: "Install solana-validator-ha alongside the validator setup"
+      solana_validator_ha_install_from_source:
+        type: bool
+        required: false
+        default: false
+        description: "Build solana-validator-ha from source instead of installing the published binary release"
+      solana_validator_ha_runtime_enabled:
+        type: bool
+        required: false
+        default: false
+        description: "Render and start the solana-validator-ha runtime integration on the validator host"
+      solana_validator_ha_version:
+        type: str
+        required: false
+        default: "0.1.17"
+        description: "Version of solana-validator-ha to install"
+      solana_validator_ha_node_name:
+        type: str
+        required: false
+        description: "Vanity node name to publish in the solana-validator-ha config"
+      solana_validator_ha_public_ip_value:
+        type: str
+        required: false
+        description: "Public IP value written to the local public-ip helper file"
+      solana_validator_ha_cluster_name:
+        type: str
+        required: false
+        description: "Cluster name written to the solana-validator-ha config"
+      solana_validator_ha_cluster_rpc_urls:
+        type: list
+        elements: str
+        required: false
+        description: "RPC URLs used by solana-validator-ha for gossip state"
+      solana_validator_ha_inventory_group:
+        type: str
+        required: false
+        description: "Inventory group used to auto-derive HA node ordering and peers"
+      solana_validator_ha_pair_hosts:
+        type: list
+        elements: str
+        required: false
+        description: "Ordered list of HA hosts used to auto-derive validator-1/validator-2 naming and peers"
+      solana_validator_ha_peer_hostnames:
+        type: list
+        elements: str
+        required: false
+        description: "Explicit peer inventory hostnames used to derive HA peers when solana_validator_ha_peers is omitted"
+      solana_validator_ha_peers:
+        type: dict
+        required: false
+        description: "Mapping of peer validator names to IPs for solana-validator-ha runtime"

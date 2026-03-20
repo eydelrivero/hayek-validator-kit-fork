@@ -20,6 +20,13 @@
   import_tasks: configure.yml
   tags: [solana_validator_jito, configure]
 
+- name: Configure Solana Validator HA integration
+  ansible.builtin.include_role:
+    name: solana_validator_ha
+  vars:
+    solana_validator_ha_client: "jito"
+  tags: [solana_validator_jito, solana_validator_ha]
+
 - name: Jito-Solana client verification
   import_tasks: verify.yml
   tags: [solana_validator_jito, verify]

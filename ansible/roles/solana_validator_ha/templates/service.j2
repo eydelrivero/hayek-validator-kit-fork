@@ -1,0 +1,14 @@
+[Unit]
+Description=Solana Validator HA manager
+After=network-online.target {{ solana_validator_ha_public_ip_service_name }}.service {{ validator_service_name }}.service
+Wants=network-online.target {{ solana_validator_ha_public_ip_service_name }}.service
+
+[Service]
+Type=simple
+ExecStart={{ solana_validator_ha_binary_path }} run -c {{ solana_validator_ha_config_path }}
+Restart=always
+RestartSec=2
+WorkingDirectory={{ solana_validator_ha_config_dir }}
+
+[Install]
+WantedBy=multi-user.target

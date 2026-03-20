@@ -1,0 +1,67 @@
+validator:
+  name: {{ solana_validator_ha_node_name | to_json }}
+  rpc_url: {{ solana_validator_ha_validator_rpc_url | to_json }}
+  public_ip_service_urls:
+{% for url in solana_validator_ha_public_ip_service_urls %}
+    - {{ url | to_json }}
+{% endfor %}
+  identities:
+    active: {{ (validator_keyset_dir ~ '/primary-target-identity.json') | to_json }}
+    passive: {{ (validator_keyset_dir ~ '/hot-spare-identity.json') | to_json }}
+
+cluster:
+  name: {{ solana_validator_ha_cluster_name | to_json }}
+  rpc_urls:
+{% for url in (solana_validator_ha_cluster_rpc_urls | unique) %}
+    - {{ url | to_json }}
+{% endfor %}
+
+prometheus:
+  port: {{ solana_validator_ha_prometheus_port }}
+  health_check_port: {{ solana_validator_ha_health_check_port }}
+
+failover:
+  dry_run: {{ solana_validator_ha_failover_dry_run | bool | lower }}
+  poll_interval_duration: {{ solana_validator_ha_poll_interval_duration | to_json }}
+  leaderless_samples_threshold: {{ solana_validator_ha_leaderless_samples_threshold }}
+  delinquent_slot_distance_override:
+    enabled: {{ solana_validator_ha_delinquent_slot_distance_override_enabled | bool | lower }}
+    value: {{ solana_validator_ha_delinquent_slot_distance_override_value }}
+  self_healthy:
+    minimum_duration: {{ solana_validator_ha_self_healthy_minimum_duration | to_json }}
+    poll_interval_duration: {{ solana_validator_ha_self_healthy_poll_interval_duration | to_json }}
+  passive:
+    command: {{ solana_validator_ha_wrapper_script_path | to_json }}
+    args:
+      - "--role"
+      - "passive"
+      - "--client"
+      - {{ solana_validator_ha_client | to_json }}
+      - "--rpc-url"
+      - {{ solana_validator_ha_validator_rpc_url | to_json }}
+      - "--identity-keyfile"
+      - {{ '{{ .PassiveIdentityKeypairFile }}' | to_json }}
+      - "--tower-file"
+      - {{ (ledger_path ~ '/tower-1_9-' ~ '{{ .ActiveIdentityPubkey }}' ~ '.bin') | to_json }}
+      - "--user"
+      - {{ solana_user | to_json }}
+  active:
+    command: {{ solana_validator_ha_wrapper_script_path | to_json }}
+    args:
+      - "--role"
+      - "active"
+      - "--client"
+      - {{ solana_validator_ha_client | to_json }}
+      - "--rpc-url"
+      - {{ solana_validator_ha_validator_rpc_url | to_json }}
+      - "--identity-keyfile"
+      - {{ '{{ .ActiveIdentityKeypairFile }}' | to_json }}
+      - "--tower-file"
+      - {{ (ledger_path ~ '/tower-1_9-' ~ '{{ .ActiveIdentityPubkey }}' ~ '.bin') | to_json }}
+      - "--user"
+      - {{ solana_user | to_json }}
+  peers:
+{% for peer_name, peer_ip in solana_validator_ha_peers | dictsort %}
+    {{ peer_name }}:
+      ip: {{ peer_ip | to_json }}
+{% endfor %}

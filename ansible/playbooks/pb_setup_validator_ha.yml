@@ -1,0 +1,139 @@
+---
+# Solana Validator HA Setup
+# ------------------------
+# Installs or upgrades solana-validator-ha on an existing Hayek validator host.
+# Optionally renders the runtime config, wrapper scripts, and systemd services.
+#
+# Usage:
+# ------
+# Run from /ansible directory:
+#
+# install/upgrade binary only
+# ansible-playbook playbooks/pb_setup_validator_ha.yml \
+#   -i solana_setup_host.yml \
+#   --limit host-charlie \
+#   -e "target_host=host-charlie" \
+#   -e "ansible_user=bob" \
+#   -e "validator_name=demo1" \
+#   -e "solana_validator_ha_version=0.1.17" \
+#   -K
+#
+# install binary and enable HA runtime
+# ansible-playbook playbooks/pb_setup_validator_ha.yml \
+#   -i solana_localnet.yml \
+#   --limit host-alpha \
+#   -e "target_host=host-alpha" \
+#   -e "ansible_user=bob" \
+#   -e "validator_name=demo1" \
+#   -e "solana_validator_ha_runtime_enabled=true" \
+#   -e "solana_validator_ha_public_ip_value=192.168.100.11" \
+#   -e '{"solana_validator_ha_pair_hosts":["host-alpha","host-bravo"]}' \
+#   -e '{"solana_validator_ha_cluster_rpc_urls":["http://192.168.100.13:8899","http://127.0.0.1:8899"]}' \
+#   -K
+#
+# Extended vars:
+# - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the pinned latest binary release in the role.
+# - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of using the published GitHub release binary.
+# - solana_validator_ha_runtime_enabled (OPTIONAL): Render and start the solana-validator-ha runtime config and services.
+# - solana_validator_ha_node_name (OPTIONAL): Vanity node name written to the HA config. Derived automatically when solana_validator_ha_pair_hosts or solana_validator_ha_inventory_group is provided.
+# - solana_validator_ha_public_ip_value (OPTIONAL): Public IP written to the local public-ip helper file. Defaults to ansible_host.
+# - solana_validator_ha_pair_hosts (OPTIONAL): Ordered list of HA hosts used to auto-derive node naming and peers.
+# - solana_validator_ha_inventory_group (OPTIONAL): Inventory group used to auto-derive node naming and peers.
+# - solana_validator_ha_peer_hostnames (OPTIONAL): Explicit peer inventory hostnames used to derive peer IPs when solana_validator_ha_peers is omitted.
+# - solana_validator_ha_peers (OPTIONAL): Mapping of peer validator names to IPs, excluding this node.
+# - solana_validator_ha_cluster_rpc_urls (OPTIONAL): RPC URLs used by solana-validator-ha for gossip state.
+
+- name: Install or configure Solana Validator HA on an existing validator host
+  hosts: "{{ target_host }}"
+  user: "{{ ansible_user }}"
+  become: false
+
+  pre_tasks:
+    - name: Assert required parameters are defined
+      ansible.builtin.assert:
+        that:
+          - target_host is defined
+          - ansible_user is defined
+          - validator_name is defined
+        fail_msg: >
+          Missing required playbook variables: target_host, ansible_user, validator_name
+
+    - name: Debug ansible_limit and target_host
+      ansible.builtin.debug:
+        msg:
+          - "ansible_limit: {{ ansible_limit | default('not defined') }}"
+          - "ansible_limit type: {{ ansible_limit | type_debug }}"
+          - "target_host: {{ target_host }}"
+          - "ansible_play_hosts: {{ ansible_play_hosts }}"
+
+    - name: Validate that target_host matches the limited host
+      ansible.builtin.assert:
+        that:
+          - ansible_limit is defined
+          - target_host == ansible_limit
+        fail_msg: >
+          This playbook must be run with --limit to target exactly one host.
+          Make sure you run this playbook with: --limit {{ target_host }} -e "target_host={{ target_host }}"
+
+    - name: Set validator keyset directory fact
+      ansible.builtin.set_fact:
+        validator_keyset_dir: "{{ validator_keys_dir }}/{{ validator_name }}"
+
+    - name: Validate validator keyset directory exists
+      ansible.builtin.stat:
+        path: "{{ validator_keyset_dir }}"
+      register: validator_keyset_dir_stat
+      become: true
+
+    - name: Fail if validator keyset directory is missing
+      ansible.builtin.fail:
+        msg: >-
+          Validator keyset directory {{ validator_keyset_dir }} does not exist on {{ inventory_hostname }}.
+          This playbook is intended for existing Hayek validator hosts.
+      when: not validator_keyset_dir_stat.stat.isdir | default(false)
+
+    - name: Validate validator systemd service unit exists when runtime is enabled
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ validator_service_name }}.service"
+      register: validator_service_unit_stat
+      become: true
+      when: solana_validator_ha_runtime_enabled | default(false) | bool
+
+    - name: Fail if validator systemd service unit is missing when runtime is enabled
+      ansible.builtin.fail:
+        msg: >-
+          Validator systemd unit /etc/systemd/system/{{ validator_service_name }}.service was not found on
+          {{ inventory_hostname }}. Install the validator before enabling solana-validator-ha runtime wiring.
+      when:
+        - solana_validator_ha_runtime_enabled | default(false) | bool
+        - not validator_service_unit_stat.stat.exists | default(false)
+
+    - name: Validate required HA runtime peer inputs are defined
+      ansible.builtin.assert:
+        that:
+          - >
+            (
+              solana_validator_ha_peers is defined and
+              solana_validator_ha_peers is mapping and
+              solana_validator_ha_peers | length > 0
+            ) or (
+              solana_validator_ha_peer_hostnames is defined and
+              solana_validator_ha_peer_hostnames | length > 0
+            ) or (
+              solana_validator_ha_pair_hosts is defined and
+              solana_validator_ha_pair_hosts | length > 1
+            ) or (
+              solana_validator_ha_inventory_group is defined and
+              solana_validator_ha_inventory_group | length > 0
+            ) or (
+              'solana_validator_ha_pair' in group_names
+            )
+        fail_msg: >-
+          Runtime-enabled HA setup requires either solana_validator_ha_peers,
+          solana_validator_ha_peer_hostnames, solana_validator_ha_pair_hosts,
+          solana_validator_ha_inventory_group, or membership in a solana_validator_ha_pair
+          inventory group so peers and node names can be derived automatically.
+      when: solana_validator_ha_runtime_enabled | default(false) | bool
+
+  roles:
+    - role: solana_validator_ha

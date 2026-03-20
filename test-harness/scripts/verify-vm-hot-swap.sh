@@ -105,6 +105,7 @@ BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
 SKIP_CONFIRMATION_PAUSES="${SKIP_CONFIRMATION_PAUSES:-true}"
+SOLANA_VALIDATOR_HA_RUNTIME_ENABLED="${SOLANA_VALIDATOR_HA_RUNTIME_ENABLED:-false}"
 
 if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
   VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE="hvk-vm-gossip-entrypoint:${AGAVE_VERSION}"
@@ -2149,6 +2150,10 @@ all:
       hosts:
         vm-source:
         vm-destination:
+    solana_validator_ha_pair:
+      hosts:
+        vm-source:
+        vm-destination:
 EOF
 
 cat >"$OPERATOR_INVENTORY" <<EOF
@@ -2161,6 +2166,7 @@ all:
       ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
+      solana_validator_ha_public_ip_value: ${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}
     vm-destination:
       ansible_host: ${DESTINATION_OPERATOR_HOST_EFFECTIVE}
       ansible_port: ${DESTINATION_OPERATOR_PORT_EFFECTIVE}
@@ -2168,6 +2174,7 @@ all:
       ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
+      solana_validator_ha_public_ip_value: ${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}
   children:
     ${CITY_GROUP}:
       hosts:
@@ -2253,6 +2260,13 @@ setup_host_flavor() {
     -e "build_from_source=$BUILD_FROM_SOURCE"
     -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
   )
+
+  if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
+    base_args+=(
+      -e "solana_validator_ha_runtime_enabled=true"
+      -e "{\"solana_validator_ha_pair_hosts\":[\"vm-source\",\"vm-destination\"]}"
+    )
+  fi
 
   case "$flavor" in
     agave)

@@ -1,0 +1,43 @@
+---
+solana_validator_ha_enabled: true
+solana_validator_ha_version: "0.1.17"
+solana_validator_ha_install_from_source: false
+solana_validator_ha_runtime_enabled: false
+solana_validator_ha_repo_url: "https://github.com/SOL-Strategies/solana-validator-ha.git"
+solana_validator_ha_install_root: "/opt/solana-validator-ha"
+solana_validator_ha_releases_dir: "{{ solana_validator_ha_install_root }}/releases"
+solana_validator_ha_active_release_dir: "{{ solana_validator_ha_install_root }}/active_release"
+solana_validator_ha_binary_name: "solana-validator-ha"
+solana_validator_ha_binary_path: "/usr/local/bin/solana-validator-ha"
+solana_validator_ha_build_dir: "{{ system_shared_build_dir | default('/opt/build') }}/solana-validator-ha-{{ solana_validator_ha_version }}"
+solana_validator_ha_service_name: "solana-validator-ha"
+solana_validator_ha_public_ip_service_name: "solana-validator-ha-public-ip"
+solana_validator_ha_config_dir: "{{ validator_root_dir }}/ha"
+solana_validator_ha_config_path: "{{ solana_validator_ha_config_dir }}/config.yaml"
+solana_validator_ha_public_ip_file_path: "{{ solana_validator_ha_config_dir }}/public-ip.txt"
+solana_validator_ha_wrapper_script_path: "{{ validator_scripts_dir }}/ha-set-role.sh"
+solana_validator_ha_client: "agave"
+solana_validator_ha_node_name: "{{ inventory_hostname }}"
+solana_validator_ha_inventory_group: ""
+solana_validator_ha_pair_hosts: []
+solana_validator_ha_peer_hostnames: []
+solana_validator_ha_public_ip_bind_host: "127.0.0.1"
+solana_validator_ha_public_ip_port: 8079
+solana_validator_ha_public_ip_value: "{{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }}"
+solana_validator_ha_public_ip_service_urls:
+  - "http://{{ solana_validator_ha_public_ip_bind_host }}:{{ solana_validator_ha_public_ip_port }}/public-ip.txt"
+solana_validator_ha_validator_rpc_url: "http://127.0.0.1:{{ solana_rpc_port | default(8899) }}"
+solana_validator_ha_cluster_name: "{{ 'mainnet-beta' if solana_cluster == 'mainnet' else ('testnet' if solana_cluster in ['testnet', 'localnet'] else solana_cluster) }}"
+solana_validator_ha_cluster_rpc_urls:
+  - "{{ solana_rpc_url | default('http://127.0.0.1:' ~ (solana_rpc_port | default(8899) | string)) }}"
+  - "{{ solana_validator_ha_validator_rpc_url }}"
+solana_validator_ha_prometheus_port: 9090
+solana_validator_ha_health_check_port: 9091
+solana_validator_ha_failover_dry_run: false
+solana_validator_ha_poll_interval_duration: "5s"
+solana_validator_ha_leaderless_samples_threshold: 3
+solana_validator_ha_delinquent_slot_distance_override_enabled: false
+solana_validator_ha_delinquent_slot_distance_override_value: 128
+solana_validator_ha_self_healthy_minimum_duration: "30s"
+solana_validator_ha_self_healthy_poll_interval_duration: "2s"
+solana_validator_ha_peers: {}

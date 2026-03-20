@@ -1,0 +1,51 @@
+---
+- name: solana_validator_ha - Install source build prerequisites
+  ansible.builtin.apt:
+    name:
+      - git
+      - golang-go
+    state: present
+    update_cache: true
+  become: true
+
+- name: solana_validator_ha - Ensure source build directory exists
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_build_dir }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    state: directory
+  become: true
+
+- name: solana_validator_ha - Checkout requested source version
+  ansible.builtin.git:
+    repo: "{{ solana_validator_ha_repo_url }}"
+    dest: "{{ solana_validator_ha_build_dir }}"
+    version: "{{ solana_validator_ha_release_tag }}"
+    force: true
+  become: true
+
+- name: solana_validator_ha - Build binary from source
+  ansible.builtin.command:
+    argv:
+      - go
+      - build
+      - -mod=mod
+      - -o
+      - "{{ solana_validator_ha_release_binary_path }}"
+      - ./cmd/solana-validator-ha
+  args:
+    chdir: "{{ solana_validator_ha_build_dir }}"
+    creates: "{{ solana_validator_ha_release_binary_path }}"
+  environment:
+    CGO_ENABLED: "0"
+  become: true
+
+- name: solana_validator_ha - Set source-built binary ownership and permissions
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_release_binary_path }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    state: file
+  become: true
