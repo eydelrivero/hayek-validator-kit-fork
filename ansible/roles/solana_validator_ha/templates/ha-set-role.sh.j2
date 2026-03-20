@@ -1,0 +1,175 @@
+#!/bin/bash
+set -euo pipefail
+
+PATH="/bin:/usr/bin:/usr/local/bin:{{ system_solana_active_release_dir }}"
+
+declare -A CONFIG=(
+  ["client"]=""
+  ["identity-keyfile"]=""
+  ["role"]=""
+  ["rpc-url"]=""
+  ["tower-file"]=""
+  ["user"]="{{ solana_user }}"
+)
+
+log() {
+  local level="$1"
+  shift
+  printf '[%s] %s\n' "$level" "$*" >&2
+}
+
+usage() {
+  cat <<'EOF' >&2
+Usage:
+  ha-set-role.sh --role <active|passive> --client <agave|jito|jito-solana|bam-client> \
+    --identity-keyfile <path> --rpc-url <url> --tower-file <path> [--user <user>]
+EOF
+  exit "${1:-1}"
+}
+
+parse_args() {
+  [[ $# -gt 0 ]] || usage 1
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --role|--client|--identity-keyfile|--rpc-url|--tower-file|--user)
+        [[ $# -ge 2 ]] || usage 1
+        CONFIG["${1#--}"]="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage 0
+        ;;
+      *)
+        log ERROR "unknown argument: $1"
+        usage 1
+        ;;
+    esac
+  done
+
+  for key in role client identity-keyfile rpc-url tower-file user; do
+    [[ -n "${CONFIG[$key]}" ]] || { log ERROR "missing required argument: $key"; usage 1; }
+  done
+
+  case "${CONFIG[role]}" in
+    active|passive) ;;
+    *) log ERROR "invalid role: ${CONFIG[role]}"; usage 1 ;;
+  esac
+
+  case "${CONFIG[client]}" in
+    agave|jito|jito-solana|bam-client) ;;
+    *) log ERROR "unsupported client: ${CONFIG[client]}"; usage 1 ;;
+  esac
+}
+
+rpc_identity() {
+  curl -sSf -X POST -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' \
+    "${CONFIG[rpc-url]}" | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["identity"])'
+}
+
+rpc_healthy() {
+  [[ "$(curl -sSf "${CONFIG[rpc-url]}/health")" == "ok" ]]
+}
+
+run_as_validator_user() {
+  local command="$1"
+  sudo -n -u "${CONFIG[user]}" bash -lc "$command"
+}
+
+update_identity_symlink() {
+  rm -f "{{ validator_keyset_dir }}/identity.json"
+  ln -s "${CONFIG[identity-keyfile]}" "{{ validator_keyset_dir }}/identity.json"
+}
+
+remove_tower_file() {
+  rm -f "${CONFIG[tower-file]}"
+}
+
+set_identity_command() {
+  printf '%q --ledger %q set-identity %q' "{{ system_solana_active_release_dir }}/agave-validator" "{{ ledger_path }}" "${CONFIG[identity-keyfile]}"
+}
+
+ensure_passive_via_service_controls() {
+  local service="{{ validator_service_name }}"
+
+  if systemctl restart "${service}"; then
+    log INFO "restarted ${service} to force passive startup"
+    return 0
+  fi
+
+  if systemctl stop "${service}"; then
+    log WARN "restart failed; stopped ${service}"
+    return 0
+  fi
+
+  if systemctl disable "${service}"; then
+    log ERROR "restart and stop failed; disabled ${service}"
+    return 0
+  fi
+
+  log ERROR "failed to restart, stop, or disable ${service}"
+  return 1
+}
+
+set_active() {
+  local desired_pubkey
+  desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
+
+  rpc_healthy || { log ERROR "local validator RPC is unhealthy; refusing active promotion"; return 1; }
+
+  if [[ "$(rpc_identity)" == "${desired_pubkey}" ]]; then
+    update_identity_symlink
+    log INFO "validator already active with desired identity"
+    return 0
+  fi
+
+  remove_tower_file
+  run_as_validator_user "$(set_identity_command)"
+  update_identity_symlink
+  log INFO "promoted validator to active identity ${desired_pubkey}"
+}
+
+set_passive() {
+  local desired_pubkey=""
+
+  update_identity_symlink
+  desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
+
+  if ! systemctl is-active "{{ validator_service_name }}" >/dev/null 2>&1; then
+    remove_tower_file
+    log INFO "validator service is not active; persistent identity now passive"
+    return 0
+  fi
+
+  if rpc_healthy && [[ "$(rpc_identity)" == "${desired_pubkey}" ]]; then
+    remove_tower_file
+    log INFO "validator already passive with desired identity"
+    return 0
+  fi
+
+  if run_as_validator_user "$(set_identity_command)"; then
+    remove_tower_file
+    log INFO "demoted validator to passive identity ${desired_pubkey}"
+    return 0
+  fi
+
+  log WARN "set-identity to passive failed; forcing service controls"
+  ensure_passive_via_service_controls
+  remove_tower_file
+}
+
+main() {
+  parse_args "$@"
+
+  case "${CONFIG[role]}" in
+    active)
+      set_active
+      ;;
+    passive)
+      set_passive
+      ;;
+  esac
+}
+
+main "$@"
