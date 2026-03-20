@@ -24,6 +24,7 @@ BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
 SWAP_EPOCH_END_THRESHOLD_SEC="${SWAP_EPOCH_END_THRESHOLD_SEC:-0}"
+SOLANA_VALIDATOR_HA_RUNTIME_ENABLED="${SOLANA_VALIDATOR_HA_RUNTIME_ENABLED:-false}"
 
 usage() {
   cat <<'EOF'
@@ -158,6 +159,9 @@ setup_host_flavor() {
   local playbook=""
 
   base_extra="-e target_host=$host -e ansible_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e validator_type=$validator_type -e solana_cluster=$SOLANA_CLUSTER -e build_from_source=$BUILD_FROM_SOURCE -e force_host_cleanup=$FORCE_HOST_CLEANUP"
+  if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
+    base_extra="$base_extra -e solana_validator_ha_runtime_enabled=true -e '{\"solana_validator_ha_pair_hosts\":[\"$SOURCE_HOST\",\"$DESTINATION_HOST\"]}'"
+  fi
 
   case "$flavor" in
     agave)

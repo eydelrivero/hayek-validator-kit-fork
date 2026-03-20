@@ -95,6 +95,23 @@
     update_cache: yes
   become: true
 
+- name: precheck - Ensure solana-validator-ha binary is installed on swap hosts
+  block:
+    - name: precheck - Check solana-validator-ha binary path
+      ansible.builtin.stat:
+        path: "{{ solana_validator_ha_binary_path | default('/usr/local/bin/solana-validator-ha') }}"
+      register: solana_validator_ha_binary
+
+    - name: precheck - Fail if solana-validator-ha is missing
+      ansible.builtin.fail:
+        msg: >-
+          solana-validator-ha binary was not found at
+          {{ solana_validator_ha_binary_path | default('/usr/local/bin/solana-validator-ha') }}
+          on {{ inventory_hostname }}.
+          Install it via the Agave/Jito validator setup before running the swap playbook.
+      when: not solana_validator_ha_binary.stat.exists
+  when: solana_validator_ha_enabled | default(true) | bool
+
 - name: precheck - Validate destination host validator status
   block:
     - name: precheck - Check validator systemd service status
