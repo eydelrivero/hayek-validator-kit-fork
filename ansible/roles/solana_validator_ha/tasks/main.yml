@@ -1,0 +1,99 @@
+---
+- name: solana_validator_ha - Install Solana Validator HA
+  when: solana_validator_ha_enabled | bool
+  block:
+    - name: solana_validator_ha - Install runtime prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - python3
+        state: present
+        update_cache: true
+      become: true
+
+    - name: solana_validator_ha - Validate supported operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_system == "Linux"
+        fail_msg: >-
+          solana_validator_ha currently supports Linux targets only.
+          Detected ansible_system={{ ansible_system }}.
+
+    - name: solana_validator_ha - Map architecture to release asset arch
+      ansible.builtin.set_fact:
+        solana_validator_ha_asset_arch: >-
+          {%- set detected_arch = ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default(''))) -%}
+          {%- if detected_arch in ['x86_64', 'amd64'] -%}
+          amd64
+          {%- elif detected_arch in ['aarch64', 'arm64'] -%}
+          arm64
+          {%- else -%}
+          unsupported
+          {%- endif -%}
+
+    - name: solana_validator_ha - Fail on unsupported architecture
+      ansible.builtin.assert:
+        that:
+          - solana_validator_ha_asset_arch != "unsupported"
+        fail_msg: >-
+          Unsupported architecture for solana-validator-ha:
+          {{ ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default('unknown'))) }}.
+
+    - name: solana_validator_ha - Set install paths
+      ansible.builtin.set_fact:
+        solana_validator_ha_release_tag: "v{{ solana_validator_ha_version }}"
+        solana_validator_ha_release_dir: "{{ solana_validator_ha_releases_dir }}/v{{ solana_validator_ha_version }}"
+        solana_validator_ha_release_binary_path: "{{ solana_validator_ha_releases_dir }}/v{{ solana_validator_ha_version }}/{{ solana_validator_ha_binary_name }}"
+
+    - name: solana_validator_ha - Ensure install directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "root"
+        group: "root"
+        mode: "{{ item.mode }}"
+        state: directory
+      loop:
+        - path: "{{ solana_validator_ha_install_root }}"
+          mode: "0755"
+        - path: "{{ solana_validator_ha_releases_dir }}"
+          mode: "0755"
+        - path: "{{ solana_validator_ha_release_dir }}"
+          mode: "0755"
+      become: true
+
+    - name: solana_validator_ha - Install requested version from published binary
+      ansible.builtin.include_tasks: install_from_binaries.yml
+      when: not (solana_validator_ha_install_from_source | bool)
+
+    - name: solana_validator_ha - Install requested version from source
+      ansible.builtin.include_tasks: install_from_source.yml
+      when: solana_validator_ha_install_from_source | bool
+
+    - name: solana_validator_ha - Point active release symlink to requested version
+      ansible.builtin.file:
+        src: "{{ solana_validator_ha_release_dir }}"
+        dest: "{{ solana_validator_ha_active_release_dir }}"
+        state: link
+        owner: "root"
+        group: "root"
+        force: true
+      become: true
+
+    - name: solana_validator_ha - Link binary into PATH
+      ansible.builtin.file:
+        src: "{{ solana_validator_ha_active_release_dir }}/{{ solana_validator_ha_binary_name }}"
+        dest: "{{ solana_validator_ha_binary_path }}"
+        state: link
+        owner: "root"
+        group: "root"
+        force: true
+      become: true
+
+    - name: solana_validator_ha - Verify installed binary is executable
+      ansible.builtin.command: "{{ solana_validator_ha_binary_path }} --help"
+      changed_when: false
+
+    - name: solana_validator_ha - Configure runtime integration
+      ansible.builtin.include_tasks: configure_runtime.yml
+      when: solana_validator_ha_runtime_enabled | bool

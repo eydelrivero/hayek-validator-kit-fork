@@ -23,3 +23,8 @@ argument_specs:
         required: false
         default: false
         description: "Whether to deprovision all validator-related files, folders, services, and keys from the source host after swap"
+      solana_validator_ha_enabled:
+        type: bool
+        required: false
+        default: true
+        description: "Require solana-validator-ha to be installed on both swap hosts during precheck"

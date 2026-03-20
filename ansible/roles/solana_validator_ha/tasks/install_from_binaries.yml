@@ -1,0 +1,48 @@
+---
+- name: solana_validator_ha - Set release asset URLs
+  ansible.builtin.set_fact:
+    solana_validator_ha_asset_name: "{{ solana_validator_ha_binary_name }}-{{ solana_validator_ha_version }}-linux-{{ solana_validator_ha_asset_arch }}.gz"
+    solana_validator_ha_download_url: "{{ solana_validator_ha_repo_url | regex_replace('\\.git$', '') }}/releases/download/{{ solana_validator_ha_release_tag }}/{{ solana_validator_ha_binary_name }}-{{ solana_validator_ha_version }}-linux-{{ solana_validator_ha_asset_arch }}.gz"
+    solana_validator_ha_checksum_url: "{{ solana_validator_ha_repo_url | regex_replace('\\.git$', '') }}/releases/download/{{ solana_validator_ha_release_tag }}/{{ solana_validator_ha_binary_name }}-{{ solana_validator_ha_version }}-linux-{{ solana_validator_ha_asset_arch }}.gz.sha256"
+    solana_validator_ha_archive_path: "/tmp/{{ solana_validator_ha_binary_name }}-{{ solana_validator_ha_version }}-linux-{{ solana_validator_ha_asset_arch }}.gz"
+
+- name: solana_validator_ha - Fetch published checksum
+  ansible.builtin.uri:
+    url: "{{ solana_validator_ha_checksum_url }}"
+    method: GET
+    return_content: true
+    timeout: 30
+  register: solana_validator_ha_checksum_response
+  changed_when: false
+
+- name: solana_validator_ha - Extract checksum from published checksum file
+  ansible.builtin.set_fact:
+    solana_validator_ha_checksum_value: "{{ (solana_validator_ha_checksum_response.content | trim).split()[0] }}"
+
+- name: solana_validator_ha - Download published binary archive
+  ansible.builtin.get_url:
+    url: "{{ solana_validator_ha_download_url }}"
+    dest: "{{ solana_validator_ha_archive_path }}"
+    mode: "0644"
+    force: false
+    checksum: "sha256:{{ solana_validator_ha_checksum_value }}"
+    timeout: 60
+  become: true
+
+- name: solana_validator_ha - Unpack published binary
+  ansible.builtin.shell: |
+    set -euo pipefail
+    gzip -dc "{{ solana_validator_ha_archive_path }}" > "{{ solana_validator_ha_release_binary_path }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ solana_validator_ha_release_binary_path }}"
+  become: true
+
+- name: solana_validator_ha - Set binary ownership and permissions
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_release_binary_path }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    state: file
+  become: true

@@ -24,6 +24,8 @@
 #   -e "solana_cluster=localnet" \
 #   -e "build_from_source=true" \
 #   -e "use_official_repo=true" \
+#   -e "solana_validator_ha_version=0.1.17" \
+#   -e "solana_validator_ha_install_from_source=false" \
 #   -e "force_host_cleanup=true" \
 #   -e "run_poh_cpu_affinity_fix=true" \
 #   -K
@@ -32,6 +34,11 @@
 # - validator_type (OPTIONAL): Validator identity mode. Defaults to hot-spare; set validator_type=primary to opt in.
 # - build_from_source (OPTIONAL): Build from source instead of using precompiled binaries.
 # - use_official_repo (OPTIONAL): Use official repository instead of forked repository.
+# - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the latest published binary release currently pinned in the role.
+# - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of using the published GitHub release binary.
+# - solana_validator_ha_runtime_enabled (OPTIONAL): Render and start the solana-validator-ha runtime service and config.
+# - solana_validator_ha_pair_hosts / solana_validator_ha_inventory_group (OPTIONAL): Auto-derive HA node naming and peers when runtime is enabled.
+# - solana_validator_ha_peers (OPTIONAL): Explicit peer mapping override when runtime is enabled.
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - run_poh_cpu_affinity_fix (OPTIONAL): Pin validator process to specific CPU core to improve PoH stability.
 # - xdp_enabled (OPTIONAL): Enable or disable XDP flag injection in validator startup script (default is disabled).
