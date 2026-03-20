@@ -20,6 +20,13 @@
   import_tasks: configure.yml
   tags: [solana_validator_agave, configure]
 
+- name: Configure Solana Validator HA integration
+  ansible.builtin.include_role:
+    name: solana_validator_ha
+  vars:
+    solana_validator_ha_client: "agave"
+  tags: [solana_validator_agave, solana_validator_ha]
+
 - name: handlers - Flush handlers before verification
   meta: flush_handlers
   tags: [solana_validator_agave, configure]

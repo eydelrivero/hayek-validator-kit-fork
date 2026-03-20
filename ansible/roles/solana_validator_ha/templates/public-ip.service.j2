@@ -1,0 +1,14 @@
+[Unit]
+Description=Serve solana-validator-ha public IP helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ solana_validator_ha_config_dir }}
+ExecStart=/usr/bin/python3 -m http.server {{ solana_validator_ha_public_ip_port }} --bind {{ solana_validator_ha_public_ip_bind_host }}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
