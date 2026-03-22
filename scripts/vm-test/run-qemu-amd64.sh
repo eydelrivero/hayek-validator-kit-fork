@@ -40,9 +40,14 @@ case "$HOST_OS" in
     fi
     ;;
   Linux)
-    if [[ ("$HOST_ARCH" == "x86_64" || "$HOST_ARCH" == "amd64") && -r /dev/kvm && -w /dev/kvm ]]; then
-      MACHINE_ACCEL="kvm"
-      CPU_MODEL="host"
+    if [[ "$HOST_ARCH" == "x86_64" || "$HOST_ARCH" == "amd64" ]]; then
+      if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+        MACHINE_ACCEL="kvm"
+        CPU_MODEL="host"
+      elif [[ -e /dev/kvm ]]; then
+        echo "Warning: /dev/kvm exists but is not accessible to user $(id -un); falling back to slow TCG emulation." >&2
+        echo "Hint: add this user to the 'kvm' group (for example: sudo usermod -aG kvm $(id -un)) and start a new login session." >&2
+      fi
     fi
     ;;
 esac
