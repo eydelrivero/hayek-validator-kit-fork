@@ -25,6 +25,7 @@ WATCH_SCREEN_INITIALIZED=0
 WATCH_PREV_ENT_PID=""
 WATCH_TESTCASE_BOUNDARY_MARKER="__WATCH_TESTCASE_BOUNDARY__"
 WATCH_TABLE_WIDTH=0
+WATCH_SHORT_TABLE=0
 
 # Colors
 if [[ -t 1 ]]; then
@@ -176,10 +177,23 @@ run_solana() {
   fi
 }
 
+entrypoint_vm_is_running() {
+  ps -eo args= \
+    | awk '
+      /qemu-system-(x86_64|aarch64)/ && /ifname=tap-hvk-ent/ {
+        found = 1
+        exit
+      }
+      END {
+        exit(found ? 0 : 1)
+      }
+    ' >/dev/null 2>&1
+}
+
 usage() {
   cat <<EOF
 Usage:
-  $(basename "$0") [--watch [SECONDS]] [--debug]
+  $(basename "$0") [--watch [SECONDS]] [--short-table] [--debug]
 
 Options:
   --watch           Repeat every 30 seconds until Ctrl+C
@@ -187,6 +201,7 @@ Options:
   --watch=SECONDS   Same as above
   --watch off       Run once
   --watch 0         Run once
+  --short-table     Use a compact watch table (omits Time, CPU, RAM, VMs, Slot, In gossip)
   --debug           Write raw catchup probe output under test-harness/work/status-debug/
   -h, --help        Show this help
 
@@ -243,6 +258,10 @@ parse_args() {
         ;;
       --debug)
         WATCH_DEBUG=1
+        shift
+        ;;
+      --short-table)
+        WATCH_SHORT_TABLE=1
         shift
         ;;
       -h|--help)
@@ -517,10 +536,16 @@ print_qemu_processes() {
 }
 
 print_solana_epoch_info() {
+  local entrypoint_running="${1:-0}"
   header "Solana Epoch Info"
 
   if ! command_exists solana; then
     err "solana CLI not found in PATH."
+    return 0
+  fi
+
+  if (( ! entrypoint_running )); then
+    warn "Skipping: entrypoint VM is not running."
     return 0
   fi
 
@@ -536,10 +561,16 @@ print_solana_epoch_info() {
 }
 
 print_solana_gossip() {
+  local entrypoint_running="${1:-0}"
   header "Solana Gossip"
 
   if ! command_exists solana; then
     err "solana CLI not found in PATH."
+    return 0
+  fi
+
+  if (( ! entrypoint_running )); then
+    warn "Skipping: entrypoint VM is not running."
     return 0
   fi
 
@@ -555,10 +586,16 @@ print_solana_gossip() {
 }
 
 print_solana_validators() {
+  local entrypoint_running="${1:-0}"
   header "Solana Validator Summary"
 
   if ! command_exists solana; then
     err "solana CLI not found in PATH."
+    return 0
+  fi
+
+  if (( ! entrypoint_running )); then
+    warn "Skipping: entrypoint VM is not running."
     return 0
   fi
 
@@ -689,6 +726,7 @@ collect_epoch_watch_metrics() {
   WATCH_EPOCH_PCT="?"
   WATCH_EPOCH_TIME="?"
 
+  [[ "$WATCH_ENT_PID" != "?" ]] || return 0
   command_exists solana || return 0
 
   local out
@@ -740,6 +778,7 @@ collect_gossip_watch_metrics() {
   WATCH_DST_IDENTITY="?"
   WATCH_DST_VERSION="?"
 
+  [[ "$WATCH_ENT_PID" != "?" ]] || return 0
   command_exists solana || return 0
 
   local out
@@ -859,6 +898,7 @@ collect_validator_watch_metrics() {
   WATCH_SRC_ACTIVE_STAKE="?"
   WATCH_DST_ACTIVE_STAKE="?"
 
+  [[ "$WATCH_ENT_PID" != "?" ]] || return 0
   command_exists solana || return 0
 
   local out
@@ -1039,6 +1079,12 @@ collect_catchup_watch_metrics() {
   local temp_dir="" src_file="" dst_file=""
   local src_probe_pid="" dst_probe_pid=""
 
+  if [[ "$WATCH_ENT_PID" == "?" ]]; then
+    WATCH_SRC_CATCHUP="?"
+    WATCH_DST_CATCHUP="?"
+    return 0
+  fi
+
   temp_dir="$(mktemp -d 2>/dev/null || true)"
   if [[ -z "$temp_dir" || ! -d "$temp_dir" ]]; then
     if [[ "$WATCH_SRC_PID" == "?" ]]; then
@@ -1132,13 +1178,25 @@ shorten_middle() {
 
 shorten_address() {
   local value="${1:-?}"
+  local max_len="${2:-11}"
+  local prefix_len=4
+  local suffix_len=4
 
-  if [[ "$value" == "?" || ${#value} -le 11 ]]; then
+  if (( max_len < 7 )); then
+    max_len=7
+  fi
+
+  if (( max_len <= 9 )); then
+    prefix_len=3
+    suffix_len=3
+  fi
+
+  if [[ "$value" == "?" || ${#value} -le max_len ]]; then
     printf '%s' "$value"
     return 0
   fi
 
-  printf '%s...%s' "${value:0:4}" "${value: -4}"
+  printf '%s...%s' "${value:0:prefix_len}" "${value: -suffix_len}"
 }
 
 fit_cell() {
@@ -1201,20 +1259,42 @@ build_role_cell() {
   local version="$3"
   local stake="$4"
   local catchup_marker="${5:-}"
+  local id_width=11
+
+  if (( WATCH_SHORT_TABLE )); then
+    id_width=9
+  fi
 
   if [[ -n "$catchup_marker" ]]; then
-    printf '%s · %s · %s · %s · %s' \
-      "${pid:-?}" \
-      "${catchup_marker:-?}" \
-      "${version:-?}" \
-      "$(shorten_address "${identity:-?}")" \
-      "$(rounded_stake "$stake")"
+    if (( WATCH_SHORT_TABLE )); then
+      printf '%s·%s·%s·%s·%s' \
+        "${pid:-?}" \
+        "${catchup_marker:-?}" \
+        "${version:-?}" \
+        "$(shorten_address "${identity:-?}" "$id_width")" \
+        "$(rounded_stake "$stake")"
+    else
+      printf '%s · %s · %s · %s · %s' \
+        "${pid:-?}" \
+        "${catchup_marker:-?}" \
+        "${version:-?}" \
+        "$(shorten_address "${identity:-?}" "$id_width")" \
+        "$(rounded_stake "$stake")"
+    fi
   else
-    printf '%s · %s · %s · %s' \
-      "${pid:-?}" \
-      "$(shorten_address "${identity:-?}")" \
-      "${version:-?}" \
-      "$(rounded_stake "$stake")"
+    if (( WATCH_SHORT_TABLE )); then
+      printf '%s·%s·%s·%s' \
+        "${pid:-?}" \
+        "$(shorten_address "${identity:-?}" "$id_width")" \
+        "${version:-?}" \
+        "$(rounded_stake "$stake")"
+    else
+      printf '%s · %s · %s · %s' \
+        "${pid:-?}" \
+        "$(shorten_address "${identity:-?}" "$id_width")" \
+        "${version:-?}" \
+        "$(rounded_stake "$stake")"
+    fi
   fi
 }
 
@@ -1251,11 +1331,31 @@ format_role_cell() {
 
     if [[ -n "$marker_color" ]]; then
       highlighted_marker="${marker_color}${catchup_marker}${RESET}"
-      padded="${padded/ · $catchup_marker · / · $highlighted_marker · }"
+      if (( WATCH_SHORT_TABLE )); then
+        padded="${padded/·$catchup_marker·/·$highlighted_marker·}"
+      else
+        padded="${padded/ · $catchup_marker · / · $highlighted_marker · }"
+      fi
     fi
   fi
 
   printf '%s' "$(gray_middle_dots "$padded")"
+}
+
+watch_role_width_ep() {
+  if (( WATCH_SHORT_TABLE )); then
+    printf '29\n'
+  else
+    printf '42\n'
+  fi
+}
+
+watch_role_width_validator() {
+  if (( WATCH_SHORT_TABLE )); then
+    printf '31\n'
+  else
+    printf '45\n'
+  fi
 }
 
 clear_watch_screen() {
@@ -1306,24 +1406,38 @@ get_terminal_lines() {
 build_watch_sample_block() {
   local line1
   local sample_width=0
-  local role_width_ep=42
-  local role_width_validator=45
+  local role_width_ep
+  local role_width_validator
+  role_width_ep="$(watch_role_width_ep)"
+  role_width_validator="$(watch_role_width_validator)"
 
-  line1="$(
-    printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
-      "$(fit_cell 8 "$WATCH_TS")" \
-      "$(format_usage_cell 4 "$WATCH_CPU_PCT")" \
-      "$(format_usage_cell 4 "$WATCH_RAM_PCT")" \
-      "$(format_usage_cell 5 "$WATCH_DISK_PCT")" \
-      "$(fit_cell 3 "$WATCH_VM_COUNT")" \
-      "$(fit_cell 6 "$WATCH_SLOT")" \
-      "$(fit_cell 5 "$WATCH_EPOCH")" \
-      "$(fit_cell 8 "$WATCH_EPOCH_PCT")" \
-      "$(fit_cell 9 "$WATCH_GOSSIP_NODES")" \
-      "$(format_role_cell "$role_width_ep" "$WATCH_ENT_PID" "$WATCH_ENT_IDENTITY" "$WATCH_ENT_VERSION" "$WATCH_ENT_ACTIVE_STAKE")" \
-      "$(format_role_cell "$role_width_validator" "$WATCH_SRC_PID" "$WATCH_SRC_IDENTITY" "$WATCH_SRC_VERSION" "$WATCH_SRC_ACTIVE_STAKE" "$WATCH_SRC_CATCHUP")" \
-      "$(format_role_cell "$role_width_validator" "$WATCH_DST_PID" "$WATCH_DST_IDENTITY" "$WATCH_DST_VERSION" "$WATCH_DST_ACTIVE_STAKE" "$WATCH_DST_CATCHUP")"
-  )"
+  if (( WATCH_SHORT_TABLE )); then
+    line1="$(
+      printf ' %s | %s | %s | %s | %s | %s ' \
+        "$(format_usage_cell 5 "$WATCH_DISK_PCT")" \
+        "$(fit_cell 5 "$WATCH_EPOCH")" \
+        "$(fit_cell 8 "$WATCH_EPOCH_PCT")" \
+        "$(format_role_cell "$role_width_ep" "$WATCH_ENT_PID" "$WATCH_ENT_IDENTITY" "$WATCH_ENT_VERSION" "$WATCH_ENT_ACTIVE_STAKE")" \
+        "$(format_role_cell "$role_width_validator" "$WATCH_SRC_PID" "$WATCH_SRC_IDENTITY" "$WATCH_SRC_VERSION" "$WATCH_SRC_ACTIVE_STAKE" "$WATCH_SRC_CATCHUP")" \
+        "$(format_role_cell "$role_width_validator" "$WATCH_DST_PID" "$WATCH_DST_IDENTITY" "$WATCH_DST_VERSION" "$WATCH_DST_ACTIVE_STAKE" "$WATCH_DST_CATCHUP")"
+    )"
+  else
+    line1="$(
+      printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
+        "$(fit_cell 8 "$WATCH_TS")" \
+        "$(format_usage_cell 4 "$WATCH_CPU_PCT")" \
+        "$(format_usage_cell 4 "$WATCH_RAM_PCT")" \
+        "$(format_usage_cell 5 "$WATCH_DISK_PCT")" \
+        "$(fit_cell 3 "$WATCH_VM_COUNT")" \
+        "$(fit_cell 6 "$WATCH_SLOT")" \
+        "$(fit_cell 5 "$WATCH_EPOCH")" \
+        "$(fit_cell 8 "$WATCH_EPOCH_PCT")" \
+        "$(fit_cell 9 "$WATCH_GOSSIP_NODES")" \
+        "$(format_role_cell "$role_width_ep" "$WATCH_ENT_PID" "$WATCH_ENT_IDENTITY" "$WATCH_ENT_VERSION" "$WATCH_ENT_ACTIVE_STAKE")" \
+        "$(format_role_cell "$role_width_validator" "$WATCH_SRC_PID" "$WATCH_SRC_IDENTITY" "$WATCH_SRC_VERSION" "$WATCH_SRC_ACTIVE_STAKE" "$WATCH_SRC_CATCHUP")" \
+        "$(format_role_cell "$role_width_validator" "$WATCH_DST_PID" "$WATCH_DST_IDENTITY" "$WATCH_DST_VERSION" "$WATCH_DST_ACTIVE_STAKE" "$WATCH_DST_CATCHUP")"
+    )"
+  fi
 
   sample_width="$(visible_length "$line1")"
   if (( sample_width > WATCH_TABLE_WIDTH )); then
@@ -1333,12 +1447,41 @@ build_watch_sample_block() {
   WATCH_SAMPLE_HISTORY+=("$line1")
 }
 
+build_watch_header_plain() {
+  local role_width_ep
+  local role_width_validator
+  role_width_ep="$(watch_role_width_ep)"
+  role_width_validator="$(watch_role_width_validator)"
+
+  if (( WATCH_SHORT_TABLE )); then
+    printf ' %s | %s | %s | %s | %s | %s ' \
+      "$(fit_cell 5 "Disk%")" \
+      "$(fit_cell 5 "Epoch")" \
+      "$(fit_cell 8 "Epoch%")" \
+      "$(fit_cell "$role_width_ep" "pid · id · ver · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")"
+  else
+    printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
+      "$(fit_cell 8 "Time")" \
+      "$(fit_cell 4 "CPU%")" \
+      "$(fit_cell 4 "RAM%")" \
+      "$(fit_cell 5 "Disk%")" \
+      "$(fit_cell 3 "VMs")" \
+      "$(fit_cell 6 "Slot")" \
+      "$(fit_cell 5 "Epoch")" \
+      "$(fit_cell 8 "Epoch%")" \
+      "$(fit_cell 9 "In gossip")" \
+      "$(fit_cell "$role_width_ep" "pid · id · ver · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")" \
+      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")"
+  fi
+}
+
 render_watch_screen() {
   local term_lines top_lines header_lines row_lines available_lines max_samples total_samples start i
   local watch_header_plain watch_header watch_header_ip watch_width legend_line updates_line
   local role1_pos=0 role2_pos=0 role3_pos=0
-  local role_width_ep=42
-  local role_width_validator=45
   term_lines="$(get_terminal_lines)"
   [[ "$term_lines" =~ ^[0-9]+$ ]] || term_lines=24
 
@@ -1356,21 +1499,7 @@ render_watch_screen() {
     start=$((total_samples - max_samples))
   fi
 
-  watch_header_plain="$(
-    printf ' %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s ' \
-      "$(fit_cell 8 "Time")" \
-      "$(fit_cell 4 "CPU%")" \
-      "$(fit_cell 4 "RAM%")" \
-      "$(fit_cell 5 "Disk%")" \
-      "$(fit_cell 3 "VMs")" \
-      "$(fit_cell 6 "Slot")" \
-      "$(fit_cell 5 "Epoch")" \
-      "$(fit_cell 8 "Epoch%")" \
-      "$(fit_cell 9 "In gossip")" \
-      "$(fit_cell "$role_width_ep" "pid · id · ver · stake")" \
-      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")" \
-      "$(fit_cell "$role_width_validator" "pid · c · ver · id · stake")"
-  )"
+  watch_header_plain="$(build_watch_header_plain)"
   watch_header="$(gray_middle_dots "$watch_header_plain")"
 
   read -r role1_pos role2_pos role3_pos <<EOF
@@ -1463,8 +1592,11 @@ watch_loop() {
 }
 
 run_once() {
-  local ts
+  local ts entrypoint_running=0
   ts="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  if entrypoint_vm_is_running; then
+    entrypoint_running=1
+  fi
 
   echo
   line
@@ -1476,15 +1608,18 @@ run_once() {
 
   if (( WATCH_ENABLED )); then
     subtle "Watch interval: ${WATCH_INTERVAL}s (Ctrl+C to stop)"
+    if (( WATCH_SHORT_TABLE )); then
+      subtle "Watch table: compact"
+    fi
   else
     subtle "Watch mode: off"
   fi
 
   print_resource_pressure
   print_qemu_processes
-  print_solana_epoch_info
-  print_solana_gossip
-  print_solana_validators
+  print_solana_epoch_info "$entrypoint_running"
+  print_solana_gossip "$entrypoint_running"
+  print_solana_validators "$entrypoint_running"
 
   echo
   ok "Done."
