@@ -119,7 +119,17 @@ fi
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Missing required command: $cmd" >&2
+    case "$cmd" in
+      solana|solana-keygen|solana-test-validator)
+        echo "Missing required command: $cmd" >&2
+        echo "This VM verifier requires Solana CLI tools on the host PATH for localnet entrypoint operations." >&2
+        echo "Install or expose host-side binaries for: solana, solana-keygen, and solana-test-validator." >&2
+        echo "Then verify with: solana --version && solana-keygen --version && solana-test-validator --version" >&2
+        ;;
+      *)
+        echo "Missing required command: $cmd" >&2
+        ;;
+    esac
     exit 3
   fi
 }
