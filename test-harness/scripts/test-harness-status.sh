@@ -1305,7 +1305,7 @@ format_role_cell() {
   local version="$4"
   local stake="$5"
   local catchup_marker="${6:-}"
-  local padded="" shortened_identity="" highlighted_identity="" marker_color="" highlighted_marker=""
+  local padded="" shortened_identity="" highlighted_identity="" marker_color="" highlighted_marker="" id_width=11
 
   padded="$(fit_cell "$width" "$(build_role_cell "$pid" "$identity" "$version" "$stake" "$catchup_marker")")"
 
@@ -1315,7 +1315,10 @@ format_role_cell() {
   fi
 
   if [[ "$identity" == "$PRIMARY_TARGET_IDENTITY" ]]; then
-    shortened_identity="$(shorten_address "$identity")"
+    if (( WATCH_SHORT_TABLE )); then
+      id_width=9
+    fi
+    shortened_identity="$(shorten_address "$identity" "$id_width")"
     highlighted_identity="${BOLD}${YELLOW}${shortened_identity}${RESET}"
     padded="${padded/"$shortened_identity"/"$highlighted_identity"}"
   fi
