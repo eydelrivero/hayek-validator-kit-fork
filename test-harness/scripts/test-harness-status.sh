@@ -2,7 +2,9 @@
 
 set -u
 
-EXPECTED_QEMU_ROOT="/home/ubuntu/workdir/repos/hayek-validator-kit-fork/test-harness/work/"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+EXPECTED_QEMU_ROOT="${REPO_ROOT}/test-harness/work/"
 ENTRYPOINT_VM_IP="192.168.100.13"
 SOURCE_VM_IP="192.168.100.11"
 DESTINATION_VM_IP="192.168.100.12"
@@ -13,7 +15,7 @@ WATCH_INTERVAL=30
 WATCH_DEBUG=0
 WATCH_DEBUG_ROOT="${EXPECTED_QEMU_ROOT}/status-debug"
 WATCH_DEBUG_RUN_DIR=""
-WATCH_SSH_KEY="/home/ubuntu/workdir/repos/hayek-validator-kit-fork/scripts/vm-test/work/id_ed25519"
+WATCH_SSH_KEY="${REPO_ROOT}/scripts/vm-test/work/id_ed25519"
 WATCH_VALIDATOR_OPERATOR_USER="bob"
 WATCH_SOURCE_SSH_PORT=2522
 WATCH_DESTINATION_SSH_PORT=2522
