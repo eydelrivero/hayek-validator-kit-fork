@@ -10,6 +10,11 @@ The harness wraps existing workflows from:
 - `scripts/vm-test/`
 - `bare-metal/latitudesh/`
 
+Host-side prerequisites for VM localnet and hot-swap flows include:
+- QEMU + cloud-init tooling + Ansible
+- Docker for compose-backed control-plane paths when used
+- Solana CLI tools on the host `PATH`: `solana`, `solana-keygen`, `solana-test-validator`
+
 ## Entry Point
 
 ```bash
@@ -247,6 +252,7 @@ L3 now reuses prepared source/destination VM caches by default (per flavor-pair 
 - immutable cache root is shared with L2 via `IMMUTABLE_VM_CACHE_ROOT` (default: `./test-harness/work/_vm-immutable-cache`)
 - immutable stateless entrypoint CLI cache is also shared with L2 via `ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT` (default: `./test-harness/work/_vm-immutable-cache/entrypoint-vm-cli`)
 - `PRUNE_MUTABLE_CACHE_DIRS=auto` by default (with `SHARED_ENTRYPOINT_VM=false`, this prunes legacy mutable caches before runs)
+- on same-arch Linux hosts, L3 now fails fast if QEMU would fall back to slow TCG emulation instead of KVM; if you intentionally want that slow path, override with `ALLOW_SAME_ARCH_TCG=true`
 
 ### VM Manual Cluster Bring-Up / Teardown
 
@@ -357,6 +363,7 @@ When `VM_NETWORK_MODE=shared-bridge` is used, the validator VMs can boot with:
 - static guest IPs via cloud-init network-config
 - QEMU `tap` networking instead of `-nic user`
 - direct host-to-guest SSH over the bridge (no localhost port-forward dependency)
+- host-routed outbound egress when the host bridge is configured with NAT/forwarding
 
 Required environment for this mode:
 - `VM_SOURCE_BRIDGE_IP`
@@ -369,6 +376,10 @@ Optional:
 - `VM_BRIDGE_DNS_IP`
 - `VM_BRIDGE_CIDR_PREFIX` (default: `24`)
 - `VM_NETWORK_MATCH_NAME` (default: `e*`)
+
+Host requirement:
+- The bridge host must provide IPv4 forwarding/NAT from the bridge subnet to the real uplink, and guests need a reachable DNS server. `./scripts/vm-test/setup-shared-bridge.sh` configures idempotent `iptables` NAT/forward rules for the detected default-route interface and prints the `VM_BRIDGE_DNS_IP` export to use.
+- For localnet-backed VM verifier flows, the host also needs `solana`, `solana-keygen`, and `solana-test-validator` available on `PATH`.
 
 Current limitation:
 - `VM_NETWORK_MODE=shared-bridge` supports `VM_LOCALNET_ENTRYPOINT_MODE=host`, `external`, or `vm`.
