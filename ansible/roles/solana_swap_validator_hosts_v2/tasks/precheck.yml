@@ -89,12 +89,21 @@
   when: not (source_validation and destination_validation)
   run_once: true
 
-- name: precheck - Ensure python3-psutil is installed
+- name: precheck - Check whether python3-psutil is already installed
+  ansible.builtin.command: dpkg-query -W -f='${Status}' python3-psutil
+  register: python3_psutil_package
+  changed_when: false
+  failed_when: false
+
+- name: precheck - Ensure python3-psutil is installed when missing
   ansible.builtin.apt:
     name: python3-psutil
     state: present
     update_cache: yes
+    lock_timeout: 120
   become: true
+  when:
+    - python3_psutil_package.rc != 0 or 'install ok installed' not in (python3_psutil_package.stdout | default(''))
 
 - name: precheck - Ensure solana-validator-ha binary is installed on swap hosts
   block:
