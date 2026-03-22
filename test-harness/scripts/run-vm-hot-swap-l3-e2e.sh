@@ -25,6 +25,7 @@ PREPARED_CACHE_KEY_OVERRIDE="${PREPARED_CACHE_KEY_OVERRIDE:-}"
 IMMUTABLE_VM_CACHE_ROOT="${IMMUTABLE_VM_CACHE_ROOT:-$REPO_ROOT/test-harness/work/_vm-immutable-cache}"
 ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT="${ENTRYPOINT_CLI_IMMUTABLE_CACHE_ROOT:-$IMMUTABLE_VM_CACHE_ROOT/entrypoint-vm-cli}"
 PROGRESS_INTERVAL_SEC="${PROGRESS_INTERVAL_SEC:-30}"
+ALLOW_SAME_ARCH_TCG="${ALLOW_SAME_ARCH_TCG:-false}"
 
 VM_NETWORK_MODE="${VM_NETWORK_MODE:-shared-bridge}"
 VM_LOCALNET_ENTRYPOINT_MODE="${VM_LOCALNET_ENTRYPOINT_MODE:-vm}"
@@ -209,6 +210,55 @@ resolve_default_vm_config() {
   if [[ -z "$VM_BASE_IMAGE" ]]; then
     VM_BASE_IMAGE="$REPO_ROOT/scripts/vm-test/work/ubuntu-${VM_ARCH}.img"
   fi
+}
+
+host_vm_arch_matches() {
+  local host_arch
+  host_arch="$(uname -m)"
+
+  case "$host_arch:$VM_ARCH" in
+    x86_64:amd64|amd64:amd64|aarch64:arm64|arm64:arm64)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_same_arch_kvm_available() {
+  local qemu_accel="${QEMU_ACCEL:-auto}"
+
+  [[ "$(uname -s)" == "Linux" ]] || return 0
+  host_vm_arch_matches || return 0
+
+  if [[ "$qemu_accel" == "kvm" ]]; then
+    if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+      return 0
+    fi
+    echo "FAIL: QEMU_ACCEL=kvm was requested, but /dev/kvm is not accessible to user $(id -un)." >&2
+    echo "Hint: add this user to the 'kvm' group and start a new login session: sudo usermod -aG kvm $(id -un)" >&2
+    exit 1
+  fi
+
+  if [[ "$qemu_accel" == "auto" && -r /dev/kvm && -w /dev/kvm ]]; then
+    return 0
+  fi
+
+  if [[ "$ALLOW_SAME_ARCH_TCG" == "true" ]]; then
+    echo "Warning: continuing with same-arch TCG emulation because ALLOW_SAME_ARCH_TCG=true." >&2
+    return 0
+  fi
+
+  echo "FAIL: same-arch Linux VM runs must use KVM; this host would fall back to slow TCG emulation." >&2
+  if [[ -e /dev/kvm ]]; then
+    echo "Hint: /dev/kvm exists but is not accessible to user $(id -un)." >&2
+    echo "Hint: add this user to the 'kvm' group and start a new login session: sudo usermod -aG kvm $(id -un)" >&2
+  else
+    echo "Hint: /dev/kvm is missing. Check BIOS virtualization settings and host KVM modules." >&2
+  fi
+  echo "Override only if you intentionally want the slow path: ALLOW_SAME_ARCH_TCG=true ./test-harness/scripts/run-vm-hot-swap-l3-e2e.sh ..." >&2
+  exit 1
 }
 
 resolve_shared_entrypoint_source_prefix() {
@@ -572,6 +622,9 @@ ensure_prepared_vm_cache() {
   echo "==> [L3] Prepared cache ready for ${source_flavor}->${destination_flavor}: $prepared_dir (${prepare_elapsed_human})" >&2
 }
 
+resolve_default_vm_config
+ensure_same_arch_kvm_available
+
 if [[ "$KILL_STALE_QEMU" == true ]]; then
   stale_pattern="qemu-system-.*ifname=${VM_SOURCE_TAP_IFACE}|qemu-system-.*ifname=${VM_DESTINATION_TAP_IFACE}"
   if [[ "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
@@ -593,8 +646,6 @@ if [[ "$PRUNE_OLD_RUNS" == true ]]; then
   fi
   "$REPO_ROOT/test-harness/scripts/prune-vm-test-runs.sh" "${prune_args[@]}" >/dev/null
 fi
-
-resolve_default_vm_config
 
 if [[ "$SHARED_ENTRYPOINT_VM" != "true" ]]; then
   ensure_stateless_entrypoint_cli_cache
