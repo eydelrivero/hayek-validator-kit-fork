@@ -122,12 +122,21 @@
     - hostvars[source_host]['pubkey'].content != ''
   ignore_errors: "{{ ansible_check_mode }}"
 
-- name: prepare - Install prerequisites
+- name: prepare - Check whether rsync is already installed
+  ansible.builtin.command: dpkg-query -W -f='${Status}' rsync
+  register: rsync_package
+  changed_when: false
+  failed_when: false
+
+- name: prepare - Install prerequisites when rsync is missing
   become: true
   ansible.builtin.apt:
     name: rsync
     state: present
     update_cache: true
+    lock_timeout: 120
+  when:
+    - rsync_package.rc != 0 or 'install ok installed' not in (rsync_package.stdout | default(''))
 
 - name: prepare - Check for identity keypair files on source host
   block:
