@@ -140,6 +140,16 @@ sudo apt update
 sudo apt install -y qemu-system-x86 qemu-system-arm qemu-utils cloud-image-utils ansible
 ```
 
+For VM hot-swap and localnet-backed verifier flows, the host also needs Solana
+CLI tools on `PATH`:
+- `solana`
+- `solana-keygen`
+- `solana-test-validator`
+
+These are host-side harness dependencies used for localnet control-plane work
+and key generation. They are separate from the Solana CLI that gets installed
+inside the disposable VMs.
+
 2) Download a same-arch cloud image for the host. On x86_64, prefer amd64:
 
 ```bash
@@ -148,11 +158,27 @@ curl -L -o scripts/vm-test/work/ubuntu-amd64.img \
   https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 ```
 
-3) Create the host-only bridge and tap devices:
+3) Create the host-only bridge and tap devices.
+
+This helper also enables IPv4 forwarding and installs idempotent `iptables`
+NAT/forward rules so bridge-attached guests can reach the internet through the
+host uplink. It auto-detects the default-route interface and a host DNS server,
+and prints the `VM_BRIDGE_DNS_IP` export to use for guests.
 
 ```bash
 ./scripts/vm-test/setup-shared-bridge.sh
 ```
+
+If auto-detection picks the wrong uplink or DNS server, override them:
+
+```bash
+VM_BRIDGE_UPLINK_IFACE=enp3s0 \
+VM_BRIDGE_DNS_IP=1.1.1.1 \
+./scripts/vm-test/setup-shared-bridge.sh
+```
+
+The helper applies live host firewall/NAT state; rerun it after reboot unless
+you persist equivalent rules separately.
 
 4) Run the hot-swap verifier with the dedicated entrypoint VM on the same bridge:
 
@@ -163,6 +189,7 @@ VM_SOURCE_BRIDGE_IP=192.168.100.11 \
 VM_DESTINATION_BRIDGE_IP=192.168.100.12 \
 ENTRYPOINT_VM_BRIDGE_IP=192.168.100.13 \
 VM_BRIDGE_GATEWAY_IP=192.168.100.1 \
+VM_BRIDGE_DNS_IP=1.1.1.1 \
 VM_SOURCE_TAP_IFACE=tap-hvk-src \
 VM_DESTINATION_TAP_IFACE=tap-hvk-dst \
 ENTRYPOINT_VM_TAP_IFACE=tap-hvk-ent \
@@ -177,10 +204,19 @@ BUILD_FROM_SOURCE=false \
   --vm-base-image scripts/vm-test/work/ubuntu-amd64.img
 ```
 
+Before running, confirm the host-side Solana CLI tools are available:
+
+```bash
+solana --version
+solana-keygen --version
+solana-test-validator --version
+```
+
 If you intentionally run `--vm-arch arm64` on an x86_64 host, QEMU falls back to TCG emulation. That works only after installing `qemu-system-arm`, and it is materially slower than using an amd64 guest on an amd64 host.
 
 ## Troubleshooting
 
+- If bridge-attached guests fail DNS lookups or cannot reach the internet, rerun `./scripts/vm-test/setup-shared-bridge.sh` and confirm it selected the correct uplink and DNS server. The shared-bridge path requires host-side NAT/forwarding plus a reachable `VM_BRIDGE_DNS_IP`.
 - QEMU runs in the foreground; use a second terminal for SSH. To stop QEMU, press `Ctrl+A` then `X`.
 - Use `./scripts/vm-test/wait-for-ssh.sh` before SSH/Ansible to avoid transient connection resets while `sshd`, UFW, or fail2ban are still settling.
 - If the arm64 VM shows no boot logs, you likely need UEFI firmware. The script auto-detects it, but you can set it explicitly:
