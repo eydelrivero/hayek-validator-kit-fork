@@ -10,6 +10,10 @@ RUN_ID_PREFIX="${RUN_ID_PREFIX:-vm-hot-swap-manual}"
 STATE_FILE="${STATE_FILE:-$REPO_ROOT/test-harness/work/manual-vm-cluster/current.env}"
 VM_ARCH="${VM_ARCH:-}"
 VM_BASE_IMAGE="${VM_BASE_IMAGE:-}"
+VM_DISK_SYSTEM_GB="${VM_DISK_SYSTEM_GB:-80}"
+VM_DISK_LEDGER_GB="${VM_DISK_LEDGER_GB:-100}"
+VM_DISK_ACCOUNTS_GB="${VM_DISK_ACCOUNTS_GB:-50}"
+VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-0}"
 SOURCE_FLAVOR="${SOURCE_FLAVOR:-agave}"
 DESTINATION_FLAVOR="${DESTINATION_FLAVOR:-jito-bam}"
 PRUNE_OLD_RUNS="${PRUNE_OLD_RUNS:-true}"
@@ -37,6 +41,10 @@ Options:
   --state-file <path>              (default: ./test-harness/work/manual-vm-cluster/current.env)
   --vm-arch <amd64|arm64>
   --vm-base-image <path>
+  --vm-disk-system-gb <n>          (default: 80)
+  --vm-disk-ledger-gb <n>          (default: 100)
+  --vm-disk-accounts-gb <n>        (default: 50)
+  --vm-disk-snapshots-gb <n>       (default: 0)
   --source-flavor <flavor>         (default: agave)
   --destination-flavor <flavor>    (default: jito-bam)
   --no-prune
@@ -73,6 +81,22 @@ while (($# > 0)); do
       ;;
     --vm-base-image)
       VM_BASE_IMAGE="${2:-}"
+      shift 2
+      ;;
+    --vm-disk-system-gb)
+      VM_DISK_SYSTEM_GB="${2:-}"
+      shift 2
+      ;;
+    --vm-disk-ledger-gb)
+      VM_DISK_LEDGER_GB="${2:-}"
+      shift 2
+      ;;
+    --vm-disk-accounts-gb)
+      VM_DISK_ACCOUNTS_GB="${2:-}"
+      shift 2
+      ;;
+    --vm-disk-snapshots-gb)
+      VM_DISK_SNAPSHOTS_GB="${2:-}"
       shift 2
       ;;
     --source-flavor)
@@ -199,7 +223,12 @@ if [[ -n "$PREPARED_CACHE_KEY_OVERRIDE" ]]; then
   l3_args+=(--prepared-cache-key "$PREPARED_CACHE_KEY_OVERRIDE")
 fi
 
-env VM_MANUAL_TEST_ONLY=true \
+env \
+  VM_MANUAL_TEST_ONLY=true \
+  VM_DISK_SYSTEM_GB="$VM_DISK_SYSTEM_GB" \
+  VM_DISK_LEDGER_GB="$VM_DISK_LEDGER_GB" \
+  VM_DISK_ACCOUNTS_GB="$VM_DISK_ACCOUNTS_GB" \
+  VM_DISK_SNAPSHOTS_GB="$VM_DISK_SNAPSHOTS_GB" \
   "$REPO_ROOT/test-harness/scripts/run-vm-hot-swap-l3-e2e.sh" \
   "${l3_args[@]}"
 

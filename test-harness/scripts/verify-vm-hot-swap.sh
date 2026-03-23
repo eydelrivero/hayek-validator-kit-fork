@@ -15,7 +15,7 @@ VM_RAM_MB="${VM_RAM_MB:-8192}"
 VM_DISK_SYSTEM_GB="${VM_DISK_SYSTEM_GB:-40}"
 VM_DISK_LEDGER_GB="${VM_DISK_LEDGER_GB:-20}"
 VM_DISK_ACCOUNTS_GB="${VM_DISK_ACCOUNTS_GB:-10}"
-VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-5}"
+VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-0}"
 VM_QEMU_EFI="${VM_QEMU_EFI:-}"
 VM_NETWORK_MODE="${VM_NETWORK_MODE:-usernet}"
 VM_BRIDGE_NAME="${VM_BRIDGE_NAME:-br-hvk}"
@@ -1849,11 +1849,22 @@ if [[ ! -x "$RUN_SCRIPT" ]]; then
   exit 3
 fi
 
+snapshots_disk_enabled() {
+  [[ "${VM_DISK_SNAPSHOTS_GB:-0}" =~ ^[0-9]+$ ]] || return 1
+  (( VM_DISK_SNAPSHOTS_GB > 0 ))
+}
+
 assert_disk_parent_prefix_ready() {
   local prefix="$1"
   local label="$2"
   local path
-  for suffix in ".qcow2" "-ledger.qcow2" "-accounts.qcow2" "-snapshots.qcow2"; do
+  local suffixes=(".qcow2" "-ledger.qcow2" "-accounts.qcow2")
+
+  if snapshots_disk_enabled; then
+    suffixes+=("-snapshots.qcow2")
+  fi
+
+  for suffix in "${suffixes[@]}"; do
     path="${prefix}${suffix}"
     if [[ ! -r "$path" ]]; then
       echo "[vm-hot-swap] Missing ${label} parent disk: $path" >&2
@@ -1908,7 +1919,7 @@ start_vm() {
     && [[ -r "$vm_dir/${vm_name}.qcow2" ]] \
     && [[ -r "$vm_dir/${vm_name}-ledger.qcow2" ]] \
     && [[ -r "$vm_dir/${vm_name}-accounts.qcow2" ]] \
-    && [[ -r "$vm_dir/${vm_name}-snapshots.qcow2" ]]; then
+    && { ! snapshots_disk_enabled || [[ -r "$vm_dir/${vm_name}-snapshots.qcow2" ]]; }; then
     reuse_existing_disks=true
   fi
 
@@ -2010,12 +2021,16 @@ export_prepared_vm_disks() {
   cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}.qcow2" "${source_prefix}.qcow2"
   cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-ledger.qcow2" "${source_prefix}-ledger.qcow2"
   cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-accounts.qcow2" "${source_prefix}-accounts.qcow2"
-  cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-snapshots.qcow2" "${source_prefix}-snapshots.qcow2"
+  if snapshots_disk_enabled; then
+    cp --reflink=auto -f "$SRC_VM_DIR/${SRC_VM_NAME}-snapshots.qcow2" "${source_prefix}-snapshots.qcow2"
+  fi
 
   cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}.qcow2" "${destination_prefix}.qcow2"
   cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-ledger.qcow2" "${destination_prefix}-ledger.qcow2"
   cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-accounts.qcow2" "${destination_prefix}-accounts.qcow2"
-  cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-snapshots.qcow2" "${destination_prefix}-snapshots.qcow2"
+  if snapshots_disk_enabled; then
+    cp --reflink=auto -f "$DST_VM_DIR/${DST_VM_NAME}-snapshots.qcow2" "${destination_prefix}-snapshots.qcow2"
+  fi
 
   cat >"$export_dir/metadata.env" <<EOF
 source_prefix=${source_prefix}
