@@ -12,18 +12,28 @@
         update_cache: true
       become: true
 
+    - name: solana_validator_ha - Detect operating system via uname
+      ansible.builtin.command: uname -s
+      register: solana_validator_ha_uname_system
+      changed_when: false
+
+    - name: solana_validator_ha - Detect architecture via uname
+      ansible.builtin.command: uname -m
+      register: solana_validator_ha_uname_arch
+      changed_when: false
+
     - name: solana_validator_ha - Validate supported operating system
       ansible.builtin.assert:
         that:
-          - ansible_system == "Linux"
+          - (ansible_facts.system | default(ansible_system | default(solana_validator_ha_uname_system.stdout | default('')))) == "Linux"
         fail_msg: >-
           solana_validator_ha currently supports Linux targets only.
-          Detected ansible_system={{ ansible_system }}.
+          Detected ansible_system={{ ansible_facts.system | default(ansible_system | default(solana_validator_ha_uname_system.stdout | default('unknown'))) }}.
 
     - name: solana_validator_ha - Map architecture to release asset arch
       ansible.builtin.set_fact:
         solana_validator_ha_asset_arch: >-
-          {%- set detected_arch = ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default(''))) -%}
+          {%- set detected_arch = ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default(solana_validator_ha_uname_arch.stdout | default('')))) -%}
           {%- if detected_arch in ['x86_64', 'amd64'] -%}
           amd64
           {%- elif detected_arch in ['aarch64', 'arm64'] -%}
@@ -38,7 +48,7 @@
           - solana_validator_ha_asset_arch != "unsupported"
         fail_msg: >-
           Unsupported architecture for solana-validator-ha:
-          {{ ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default('unknown'))) }}.
+          {{ ansible_facts.architecture | default(ansible_architecture | default(ansible_machine | default(solana_validator_ha_uname_arch.stdout | default('unknown')))) }}.
 
     - name: solana_validator_ha - Set install paths
       ansible.builtin.set_fact:
