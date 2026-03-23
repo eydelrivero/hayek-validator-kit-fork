@@ -1618,10 +1618,32 @@ sync_host_expected_genesis_hash() {
   fi
 }
 
+shorten_vm_name() {
+  local raw_name="$1"
+  local max_len="${2:-63}"
+  local suffix=""
+  local prefix_len=0
+
+  if (( ${#raw_name} <= max_len )); then
+    printf '%s' "$raw_name"
+    return 0
+  fi
+
+  suffix="$(
+    printf '%s' "$raw_name" | sha256sum | awk '{print substr($1, 1, 8)}'
+  )"
+  prefix_len=$(( max_len - ${#suffix} - 1 ))
+  if (( prefix_len < 1 )); then
+    prefix_len=1
+  fi
+
+  printf '%s-%s' "${raw_name:0:prefix_len}" "$suffix"
+}
+
 CASE_DIR="$WORKDIR/$RUN_ID"
-SRC_VM_NAME="hvk-src-${RUN_ID}"
-DST_VM_NAME="hvk-dst-${RUN_ID}"
-ENTRYPOINT_VM_NAME="hvk-entry-${RUN_ID}"
+SRC_VM_NAME="$(shorten_vm_name "hvk-src-${RUN_ID}")"
+DST_VM_NAME="$(shorten_vm_name "hvk-dst-${RUN_ID}")"
+ENTRYPOINT_VM_NAME="$(shorten_vm_name "hvk-entry-${RUN_ID}")"
 SRC_VM_DIR="$CASE_DIR/source"
 DST_VM_DIR="$CASE_DIR/destination"
 ENTRYPOINT_VM_DIR="$CASE_DIR/entrypoint"
