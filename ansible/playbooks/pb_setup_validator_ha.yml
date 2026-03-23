@@ -36,7 +36,7 @@
 # - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of using the published GitHub release binary.
 # - solana_validator_ha_runtime_enabled (OPTIONAL): Render and start the solana-validator-ha runtime config and services.
 # - solana_validator_ha_node_name (OPTIONAL): Vanity node name written to the HA config. Derived automatically when solana_validator_ha_pair_hosts or solana_validator_ha_inventory_group is provided.
-# - solana_validator_ha_public_ip_value (OPTIONAL): Public IP written to the local public-ip helper file. Defaults to ansible_host.
+# - solana_validator_ha_public_ip_value (OPTIONAL for localnet, REQUIRED for non-localnet): Public IP written to the local public-ip helper file.
 # - solana_validator_ha_pair_hosts (OPTIONAL): Ordered list of HA hosts used to auto-derive node naming and peers.
 # - solana_validator_ha_inventory_group (OPTIONAL): Inventory group used to auto-derive node naming and peers.
 # - solana_validator_ha_peer_hostnames (OPTIONAL): Explicit peer inventory hostnames used to derive peer IPs when solana_validator_ha_peers is omitted.
