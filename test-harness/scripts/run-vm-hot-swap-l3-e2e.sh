@@ -10,6 +10,10 @@ RUN_ID_PREFIX="${RUN_ID_PREFIX:-vm-hot-swap-l3}"
 MODE="${MODE:-canary}"
 VM_ARCH="${VM_ARCH:-}"
 VM_BASE_IMAGE="${VM_BASE_IMAGE:-}"
+VM_DISK_SYSTEM_GB="${VM_DISK_SYSTEM_GB:-40}"
+VM_DISK_LEDGER_GB="${VM_DISK_LEDGER_GB:-20}"
+VM_DISK_ACCOUNTS_GB="${VM_DISK_ACCOUNTS_GB:-10}"
+VM_DISK_SNAPSHOTS_GB="${VM_DISK_SNAPSHOTS_GB:-0}"
 SOURCE_FLAVOR="${SOURCE_FLAVOR:-agave}"
 DESTINATION_FLAVOR="${DESTINATION_FLAVOR:-jito-bam}"
 RETAIN_ON_FAILURE=false
@@ -293,15 +297,17 @@ build_prepared_cache_key() {
   local destination_flavor="$2"
   local raw
   local verifier_hash
+  local disk_sizes
 
+  disk_sizes="${VM_DISK_SYSTEM_GB}|${VM_DISK_LEDGER_GB}|${VM_DISK_ACCOUNTS_GB}|${VM_DISK_SNAPSHOTS_GB}"
   if [[ -n "$PREPARED_CACHE_KEY_OVERRIDE" ]]; then
-    raw="$PREPARED_CACHE_KEY_OVERRIDE|$source_flavor|$destination_flavor"
+    raw="$PREPARED_CACHE_KEY_OVERRIDE|$source_flavor|$destination_flavor|$disk_sizes"
   else
     verifier_hash="$(
       sha256sum "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh" \
         | awk '{print substr($1, 1, 16)}'
     )"
-    raw="$VM_ARCH|$VM_BASE_IMAGE|$source_flavor|$destination_flavor|$AGAVE_VERSION|$BAM_JITO_VERSION|$BUILD_FROM_SOURCE|$CITY_GROUP|$VM_NETWORK_MODE|$verifier_hash"
+    raw="$VM_ARCH|$VM_BASE_IMAGE|$source_flavor|$destination_flavor|$AGAVE_VERSION|$BAM_JITO_VERSION|$BUILD_FROM_SOURCE|$CITY_GROUP|$VM_NETWORK_MODE|$disk_sizes|$verifier_hash"
   fi
   printf '%s' "$raw" | sha256sum | awk '{print substr($1, 1, 16)}'
 }
@@ -312,21 +318,31 @@ prepared_cache_ready() {
   [[ -r "$dir/source.qcow2" ]] || return 1
   [[ -r "$dir/source-ledger.qcow2" ]] || return 1
   [[ -r "$dir/source-accounts.qcow2" ]] || return 1
-  [[ -r "$dir/source-snapshots.qcow2" ]] || return 1
   [[ -r "$dir/destination.qcow2" ]] || return 1
   [[ -r "$dir/destination-ledger.qcow2" ]] || return 1
   [[ -r "$dir/destination-accounts.qcow2" ]] || return 1
-  [[ -r "$dir/destination-snapshots.qcow2" ]] || return 1
+  if snapshots_disk_enabled; then
+    [[ -r "$dir/source-snapshots.qcow2" ]] || return 1
+    [[ -r "$dir/destination-snapshots.qcow2" ]] || return 1
+  fi
 }
 
 build_entrypoint_cache_key() {
   local verifier_hash
+  local disk_sizes
+
   verifier_hash="$(
     sha256sum "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh" \
       | awk '{print substr($1, 1, 16)}'
   )"
-  printf '%s' "${VM_ARCH}|${VM_BASE_IMAGE}|${AGAVE_VERSION}|${BUILD_FROM_SOURCE}|${verifier_hash}" \
+  disk_sizes="${VM_DISK_SYSTEM_GB}|${VM_DISK_LEDGER_GB}|${VM_DISK_ACCOUNTS_GB}|${VM_DISK_SNAPSHOTS_GB}"
+  printf '%s' "${VM_ARCH}|${VM_BASE_IMAGE}|${AGAVE_VERSION}|${BUILD_FROM_SOURCE}|${disk_sizes}|${verifier_hash}" \
     | sha256sum | awk '{print substr($1, 1, 16)}'
+}
+
+snapshots_disk_enabled() {
+  [[ "${VM_DISK_SNAPSHOTS_GB:-0}" =~ ^[0-9]+$ ]] || return 1
+  (( VM_DISK_SNAPSHOTS_GB > 0 ))
 }
 
 entrypoint_immutable_cache_ready() {
@@ -342,7 +358,9 @@ entrypoint_immutable_cache_ready() {
   [[ -r "$cache_dir/entrypoint.qcow2" ]] || return 1
   [[ -r "$cache_dir/entrypoint-ledger.qcow2" ]] || return 1
   [[ -r "$cache_dir/entrypoint-accounts.qcow2" ]] || return 1
-  [[ -r "$cache_dir/entrypoint-snapshots.qcow2" ]] || return 1
+  if snapshots_disk_enabled; then
+    [[ -r "$cache_dir/entrypoint-snapshots.qcow2" ]] || return 1
+  fi
 }
 
 ensure_stateless_entrypoint_cli_cache() {
@@ -455,17 +473,23 @@ ensure_stateless_entrypoint_cli_cache() {
     return 1
   fi
 
-  for suffix in ".qcow2" "-ledger.qcow2" "-accounts.qcow2" "-snapshots.qcow2"; do
+  for suffix in ".qcow2" "-ledger.qcow2" "-accounts.qcow2"; do
     if [[ ! -r "${source_prefix}${suffix}" ]]; then
       echo "FAIL: L3 immutable entrypoint cache source disk missing: ${source_prefix}${suffix}" >&2
       return 1
     fi
   done
+  if snapshots_disk_enabled && [[ ! -r "${source_prefix}-snapshots.qcow2" ]]; then
+    echo "FAIL: L3 immutable entrypoint cache source disk missing: ${source_prefix}-snapshots.qcow2" >&2
+    return 1
+  fi
 
   cp --reflink=auto -f "${source_prefix}.qcow2" "${cache_prefix}.qcow2"
   cp --reflink=auto -f "${source_prefix}-ledger.qcow2" "${cache_prefix}-ledger.qcow2"
   cp --reflink=auto -f "${source_prefix}-accounts.qcow2" "${cache_prefix}-accounts.qcow2"
-  cp --reflink=auto -f "${source_prefix}-snapshots.qcow2" "${cache_prefix}-snapshots.qcow2"
+  if snapshots_disk_enabled; then
+    cp --reflink=auto -f "${source_prefix}-snapshots.qcow2" "${cache_prefix}-snapshots.qcow2"
+  fi
   printf '%s\n' "$cache_key" >"$cache_dir/.cache-key"
   touch "$cache_dir/.ready"
   rm -rf "$build_workdir"

@@ -27,6 +27,11 @@ LEDGER_DISK="$WORK_DIR/${VM_NAME}-ledger.qcow2"
 ACCOUNTS_DISK="$WORK_DIR/${VM_NAME}-accounts.qcow2"
 SNAPSHOTS_DISK="$WORK_DIR/${VM_NAME}-snapshots.qcow2"
 SEED_ISO="$WORK_DIR/${VM_NAME}-seed.iso"
+SNAPSHOTS_DRIVE_ARGS=()
+
+if [[ -r "$SNAPSHOTS_DISK" ]]; then
+  SNAPSHOTS_DRIVE_ARGS=(-drive file="$SNAPSHOTS_DISK",if=virtio)
+fi
 
 HOST_OS="$(uname -s)"
 HOST_ARCH="$(uname -m)"
@@ -121,7 +126,7 @@ exec "$QEMU_BIN" \
   -drive file="$SYSTEM_DISK",if=virtio \
   -drive file="$LEDGER_DISK",if=virtio \
   -drive file="$ACCOUNTS_DISK",if=virtio \
-  -drive file="$SNAPSHOTS_DISK",if=virtio \
+  "${SNAPSHOTS_DRIVE_ARGS[@]}" \
   -drive file="$SEED_ISO",media=cdrom \
   "${NET_ARGS[@]}" \
   -serial mon:stdio \
