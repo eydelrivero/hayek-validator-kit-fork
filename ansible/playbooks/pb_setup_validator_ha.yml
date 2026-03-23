@@ -58,6 +58,21 @@
         fail_msg: >
           Missing required playbook variables: target_host, ansible_user, validator_name
 
+    - name: Gather facts required by Solana Validator HA
+      ansible.builtin.setup:
+        gather_subset:
+          - min
+
+    - name: Derive solana_cluster from inventory groups when absent
+      ansible.builtin.set_fact:
+        solana_cluster: >-
+          {{
+            (group_names | select('match', '^solana_.*') | list | first | regex_replace('^solana_', ''))
+            if (group_names | select('match', '^solana_.*') | list | length > 0)
+            else 'localnet'
+          }}
+      when: solana_cluster is not defined
+
     - name: Debug ansible_limit and target_host
       ansible.builtin.debug:
         msg:
@@ -65,6 +80,7 @@
           - "ansible_limit type: {{ ansible_limit | type_debug }}"
           - "target_host: {{ target_host }}"
           - "ansible_play_hosts: {{ ansible_play_hosts }}"
+          - "solana_cluster: {{ solana_cluster | default('not defined') }}"
 
     - name: Validate that target_host matches the limited host
       ansible.builtin.assert:
