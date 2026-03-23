@@ -52,25 +52,34 @@
     - inventory_hostname in solana_validator_ha_effective_hosts
     - (solana_validator_ha_node_name | default(inventory_hostname)) == inventory_hostname
 
+- name: solana_validator_ha - Determine whether peer map should be derived
+  ansible.builtin.set_fact:
+    solana_validator_ha_should_derive_peers: "{{ (solana_validator_ha_peers | default({}) | length == 0) and (solana_validator_ha_peer_hostnames | default([]) | length > 0) }}"
+
+- name: solana_validator_ha - Initialize derived peer map
+  ansible.builtin.set_fact:
+    solana_validator_ha_peers: {}
+  when:
+    - solana_validator_ha_should_derive_peers | bool
+
 - name: solana_validator_ha - Derive peer map from peer hostnames
   ansible.builtin.set_fact:
-    solana_validator_ha_peers: >-
+    solana_validator_ha_peers: "{{ solana_validator_ha_peers | combine({solana_validator_ha_peer_name: solana_validator_ha_peer_ip}) }}"
+  vars:
+    solana_validator_ha_peer_name: >-
       {{
-        dict(
-          (
-            (
-              "validator-" ~ (((solana_validator_ha_effective_hosts.index(item) | int) + 1) | string)
-            )
-            if (item in (solana_validator_ha_effective_hosts | default([])))
-            else item,
-            hostvars[item].solana_validator_ha_public_ip_value | default(hostvars[item].ansible_host | default(item))
-          )
-          for item in (solana_validator_ha_peer_hostnames | default([]))
+        (
+          "validator-" ~ (((solana_validator_ha_effective_hosts.index(item) | int) + 1) | string)
         )
+        if (item in (solana_validator_ha_effective_hosts | default([])))
+        else item
       }}
+    solana_validator_ha_peer_ip: "{{ hostvars[item].solana_validator_ha_public_ip_value | default(hostvars[item].ansible_host | default(item)) }}"
+  loop: "{{ solana_validator_ha_peer_hostnames | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
   when:
-    - solana_validator_ha_peers | default({}) | length == 0
-    - solana_validator_ha_peer_hostnames | default([]) | length > 0
+    - solana_validator_ha_should_derive_peers | bool
 
 - name: solana_validator_ha - Validate runtime variables
   ansible.builtin.assert:
@@ -89,6 +98,22 @@
       peer in solana_validator_ha_peers. Provide solana_validator_ha_peers directly or
       supply solana_validator_ha_pair_hosts / solana_validator_ha_inventory_group so peers
       and node names can be derived automatically.
+
+- name: solana_validator_ha - Keep persistent startup identity passive
+  ansible.builtin.file:
+    src: "{{ validator_keyset_dir }}/hot-spare-identity.json"
+    dest: "{{ validator_keyset_dir }}/identity.json"
+    state: link
+    force: true
+  become: true
+
+- name: solana_validator_ha - Set ownership on persistent startup identity symlink
+  ansible.builtin.file:
+    path: "{{ validator_keyset_dir }}/identity.json"
+    owner: "{{ solana_user }}"
+    group: "{{ validator_operators_group }}"
+    follow: false
+  become: true
 
 - name: solana_validator_ha - Ensure runtime configuration directory exists
   ansible.builtin.file:
