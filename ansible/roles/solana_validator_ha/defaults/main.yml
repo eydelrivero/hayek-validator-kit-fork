@@ -23,7 +23,8 @@ solana_validator_ha_pair_hosts: []
 solana_validator_ha_peer_hostnames: []
 solana_validator_ha_public_ip_bind_host: "127.0.0.1"
 solana_validator_ha_public_ip_port: 8079
-solana_validator_ha_public_ip_value: "{{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }}"
+# Set explicitly for non-localnet environments. Localnet falls back to ansible_host/default IPv4.
+solana_validator_ha_public_ip_value: ""
 solana_validator_ha_public_ip_service_urls:
   - "http://{{ solana_validator_ha_public_ip_bind_host }}:{{ solana_validator_ha_public_ip_port }}/public-ip.txt"
 solana_validator_ha_validator_rpc_url: "http://127.0.0.1:{{ solana_rpc_port | default(8899) }}"
