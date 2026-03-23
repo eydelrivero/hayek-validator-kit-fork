@@ -310,6 +310,22 @@ require_cmd() {
   fi
 }
 
+detect_shared_bridge_uplink_iface() {
+  ip route show default 2>/dev/null | awk '/^default/ { print $5; exit }'
+}
+
+detect_shared_bridge_dns_ipv4() {
+  local uplink_iface="$1"
+
+  if command -v resolvectl >/dev/null 2>&1 && [[ -n "$uplink_iface" ]]; then
+    resolvectl dns "$uplink_iface" 2>/dev/null \
+      | awk '{ for (i = 3; i <= NF; i++) if ($i ~ /^[0-9.]+$/ && $i !~ /^127\./) { print $i; exit } }'
+    return 0
+  fi
+
+  awk '/^nameserver[[:space:]]+[0-9.]+$/ { if ($2 !~ /^127\./) { print $2; exit } }' /etc/resolv.conf 2>/dev/null
+}
+
 for cmd in ansible-playbook ansible jq qemu-img ssh-keygen ssh-keyscan; do
   require_cmd "$cmd"
 done
@@ -357,6 +373,15 @@ if [[ "$SOLANA_CLUSTER_NORMALIZED" == "localnet" ]]; then
     if [[ -z "$VM_SOURCE_BRIDGE_IP" || -z "$VM_DESTINATION_BRIDGE_IP" || -z "$VM_BRIDGE_GATEWAY_IP" || -z "$VM_SOURCE_TAP_IFACE" || -z "$VM_DESTINATION_TAP_IFACE" ]]; then
       echo "VM_NETWORK_MODE=shared-bridge requires VM_SOURCE_BRIDGE_IP, VM_DESTINATION_BRIDGE_IP, VM_BRIDGE_GATEWAY_IP, VM_SOURCE_TAP_IFACE, and VM_DESTINATION_TAP_IFACE." >&2
       exit 2
+    fi
+    if [[ -z "$VM_BRIDGE_DNS_IP" ]]; then
+      VM_BRIDGE_DNS_IP="$(detect_shared_bridge_dns_ipv4 "$(detect_shared_bridge_uplink_iface)")"
+      if [[ -n "$VM_BRIDGE_DNS_IP" ]]; then
+        echo "[vm-hot-swap] Auto-detected shared-bridge guest DNS server: ${VM_BRIDGE_DNS_IP}" >&2
+      else
+        VM_BRIDGE_DNS_IP="$VM_BRIDGE_GATEWAY_IP"
+        echo "[vm-hot-swap] Warning: unable to auto-detect a non-loopback DNS server; falling back to bridge gateway ${VM_BRIDGE_DNS_IP}." >&2
+      fi
     fi
     case "$VM_LOCALNET_ENTRYPOINT_MODE" in
       host|external) ;;
