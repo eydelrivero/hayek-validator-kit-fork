@@ -499,6 +499,7 @@ setup_base_args=(
   -e "ansible_user=$VALIDATOR_OPERATOR_USER"
   -e "validator_name=$VALIDATOR_NAME"
   -e "validator_type=$VALIDATOR_TYPE"
+  -e "xdp_enabled=true"
   -e "solana_cluster=$SOLANA_CLUSTER"
   -e "build_from_source=$BUILD_FROM_SOURCE"
   -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
