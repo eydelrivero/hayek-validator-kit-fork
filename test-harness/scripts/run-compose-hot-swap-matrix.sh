@@ -99,30 +99,69 @@ cases=(
 pass_count=0
 fail_count=0
 
+run_case() {
+  local case_name="$1"
+  local source_flavor="$2"
+  local destination_flavor="$3"
+  local run_id="$4"
+  local rc=0
+  local inventory_json=""
+  local inventory_path=""
+  local target_args=(
+    --scenario "$SCENARIO"
+    --run-id "$run_id"
+    --workdir "$WORKDIR"
+    --compose-engine "$COMPOSE_ENGINE"
+  )
+
+  "$REPO_ROOT/test-harness/targets/compose.sh" up "${target_args[@]}" || rc=$?
+
+  if [[ "$rc" -eq 0 ]]; then
+    inventory_json="$("$REPO_ROOT/test-harness/targets/compose.sh" inventory "${target_args[@]}")" || rc=$?
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    inventory_path="$(jq -r '.inventory_path // empty' <<<"$inventory_json")"
+    if [[ -z "$inventory_path" || ! -r "$inventory_path" ]]; then
+      echo "Failed to locate compose inventory for run $run_id" >&2
+      rc=1
+    fi
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    "$REPO_ROOT/test-harness/targets/compose.sh" wait "${target_args[@]}" --timeout-seconds "$TIMEOUT_SECONDS" || rc=$?
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    "$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh" \
+      --compose-engine "$COMPOSE_ENGINE" \
+      --inventory "$inventory_path" \
+      --source-host "$SOURCE_HOST" \
+      --destination-host "$DESTINATION_HOST" \
+      --source-flavor "$source_flavor" \
+      --destination-flavor "$destination_flavor" \
+      --validator-name "$VALIDATOR_NAME" \
+      --operator-user "$OPERATOR_USER" || rc=$?
+  fi
+
+  "$REPO_ROOT/test-harness/targets/compose.sh" artifacts "${target_args[@]}" >/dev/null 2>&1 || true
+
+  if [[ "$rc" -eq 0 || "$RETAIN_ON_FAILURE" != true ]]; then
+    "$REPO_ROOT/test-harness/targets/compose.sh" down "${target_args[@]}" >/dev/null 2>&1 || true
+  else
+    echo "Retaining compose harness run on failure: $run_id" >&2
+  fi
+
+  return "$rc"
+}
+
 for case_entry in "${cases[@]}"; do
   IFS=':' read -r case_name source_flavor destination_flavor <<<"$case_entry"
   run_id="hot-swap-${case_name}-$(date +%Y%m%d-%H%M%S)"
 
   echo "==> Running case: $case_name ($source_flavor -> $destination_flavor)" >&2
 
-  verify_cmd="$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh --compose-engine $COMPOSE_ENGINE --inventory <inventory> --source-host $SOURCE_HOST --destination-host $DESTINATION_HOST --source-flavor $source_flavor --destination-flavor $destination_flavor --validator-name $VALIDATOR_NAME --operator-user $OPERATOR_USER"
-
-  hvk_args=(
-    "$REPO_ROOT/test-harness/bin/hvk-test" run
-    --target compose
-    --scenario "$SCENARIO"
-    --run-id "$run_id"
-    --workdir "$WORKDIR"
-    --compose-engine "$COMPOSE_ENGINE"
-    --timeout-seconds "$TIMEOUT_SECONDS"
-    --verify-cmd "$verify_cmd"
-  )
-
-  if [[ "$RETAIN_ON_FAILURE" == true ]]; then
-    hvk_args+=(--retain-on-failure)
-  fi
-
-  if "${hvk_args[@]}"; then
+  if run_case "$case_name" "$source_flavor" "$destination_flavor" "$run_id"; then
     echo "PASS: $case_name" >&2
     pass_count=$((pass_count + 1))
   else
