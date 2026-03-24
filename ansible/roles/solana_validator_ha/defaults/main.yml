@@ -18,12 +18,18 @@ solana_validator_ha_public_ip_service_name: "solana-validator-ha-public-ip"
 solana_validator_ha_config_dir: "{{ validator_root_dir }}/ha"
 solana_validator_ha_config_path: "{{ solana_validator_ha_config_dir }}/config.yaml"
 solana_validator_ha_public_ip_file_path: "{{ solana_validator_ha_config_dir }}/public-ip.txt"
+solana_validator_ha_staged_config_path: "{{ solana_validator_ha_config_path }}.next"
+solana_validator_ha_staged_public_ip_file_path: "{{ solana_validator_ha_public_ip_file_path }}.next"
 solana_validator_ha_wrapper_script_path: "{{ validator_scripts_dir }}/ha-set-role.sh"
 solana_validator_ha_client: "agave"
 solana_validator_ha_node_name: "{{ inventory_hostname }}"
+solana_validator_ha_node_id: ""
+solana_validator_ha_priority: ""
 solana_validator_ha_inventory_group: ""
 solana_validator_ha_pair_hosts: []
 solana_validator_ha_peer_hostnames: []
+solana_validator_ha_active_identity_path: "{{ validator_keyset_dir ~ '/primary-target-identity.json' }}"
+solana_validator_ha_passive_identity_path: "{{ validator_keyset_dir ~ '/hot-spare-identity.json' }}"
 solana_validator_ha_public_ip_bind_host: "127.0.0.1"
 solana_validator_ha_public_ip_port: 8079
 # Set explicitly for non-localnet environments. Localnet falls back to ansible_host/default IPv4.
@@ -45,3 +51,4 @@ solana_validator_ha_delinquent_slot_distance_override_value: 128
 solana_validator_ha_self_healthy_minimum_duration: "30s"
 solana_validator_ha_self_healthy_poll_interval_duration: "2s"
 solana_validator_ha_peers: {}
+solana_validator_ha_restart_on_runtime_change: true

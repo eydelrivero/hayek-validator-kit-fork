@@ -6,8 +6,8 @@ validator:
     - {{ url | to_json }}
 {% endfor %}
   identities:
-    active: {{ (validator_keyset_dir ~ '/primary-target-identity.json') | to_json }}
-    passive: {{ (validator_keyset_dir ~ '/hot-spare-identity.json') | to_json }}
+    active: {{ solana_validator_ha_active_identity_path | to_json }}
+    passive: {{ solana_validator_ha_passive_identity_path | to_json }}
 
 cluster:
   name: {{ solana_validator_ha_cluster_name | to_json }}
@@ -24,6 +24,9 @@ failover:
   dry_run: {{ solana_validator_ha_failover_dry_run | bool | lower }}
   poll_interval_duration: {{ solana_validator_ha_poll_interval_duration | to_json }}
   leaderless_samples_threshold: {{ solana_validator_ha_leaderless_samples_threshold }}
+{% if solana_validator_ha_priority_effective | default('') | length > 0 %}
+  priority: {{ solana_validator_ha_priority_effective | int }}
+{% endif %}
   delinquent_slot_distance_override:
     enabled: {{ solana_validator_ha_delinquent_slot_distance_override_enabled | bool | lower }}
     value: {{ solana_validator_ha_delinquent_slot_distance_override_value }}
@@ -61,7 +64,7 @@ failover:
       - "--user"
       - {{ solana_user | to_json }}
   peers:
-{% for peer_name, peer_ip in solana_validator_ha_peers | dictsort %}
+{% for peer_name, peer in solana_validator_ha_peers_normalized | dictsort %}
     {{ peer_name }}:
-      ip: {{ peer_ip | to_json }}
+      ip: {{ peer.ip | to_json }}
 {% endfor %}
