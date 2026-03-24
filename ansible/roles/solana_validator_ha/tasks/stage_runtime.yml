@@ -11,20 +11,35 @@
     state: directory
   become: true
 
+- name: solana_validator_ha - Inspect persistent startup identity symlink during staging
+  ansible.builtin.stat:
+    path: "{{ validator_keyset_dir }}/identity.json"
+    follow: false
+  register: solana_validator_ha_identity_symlink_state
+  changed_when: false
+  become: true
+
+- name: solana_validator_ha - Determine whether persistent startup identity symlink needs update
+  ansible.builtin.set_fact:
+    solana_validator_ha_identity_symlink_needs_update: >-
+      {{
+        (
+          not (solana_validator_ha_identity_symlink_state.stat.exists | default(false))
+        ) or (
+          not (solana_validator_ha_identity_symlink_state.stat.islnk | default(false))
+        ) or (
+          (solana_validator_ha_identity_symlink_state.stat.lnk_target | default('')) != solana_validator_ha_passive_identity_path
+        )
+      }}
+
 - name: solana_validator_ha - Keep persistent startup identity passive during staging
   ansible.builtin.file:
     src: "{{ solana_validator_ha_passive_identity_path }}"
     dest: "{{ validator_keyset_dir }}/identity.json"
     state: link
     force: true
-  become: true
-
-- name: solana_validator_ha - Set ownership on persistent startup identity symlink during staging
-  ansible.builtin.file:
-    path: "{{ validator_keyset_dir }}/identity.json"
-    owner: "{{ solana_user }}"
-    group: "{{ validator_operators_group }}"
     follow: false
+  when: solana_validator_ha_identity_symlink_needs_update | bool
   become: true
 
 - name: solana_validator_ha - Render role transition wrapper script during staging
@@ -34,6 +49,7 @@
     owner: "root"
     group: "{{ validator_operators_group }}"
     mode: "{{ validator_scripts_file_mode | default('0754') }}"
+  register: solana_validator_ha_stage_wrapper_script_result
   become: true
 
 - name: solana_validator_ha - Deploy public IP helper systemd unit during staging
@@ -43,6 +59,7 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  register: solana_validator_ha_stage_public_ip_service_unit_result
   become: true
 
 - name: solana_validator_ha - Deploy HA systemd unit during staging
@@ -52,11 +69,21 @@
     owner: "root"
     group: "root"
     mode: "0644"
+  register: solana_validator_ha_stage_ha_service_unit_result
   become: true
+
+- name: solana_validator_ha - Record staged runtime asset changes
+  ansible.builtin.set_fact:
+    solana_validator_ha_stage_wrapper_script_changed: "{{ solana_validator_ha_stage_wrapper_script_result.changed | default(false) }}"
+    solana_validator_ha_stage_public_ip_service_unit_changed: "{{ solana_validator_ha_stage_public_ip_service_unit_result.changed | default(false) }}"
+    solana_validator_ha_stage_ha_service_unit_changed: "{{ solana_validator_ha_stage_ha_service_unit_result.changed | default(false) }}"
 
 - name: solana_validator_ha - Reload systemd after staging stable runtime assets
   ansible.builtin.systemd:
     daemon_reload: true
+  when:
+    - solana_validator_ha_stage_public_ip_service_unit_changed | default(false) | bool
+      or solana_validator_ha_stage_ha_service_unit_changed | default(false) | bool
   become: true
 
 - name: solana_validator_ha - Render staged public IP file

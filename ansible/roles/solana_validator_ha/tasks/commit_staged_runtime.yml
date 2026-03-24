@@ -5,6 +5,7 @@
 - name: solana_validator_ha - Assert staged runtime files are present
   ansible.builtin.stat:
     path: "{{ item }}"
+    get_checksum: true
   loop:
     - "{{ solana_validator_ha_staged_public_ip_file_path }}"
     - "{{ solana_validator_ha_staged_config_path }}"
@@ -24,12 +25,81 @@
 - name: solana_validator_ha - Capture current runtime file state before commit
   ansible.builtin.stat:
     path: "{{ item }}"
+    get_checksum: true
   loop:
     - "{{ solana_validator_ha_public_ip_file_path }}"
     - "{{ solana_validator_ha_config_path }}"
   register: solana_validator_ha_runtime_file_state
   changed_when: false
   become: true
+
+- name: solana_validator_ha - Derive staged versus live runtime changes
+  ansible.builtin.set_fact:
+    solana_validator_ha_commit_public_ip_changed: >-
+      {{
+        (
+          not (
+            solana_validator_ha_runtime_file_state.results
+            | selectattr('item', 'equalto', solana_validator_ha_public_ip_file_path)
+            | map(attribute='stat.exists')
+            | first
+            | default(false)
+          )
+        ) or (
+          (
+            solana_validator_ha_commit_stage_files.results
+            | selectattr('item', 'equalto', solana_validator_ha_staged_public_ip_file_path)
+            | map(attribute='stat.checksum')
+            | first
+          ) != (
+            solana_validator_ha_runtime_file_state.results
+            | selectattr('item', 'equalto', solana_validator_ha_public_ip_file_path)
+            | map(attribute='stat.checksum')
+            | first
+            | default('')
+          )
+        )
+      }}
+    solana_validator_ha_commit_config_changed: >-
+      {{
+        (
+          not (
+            solana_validator_ha_runtime_file_state.results
+            | selectattr('item', 'equalto', solana_validator_ha_config_path)
+            | map(attribute='stat.exists')
+            | first
+            | default(false)
+          )
+        ) or (
+          (
+            solana_validator_ha_commit_stage_files.results
+            | selectattr('item', 'equalto', solana_validator_ha_staged_config_path)
+            | map(attribute='stat.checksum')
+            | first
+          ) != (
+            solana_validator_ha_runtime_file_state.results
+            | selectattr('item', 'equalto', solana_validator_ha_config_path)
+            | map(attribute='stat.checksum')
+            | first
+            | default('')
+          )
+        )
+      }}
+    solana_validator_ha_commit_public_ip_service_needs_restart: >-
+      {{
+        solana_validator_ha_stage_public_ip_service_unit_changed | default(false) | bool
+      }}
+
+- name: solana_validator_ha - Determine whether HA service restart is required
+  ansible.builtin.set_fact:
+    solana_validator_ha_commit_ha_service_needs_restart: >-
+      {{
+        (
+          solana_validator_ha_stage_ha_service_unit_changed | default(false) | bool
+        ) or (
+          solana_validator_ha_commit_config_changed | default(false) | bool
+        )
+      }}
 
 - name: solana_validator_ha - Backup live runtime files before commit
   ansible.builtin.copy:
@@ -42,7 +112,16 @@
   loop: "{{ solana_validator_ha_runtime_file_state.results }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.stat.exists | default(false)
+  when:
+    - item.stat.exists | default(false)
+    - >
+      (
+        item.item == solana_validator_ha_public_ip_file_path and
+        (solana_validator_ha_commit_public_ip_changed | default(false) | bool)
+      ) or (
+        item.item == solana_validator_ha_config_path and
+        (solana_validator_ha_commit_config_changed | default(false) | bool)
+      )
   become: true
 
 - name: solana_validator_ha - Install committed public IP file
@@ -53,6 +132,8 @@
     owner: "root"
     group: "{{ validator_operators_group }}"
     mode: "0644"
+  register: solana_validator_ha_commit_public_ip_copy_result
+  when: solana_validator_ha_commit_public_ip_changed | default(false) | bool
   become: true
 
 - name: solana_validator_ha - Install committed HA configuration file
@@ -63,18 +144,23 @@
     owner: "root"
     group: "{{ validator_operators_group }}"
     mode: "0640"
+  register: solana_validator_ha_commit_config_copy_result
+  when: solana_validator_ha_commit_config_changed | default(false) | bool
   become: true
 
 - name: solana_validator_ha - Reload systemd after staged commit
   ansible.builtin.systemd:
     daemon_reload: true
+  when:
+    - solana_validator_ha_stage_public_ip_service_unit_changed | default(false) | bool
+      or solana_validator_ha_stage_ha_service_unit_changed | default(false) | bool
   become: true
 
-- name: solana_validator_ha - Ensure public IP helper is enabled and started
+- name: solana_validator_ha - Ensure public IP helper is enabled and running
   ansible.builtin.systemd:
     name: "{{ solana_validator_ha_public_ip_service_name }}"
     enabled: true
-    state: started
+    state: "{{ 'restarted' if (solana_validator_ha_commit_public_ip_service_needs_restart | default(false) | bool) else 'started' }}"
   become: true
 
 - name: solana_validator_ha - Reset failed state before restarting HA service
@@ -87,7 +173,15 @@
   ansible.builtin.systemd:
     name: "{{ solana_validator_ha_service_name }}"
     enabled: true
-    state: restarted
+    state: >-
+      {{
+        'restarted'
+        if (
+          (solana_validator_ha_restart_on_runtime_change | default(true) | bool)
+          and (solana_validator_ha_commit_ha_service_needs_restart | default(false) | bool)
+        )
+        else 'started'
+      }}
   become: true
 
 - name: solana_validator_ha - Verify HA service is active after staged commit

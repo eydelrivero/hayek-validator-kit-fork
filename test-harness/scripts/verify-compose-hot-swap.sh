@@ -30,6 +30,8 @@ SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
 SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
 SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
+VERIFY_HA_RECONCILE_ONLY="${VERIFY_HA_RECONCILE_ONLY:-false}"
+VERIFY_HA_RECONCILE_NOOP="${VERIFY_HA_RECONCILE_NOOP:-false}"
 
 usage() {
   cat <<'EOF'
@@ -258,6 +260,27 @@ reconcile_validator_ha_cluster() {
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml' -e target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP -e operator_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e solana_cluster=$SOLANA_CLUSTER -e ha_reconcile_mode=in_place -e ha_enforce_hostname_prefix=false"
 }
 
+host_systemd_main_pid() {
+  local host="$1"
+  local service="$2"
+  local pid_cmd
+  pid_cmd="set -euo pipefail; systemctl show '$service' --property MainPID --value"
+  ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$pid_cmd\" -o" \
+    | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' \
+    | tail -n 1 \
+    | tr -d '\r'
+}
+
+assert_same_value() {
+  local label="$1"
+  local expected="$2"
+  local actual="$3"
+  if [[ "$expected" != "$actual" ]]; then
+    echo "$label changed unexpectedly: expected '$expected', got '$actual'" >&2
+    exit 1
+  fi
+}
+
 assert_host_client() {
   local host="$1"
   local flavor="$2"
@@ -325,6 +348,26 @@ if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
   reconcile_validator_ha_cluster
   assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$DESTINATION_HOST'"))"
   assert_host_ha_runtime_config "$DESTINATION_HOST" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$SOURCE_HOST'"))"
+
+  if [[ "$VERIFY_HA_RECONCILE_NOOP" == "true" ]]; then
+    local_source_ha_pid="$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha")"
+    local_destination_ha_pid="$(host_systemd_main_pid "$DESTINATION_HOST" "solana-validator-ha")"
+    local_source_public_ip_pid="$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha-public-ip")"
+    local_destination_public_ip_pid="$(host_systemd_main_pid "$DESTINATION_HOST" "solana-validator-ha-public-ip")"
+
+    echo "[hot-swap] Re-running identical HA reconcile to verify no-op idempotence..." >&2
+    reconcile_validator_ha_cluster
+
+    assert_same_value "$SOURCE_HOST solana-validator-ha MainPID" "$local_source_ha_pid" "$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha")"
+    assert_same_value "$DESTINATION_HOST solana-validator-ha MainPID" "$local_destination_ha_pid" "$(host_systemd_main_pid "$DESTINATION_HOST" "solana-validator-ha")"
+    assert_same_value "$SOURCE_HOST solana-validator-ha-public-ip MainPID" "$local_source_public_ip_pid" "$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha-public-ip")"
+    assert_same_value "$DESTINATION_HOST solana-validator-ha-public-ip MainPID" "$local_destination_public_ip_pid" "$(host_systemd_main_pid "$DESTINATION_HOST" "solana-validator-ha-public-ip")"
+  fi
+
+  if [[ "$VERIFY_HA_RECONCILE_ONLY" == "true" ]]; then
+    echo "[hot-swap] HA reconcile-only verification completed successfully." >&2
+    exit 0
+  fi
 fi
 
 echo "[hot-swap] Verifying pre-swap client flavors..." >&2
