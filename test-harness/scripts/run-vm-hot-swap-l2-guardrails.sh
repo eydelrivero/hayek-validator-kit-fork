@@ -819,7 +819,14 @@ ensure_prepared_vm_cache() {
   prepare_elapsed_human="$(format_duration "$prepare_elapsed_sec")"
 
   if ((rc != 0)) || ! prepared_cache_ready "$prepared_dir"; then
-    if (( retry_depth < 1 )) && rg -q "404[[:space:]]+Not Found|Unable to fetch some archives" "$prepare_log_file"; then
+    if (( retry_depth < 1 )) && \
+      {
+        if command -v rg >/dev/null 2>&1; then
+          rg -q "404[[:space:]]+Not Found|Unable to fetch some archives" "$prepare_log_file"
+        else
+          grep -Eq "404[[:space:]]+Not Found|Unable to fetch some archives" "$prepare_log_file"
+        fi
+      }; then
       echo "WARN: prepare cache failed due apt mirror 404; retrying once..." >&2
       PREPARE_CACHE_RETRY_DEPTH=$((retry_depth + 1))
       ensure_prepared_vm_cache "$prepared_dir"
