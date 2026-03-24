@@ -2,6 +2,16 @@
 - name: solana_validator_ha - Prepare runtime variables before rollback
   ansible.builtin.import_tasks: prepare_runtime_vars.yml
 
+- name: solana_validator_ha - Check rollback backup files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ solana_validator_ha_public_ip_file_path }}.bak.{{ solana_validator_ha_reconcile_generation }}"
+    - "{{ solana_validator_ha_config_path }}.bak.{{ solana_validator_ha_reconcile_generation }}"
+  register: solana_validator_ha_rollback_backup_files
+  changed_when: false
+  become: true
+
 - name: solana_validator_ha - Restore backed up public IP file when present
   ansible.builtin.copy:
     src: "{{ solana_validator_ha_public_ip_file_path }}.bak.{{ solana_validator_ha_reconcile_generation }}"
@@ -11,7 +21,15 @@
     group: "{{ validator_operators_group }}"
     mode: "0644"
   become: true
-  ignore_errors: true
+  when: >-
+    (
+      solana_validator_ha_rollback_backup_files.results
+      | selectattr('item', 'equalto', solana_validator_ha_public_ip_file_path ~ '.bak.' ~ solana_validator_ha_reconcile_generation)
+      | map(attribute='stat.exists')
+      | list
+      | first
+      | default(false)
+    )
 
 - name: solana_validator_ha - Restore backed up HA configuration file when present
   ansible.builtin.copy:
@@ -22,17 +40,77 @@
     group: "{{ validator_operators_group }}"
     mode: "0640"
   become: true
-  ignore_errors: true
+  when: >-
+    (
+      solana_validator_ha_rollback_backup_files.results
+      | selectattr('item', 'equalto', solana_validator_ha_config_path ~ '.bak.' ~ solana_validator_ha_reconcile_generation)
+      | map(attribute='stat.exists')
+      | list
+      | first
+      | default(false)
+    )
+
+- name: solana_validator_ha - Remove live public IP file when no backup existed
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_public_ip_file_path }}"
+    state: absent
+  become: true
+  when: >-
+    not (
+      solana_validator_ha_rollback_backup_files.results
+      | selectattr('item', 'equalto', solana_validator_ha_public_ip_file_path ~ '.bak.' ~ solana_validator_ha_reconcile_generation)
+      | map(attribute='stat.exists')
+      | list
+      | first
+      | default(false)
+    )
+
+- name: solana_validator_ha - Remove live HA configuration file when no backup existed
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_config_path }}"
+    state: absent
+  become: true
+  when: >-
+    not (
+      solana_validator_ha_rollback_backup_files.results
+      | selectattr('item', 'equalto', solana_validator_ha_config_path ~ '.bak.' ~ solana_validator_ha_reconcile_generation)
+      | map(attribute='stat.exists')
+      | list
+      | first
+      | default(false)
+    )
 
 - name: solana_validator_ha - Reload systemd after rollback
   ansible.builtin.systemd:
     daemon_reload: true
   become: true
 
-- name: solana_validator_ha - Restart HA service after rollback
+- name: solana_validator_ha - Reset failed state before post-rollback service action
+  ansible.builtin.command: "systemctl reset-failed {{ solana_validator_ha_service_name }}"
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: solana_validator_ha - Check whether a live HA configuration exists after rollback
+  ansible.builtin.stat:
+    path: "{{ solana_validator_ha_config_path }}"
+  register: solana_validator_ha_config_after_rollback
+  changed_when: false
+  become: true
+
+- name: solana_validator_ha - Restart HA service after rollback when config exists
   ansible.builtin.systemd:
     name: "{{ solana_validator_ha_service_name }}"
     enabled: true
     state: restarted
   become: true
-  ignore_errors: true
+  when: solana_validator_ha_config_after_rollback.stat.exists | default(false)
+
+- name: solana_validator_ha - Stop HA service after rollback when config does not exist
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_service_name }}"
+    enabled: false
+    state: stopped
+  become: true
+  when: not (solana_validator_ha_config_after_rollback.stat.exists | default(false))
+  failed_when: false
