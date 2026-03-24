@@ -17,6 +17,8 @@ VALIDATOR_NAME="${VALIDATOR_NAME:-demo2}"
 OPERATOR_USER="${OPERATOR_USER:-ubuntu}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 RETAIN_ON_FAILURE=false
+RUN_ID=""
+INVENTORY_PATH=""
 
 usage() {
   cat <<'EOF'
@@ -101,9 +103,14 @@ while (($# > 0)); do
   esac
 done
 
-run_id="${RUN_ID_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+RUN_ID="${RUN_ID_PREFIX}-$(date +%Y%m%d-%H%M%S)"
 
-verify_cmd="$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh --compose-engine $COMPOSE_ENGINE --inventory <inventory> --source-host $SOURCE_HOST --destination-host $DESTINATION_HOST --source-flavor $SOURCE_FLAVOR --destination-flavor $DESTINATION_FLAVOR --validator-name $VALIDATOR_NAME --operator-user $OPERATOR_USER"
+target_args=(
+  --scenario "$SCENARIO"
+  --run-id "$RUN_ID"
+  --workdir "$WORKDIR"
+  --compose-engine "$COMPOSE_ENGINE"
+)
 
 export SOLANA_VALIDATOR_HA_RUNTIME_ENABLED=true
 export SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
@@ -111,19 +118,43 @@ export SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATIO
 export SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 export SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
 
-hvk_args=(
-  "$REPO_ROOT/test-harness/bin/hvk-test" run
-  --target compose
-  --scenario "$SCENARIO"
-  --run-id "$run_id"
-  --workdir "$WORKDIR"
-  --compose-engine "$COMPOSE_ENGINE"
-  --timeout-seconds "$TIMEOUT_SECONDS"
-  --verify-cmd "$verify_cmd"
-)
+cleanup() {
+  local exit_code="$1"
 
-if [[ "$RETAIN_ON_FAILURE" == true ]]; then
-  hvk_args+=(--retain-on-failure)
+  "$REPO_ROOT/test-harness/targets/compose.sh" artifacts "${target_args[@]}" >/dev/null 2>&1 || true
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    "$REPO_ROOT/test-harness/targets/compose.sh" down "${target_args[@]}" >/dev/null 2>&1 || true
+    return
+  fi
+
+  if [[ "$RETAIN_ON_FAILURE" == true ]]; then
+    echo "Retaining compose harness run on failure: $RUN_ID" >&2
+    return
+  fi
+
+  "$REPO_ROOT/test-harness/targets/compose.sh" down "${target_args[@]}" >/dev/null 2>&1 || true
+}
+
+trap 'cleanup "$?"' EXIT
+
+"$REPO_ROOT/test-harness/targets/compose.sh" up "${target_args[@]}"
+inventory_json="$("$REPO_ROOT/test-harness/targets/compose.sh" inventory "${target_args[@]}")"
+INVENTORY_PATH="$(jq -r '.inventory_path // empty' <<<"$inventory_json")"
+
+if [[ -z "$INVENTORY_PATH" || ! -r "$INVENTORY_PATH" ]]; then
+  echo "Failed to locate compose inventory for run $RUN_ID" >&2
+  exit 1
 fi
 
-exec "${hvk_args[@]}"
+"$REPO_ROOT/test-harness/targets/compose.sh" wait "${target_args[@]}" --timeout-seconds "$TIMEOUT_SECONDS"
+
+exec "$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh" \
+  --compose-engine "$COMPOSE_ENGINE" \
+  --inventory "$INVENTORY_PATH" \
+  --source-host "$SOURCE_HOST" \
+  --destination-host "$DESTINATION_HOST" \
+  --source-flavor "$SOURCE_FLAVOR" \
+  --destination-flavor "$DESTINATION_FLAVOR" \
+  --validator-name "$VALIDATOR_NAME" \
+  --operator-user "$OPERATOR_USER"
