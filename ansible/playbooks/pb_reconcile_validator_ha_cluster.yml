@@ -1,0 +1,241 @@
+---
+# Reconcile Solana Validator HA runtime across a cluster
+#
+# Stages the intended runtime config on every HA member first, then commits it
+# serially with rollback of already-committed peers if a later host fails.
+#
+# Usage:
+#
+# ansible-playbook playbooks/pb_reconcile_validator_ha_cluster.yml \
+#   -i solana_mainnet.yml \
+#   -e "target_ha_group=ha_hayek_mainnet" \
+#   -e "operator_user=bob" \
+#   -e "ha_reconcile_mode=in_place"
+
+- name: Initialize HA reconcile controller state
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Assert required HA reconcile parameters are provided
+      ansible.builtin.assert:
+        that:
+          - target_ha_group is defined
+          - target_ha_group | string | trim | length > 0
+          - operator_user is defined
+          - operator_user | string | trim | length > 0
+          - ha_reconcile_mode | default('in_place') in ['expand', 'in_place', 'contract']
+        fail_msg: >-
+          HA reconcile requires target_ha_group, operator_user, and ha_reconcile_mode
+          (expand, in_place, or contract).
+
+    - name: Reset HA reconcile controller facts
+      ansible.builtin.set_fact:
+        ha_reconcile_committed_hosts: []
+        ha_reconcile_abort: false
+        ha_reconcile_failed_host: ""
+        ha_reconcile_generation: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+- name: Preflight HA reconcile inputs and stage runtime artifacts
+  hosts: "{{ target_ha_group }}"
+  user: "{{ operator_user }}"
+  become: false
+  gather_facts: false
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Assert HA target group exists and has at least two hosts
+      ansible.builtin.assert:
+        that:
+          - target_ha_group in groups
+          - groups[target_ha_group] | length > 1
+        fail_msg: >-
+          target_ha_group={{ target_ha_group }} must exist in the inventory and contain at least two hosts.
+      run_once: true
+
+    - name: Collect HA reconcile target hosts
+      ansible.builtin.set_fact:
+        ha_reconcile_target_hosts: "{{ groups[target_ha_group] }}"
+      run_once: true
+
+    - name: Assert every HA host declares a node id
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].solana_validator_ha_node_id | default('') | string | trim | length > 0
+        fail_msg: >-
+          Host {{ item }} must define solana_validator_ha_node_id for cluster-wide HA reconcile.
+      loop: "{{ ha_reconcile_target_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+      run_once: true
+
+    - name: Assert HA node ids are unique within the target group
+      ansible.builtin.assert:
+        that:
+          - >
+            (
+              ha_reconcile_target_hosts
+              | map('extract', hostvars, 'solana_validator_ha_node_id')
+              | map('trim')
+              | list
+              | unique
+              | length
+            ) == (ha_reconcile_target_hosts | length)
+        fail_msg: >-
+          solana_validator_ha_node_id values must be unique within {{ target_ha_group }}.
+      run_once: true
+
+    - name: Assert HA priorities are defined on every host
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].solana_validator_ha_priority | default('') | string | trim | length > 0
+        fail_msg: >-
+          Host {{ item }} must define solana_validator_ha_priority for deterministic HA ordering.
+      loop: "{{ ha_reconcile_target_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+      run_once: true
+
+    - name: Assert HA priorities are unique within the target group
+      ansible.builtin.assert:
+        that:
+          - >
+            (
+              ha_reconcile_target_hosts
+              | map('extract', hostvars, 'solana_validator_ha_priority')
+              | map('string')
+              | map('trim')
+              | list
+              | unique
+              | length
+            ) == (ha_reconcile_target_hosts | length)
+        fail_msg: >-
+          solana_validator_ha_priority values must be unique within {{ target_ha_group }}.
+      run_once: true
+
+    - name: Assert inventory hostnames match the declared node id prefix when requested
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname is match('^' ~ (solana_validator_ha_node_id | regex_escape) ~ '-')
+        fail_msg: >-
+          inventory_hostname={{ inventory_hostname }} must start with {{ solana_validator_ha_node_id }}-
+          when ha_enforce_hostname_prefix=true.
+      when: ha_enforce_hostname_prefix | default(false) | bool
+
+    - name: Collect best-effort peer HA groups for cross-cluster uniqueness checks
+      ansible.builtin.set_fact:
+        ha_reconcile_peer_groups: "{{ groups.keys() | select('match', '^ha_') | difference([target_ha_group]) | list }}"
+      run_once: true
+
+    - name: Assert node ids do not collide with other available HA groups
+      ansible.builtin.assert:
+        that:
+          - >
+            (
+              groups[item]
+              | map('extract', hostvars, 'solana_validator_ha_node_id')
+              | map('default', '', true)
+              | map('trim')
+              | intersect(
+                  ha_reconcile_target_hosts
+                  | map('extract', hostvars, 'solana_validator_ha_node_id')
+                  | map('trim')
+                  | list
+                )
+              | length
+            ) == 0
+        fail_msg: >-
+          HA node ids in {{ target_ha_group }} overlap with {{ item }}. Short-name prefixes must remain globally unique.
+      loop: "{{ ha_reconcile_peer_groups }}"
+      loop_control:
+        label: "{{ item }}"
+      run_once: true
+
+  tasks:
+    - name: Stage HA runtime artifacts on every cluster member
+      ansible.builtin.include_role:
+        name: solana_validator_ha
+        tasks_from: stage_runtime.yml
+
+- name: Commit HA runtime artifacts serially
+  hosts: "{{ target_ha_group }}"
+  user: "{{ operator_user }}"
+  become: false
+  gather_facts: false
+  serial: 1
+
+  tasks:
+    - name: Stop serial HA commit when a prior host has already failed
+      ansible.builtin.meta: end_play
+      when: hostvars['localhost'].ha_reconcile_abort | default(false) | bool
+
+    - name: Commit staged runtime on this host
+      block:
+        - name: Commit staged HA runtime artifacts
+          ansible.builtin.include_role:
+            name: solana_validator_ha
+            tasks_from: commit_staged_runtime.yml
+          vars:
+            solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+
+        - name: Record successfully committed host
+          ansible.builtin.set_fact:
+            ha_reconcile_committed_hosts: "{{ (hostvars['localhost'].ha_reconcile_committed_hosts | default([])) + [inventory_hostname] }}"
+          delegate_to: localhost
+          delegate_facts: true
+
+      rescue:
+        - name: Roll back staged runtime on the failing host
+          ansible.builtin.include_role:
+            name: solana_validator_ha
+            tasks_from: rollback_staged_runtime.yml
+          vars:
+            solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+
+        - name: Record HA reconcile failure on controller
+          ansible.builtin.set_fact:
+            ha_reconcile_abort: true
+            ha_reconcile_failed_host: "{{ inventory_hostname }}"
+          delegate_to: localhost
+          delegate_facts: true
+
+        - name: End serial HA commit after rollback on the failing host
+          ansible.builtin.meta: end_play
+
+- name: Roll back already-committed peers when serial commit failed
+  hosts: "{{ target_ha_group }}"
+  user: "{{ operator_user }}"
+  become: false
+  gather_facts: false
+  serial: 1
+
+  tasks:
+    - name: Roll back previously committed HA runtime artifacts
+      ansible.builtin.include_role:
+        name: solana_validator_ha
+        tasks_from: rollback_staged_runtime.yml
+      vars:
+        solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+      when:
+        - hostvars['localhost'].ha_reconcile_abort | default(false) | bool
+        - inventory_hostname in (hostvars['localhost'].ha_reconcile_committed_hosts | default([]))
+
+- name: Finalize HA reconcile result
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Fail when HA reconcile required rollback
+      ansible.builtin.fail:
+        msg: >-
+          HA reconcile failed on {{ ha_reconcile_failed_host | default('unknown-host') }}.
+          Previously committed peers were rolled back to the prior staged generation
+          {{ ha_reconcile_generation | default('unknown-generation') }}.
+      when: ha_reconcile_abort | default(false) | bool
+
+    - name: Report successful HA reconcile
+      ansible.builtin.debug:
+        msg: >-
+          HA reconcile committed successfully for group {{ target_ha_group }}
+          with generation {{ ha_reconcile_generation }}.
+      when: not (ha_reconcile_abort | default(false) | bool)

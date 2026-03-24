@@ -37,7 +37,10 @@
 # - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the latest published binary release currently pinned in the role.
 # - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of using the published GitHub release binary.
 # - solana_validator_ha_runtime_enabled (OPTIONAL): Render and start the solana-validator-ha runtime service and config.
-# - solana_validator_ha_pair_hosts / solana_validator_ha_inventory_group (OPTIONAL): Auto-derive HA node naming and peers when runtime is enabled.
+# - solana_validator_ha_pair_hosts / solana_validator_ha_inventory_group (OPTIONAL): Auto-derive HA peers when runtime is enabled.
+# - solana_validator_ha_node_id (OPTIONAL): Stable globally-unique HA short name for this host (for example ark, fog, ice).
+# - solana_validator_ha_priority (OPTIONAL): Deterministic failover priority for this host; lower value wins.
+# - solana_validator_ha_passive_identity_path (OPTIONAL): Override the passive identity path when each host has a fixed named hot-spare identity.
 # - solana_validator_ha_peers (OPTIONAL): Explicit peer mapping override when runtime is enabled.
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - run_poh_cpu_affinity_fix (OPTIONAL): Pin validator process to specific CPU core to improve PoH stability.

@@ -84,7 +84,7 @@ set_identity_symlink() {
 }
 
 ensure_passive_startup_identity() {
-  set_identity_symlink "{{ validator_keyset_dir }}/hot-spare-identity.json"
+  set_identity_symlink "{{ solana_validator_ha_passive_identity_path }}"
 }
 
 remove_tower_file() {

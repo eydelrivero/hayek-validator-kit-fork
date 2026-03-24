@@ -1,0 +1,97 @@
+---
+- name: solana_validator_ha - Prepare runtime variables for staged reconcile
+  ansible.builtin.import_tasks: prepare_runtime_vars.yml
+
+- name: solana_validator_ha - Ensure runtime configuration directory exists
+  ansible.builtin.file:
+    path: "{{ solana_validator_ha_config_dir }}"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "{{ validator_root_dir_mode | default('2775') }}"
+    state: directory
+  become: true
+
+- name: solana_validator_ha - Keep persistent startup identity passive during staging
+  ansible.builtin.file:
+    src: "{{ solana_validator_ha_passive_identity_path }}"
+    dest: "{{ validator_keyset_dir }}/identity.json"
+    state: link
+    force: true
+  become: true
+
+- name: solana_validator_ha - Set ownership on persistent startup identity symlink during staging
+  ansible.builtin.file:
+    path: "{{ validator_keyset_dir }}/identity.json"
+    owner: "{{ solana_user }}"
+    group: "{{ validator_operators_group }}"
+    follow: false
+  become: true
+
+- name: solana_validator_ha - Render role transition wrapper script during staging
+  ansible.builtin.template:
+    src: ha-set-role.sh.j2
+    dest: "{{ solana_validator_ha_wrapper_script_path }}"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "{{ validator_scripts_file_mode | default('0754') }}"
+  become: true
+
+- name: solana_validator_ha - Deploy public IP helper systemd unit during staging
+  ansible.builtin.template:
+    src: public-ip.service.j2
+    dest: "/etc/systemd/system/{{ solana_validator_ha_public_ip_service_name }}.service"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  become: true
+
+- name: solana_validator_ha - Deploy HA systemd unit during staging
+  ansible.builtin.template:
+    src: service.j2
+    dest: "/etc/systemd/system/{{ solana_validator_ha_service_name }}.service"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  become: true
+
+- name: solana_validator_ha - Reload systemd after staging stable runtime assets
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: solana_validator_ha - Render staged public IP file
+  ansible.builtin.copy:
+    content: "{{ solana_validator_ha_effective_public_ip_value | trim }}\n"
+    dest: "{{ solana_validator_ha_staged_public_ip_file_path }}"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "0644"
+  become: true
+
+- name: solana_validator_ha - Render staged HA configuration file
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ solana_validator_ha_staged_config_path }}"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "0640"
+  become: true
+
+- name: solana_validator_ha - Check staged runtime artifacts exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ solana_validator_ha_staged_public_ip_file_path }}"
+    - "{{ solana_validator_ha_staged_config_path }}"
+  register: solana_validator_ha_staged_runtime_artifacts
+  changed_when: false
+  become: true
+
+- name: solana_validator_ha - Assert staged runtime artifacts exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+    fail_msg: "Expected staged runtime artifact {{ item.item }} to exist before commit."
+  loop: "{{ solana_validator_ha_staged_runtime_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item }}"

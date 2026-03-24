@@ -1,160 +1,10 @@
 ---
-- name: solana_validator_ha - Derive validator keyset directory when absent
-  ansible.builtin.set_fact:
-    validator_keyset_dir: "{{ validator_keys_dir }}/{{ validator_name }}"
-  when:
-    - validator_keyset_dir is not defined
-    - validator_keys_dir is defined
-    - validator_name is defined
-
-- name: solana_validator_ha - Determine effective inventory group
-  ansible.builtin.set_fact:
-    solana_validator_ha_inventory_group_effective: >-
-      {{
-        solana_validator_ha_inventory_group
-        if (solana_validator_ha_inventory_group | default('') | length > 0)
-        else (
-          'solana_validator_ha_pair'
-          if ('solana_validator_ha_pair' in group_names)
-          else ''
-        )
-      }}
-
-- name: solana_validator_ha - Derive effective public IP value
-  ansible.builtin.set_fact:
-    solana_validator_ha_public_ip_value_explicit: "{{ solana_validator_ha_public_ip_value | default('') | string | trim }}"
-    solana_validator_ha_effective_public_ip_value: >-
-      {{
-        (solana_validator_ha_public_ip_value | default('') | string | trim)
-        if (solana_validator_ha_public_ip_value | default('') | string | trim | length > 0)
-        else (ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')))
-      }}
-
-- name: solana_validator_ha - Require explicit public IP outside localnet
-  ansible.builtin.assert:
-    that:
-      - solana_validator_ha_public_ip_value_explicit | length > 0
-    fail_msg: >-
-      solana_validator_ha_public_ip_value must be set explicitly for {{ solana_cluster | default('non-localnet') }}
-      hosts. Refusing to derive it automatically from ansible_host because that may be a management
-      address rather than the validator gossip/public IP.
-  when:
-    - (solana_cluster | default('localnet')) != 'localnet'
-
-- name: solana_validator_ha - Flag private or non-routable IPv4 public IP values
-  ansible.builtin.set_fact:
-    solana_validator_ha_public_ip_value_is_private_ipv4: >-
-      {{
-        (
-          solana_validator_ha_effective_public_ip_value is match('^10\\.')
-          or solana_validator_ha_effective_public_ip_value is match('^127\\.')
-          or solana_validator_ha_effective_public_ip_value is match('^169\\.254\\.')
-          or solana_validator_ha_effective_public_ip_value is match('^192\\.168\\.')
-          or solana_validator_ha_effective_public_ip_value is match('^172\\.(1[6-9]|2[0-9]|3[0-1])\\.')
-          or solana_validator_ha_effective_public_ip_value is match('^100\\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\\.')
-        ) | bool
-      }}
-
-- name: solana_validator_ha - Reject private IPv4 public IP values on testnet and mainnet
-  ansible.builtin.assert:
-    that:
-      - not solana_validator_ha_public_ip_value_is_private_ipv4 | bool
-    fail_msg: >-
-      solana_validator_ha_public_ip_value={{ solana_validator_ha_effective_public_ip_value }} is in private or
-      non-routable IPv4 space, which is unsafe for {{ solana_cluster }}. Set it to the validator's
-      routable gossip/public IP or override the role intentionally if you really need private addressing.
-  when:
-    - (solana_cluster | default('localnet')) in ['mainnet', 'mainnet-beta', 'testnet']
-
-- name: solana_validator_ha - Determine ordered HA host list from vars or inventory group
-  ansible.builtin.set_fact:
-    solana_validator_ha_effective_hosts: >-
-      {{
-        solana_validator_ha_pair_hosts
-        if (solana_validator_ha_pair_hosts | default([]) | length > 0)
-        else (
-          groups[solana_validator_ha_inventory_group_effective]
-          if (
-            solana_validator_ha_inventory_group_effective | default('') | length > 0 and
-            solana_validator_ha_inventory_group_effective in groups
-          )
-          else []
-        )
-      }}
-
-- name: solana_validator_ha - Derive peer hostnames from ordered HA host list
-  ansible.builtin.set_fact:
-    solana_validator_ha_peer_hostnames: "{{ solana_validator_ha_effective_hosts | difference([inventory_hostname]) }}"
-  when:
-    - solana_validator_ha_peer_hostnames | default([]) | length == 0
-    - solana_validator_ha_effective_hosts | default([]) | length > 1
-    - inventory_hostname in solana_validator_ha_effective_hosts
-
-- name: solana_validator_ha - Derive node name from ordered HA host list
-  ansible.builtin.set_fact:
-    solana_validator_ha_node_name: "validator-{{ (solana_validator_ha_effective_hosts.index(inventory_hostname) | int) + 1 }}"
-  when:
-    - solana_validator_ha_effective_hosts | default([]) | length > 0
-    - inventory_hostname in solana_validator_ha_effective_hosts
-    - (solana_validator_ha_node_name | default(inventory_hostname)) == inventory_hostname
-
-- name: solana_validator_ha - Determine whether peer map should be derived
-  ansible.builtin.set_fact:
-    solana_validator_ha_should_derive_peers: "{{ (solana_validator_ha_peers | default({}) | length == 0) and (solana_validator_ha_peer_hostnames | default([]) | length > 0) }}"
-
-- name: solana_validator_ha - Initialize derived peer map
-  ansible.builtin.set_fact:
-    solana_validator_ha_peers: {}
-  when:
-    - solana_validator_ha_should_derive_peers | bool
-
-- name: solana_validator_ha - Derive peer map from peer hostnames
-  ansible.builtin.set_fact:
-    solana_validator_ha_peers: "{{ solana_validator_ha_peers | combine({solana_validator_ha_peer_name: solana_validator_ha_peer_ip}) }}"
-  vars:
-    solana_validator_ha_peer_name: >-
-      {{
-        (
-          "validator-" ~ (((solana_validator_ha_effective_hosts.index(item) | int) + 1) | string)
-        )
-        if (item in (solana_validator_ha_effective_hosts | default([])))
-        else item
-      }}
-    solana_validator_ha_peer_ip: >-
-      {{
-        hostvars[item].solana_validator_ha_effective_public_ip_value
-        | default(
-            hostvars[item].solana_validator_ha_public_ip_value
-            | default(hostvars[item].ansible_host | default(item))
-          )
-      }}
-  loop: "{{ solana_validator_ha_peer_hostnames | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  when:
-    - solana_validator_ha_should_derive_peers | bool
-
-- name: solana_validator_ha - Validate runtime variables
-  ansible.builtin.assert:
-    that:
-      - validator_name is defined
-      - validator_keyset_dir is defined
-      - validator_service_name is defined
-      - validator_scripts_dir is defined
-      - validator_operators_group is defined
-      - solana_user is defined
-      - solana_validator_ha_peers is mapping
-      - solana_validator_ha_peers | length > 0
-    fail_msg: >-
-      solana-validator-ha runtime integration requires validator_name, validator_keyset_dir,
-      validator_service_name, validator_scripts_dir, solana_user, and at least one configured
-      peer in solana_validator_ha_peers. Provide solana_validator_ha_peers directly or
-      supply solana_validator_ha_pair_hosts / solana_validator_ha_inventory_group so peers
-      and node names can be derived automatically.
+- name: solana_validator_ha - Prepare runtime variables
+  ansible.builtin.import_tasks: prepare_runtime_vars.yml
 
 - name: solana_validator_ha - Keep persistent startup identity passive
   ansible.builtin.file:
-    src: "{{ validator_keyset_dir }}/hot-spare-identity.json"
+    src: "{{ solana_validator_ha_passive_identity_path }}"
     dest: "{{ validator_keyset_dir }}/identity.json"
     state: link
     force: true
@@ -185,6 +35,8 @@
     group: "{{ validator_operators_group }}"
     mode: "{{ validator_scripts_file_mode | default('0754') }}"
   become: true
+  notify:
+    - solana_validator_ha - restart ha service
 
 - name: solana_validator_ha - Write public IP file for local helper service
   ansible.builtin.copy:
@@ -203,6 +55,8 @@
     group: "{{ validator_operators_group }}"
     mode: "0640"
   become: true
+  notify:
+    - solana_validator_ha - restart ha service
 
 - name: solana_validator_ha - Deploy public IP helper systemd unit
   ansible.builtin.template:
@@ -212,6 +66,9 @@
     group: "root"
     mode: "0644"
   become: true
+  notify:
+    - solana_validator_ha - reload systemd
+    - solana_validator_ha - restart public ip helper
 
 - name: solana_validator_ha - Deploy HA systemd unit
   ansible.builtin.template:
@@ -221,6 +78,9 @@
     group: "root"
     mode: "0644"
   become: true
+  notify:
+    - solana_validator_ha - reload systemd
+    - solana_validator_ha - restart ha service
 
 - name: solana_validator_ha - Reload systemd
   ansible.builtin.systemd:

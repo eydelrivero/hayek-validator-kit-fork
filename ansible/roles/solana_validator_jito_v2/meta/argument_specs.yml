@@ -87,10 +87,26 @@ argument_specs:
         type: str
         required: false
         description: "Vanity node name to publish in the solana-validator-ha config"
+      solana_validator_ha_node_id:
+        type: str
+        required: false
+        description: "Stable globally-unique HA short name (for example ark, fog, ice) used as the runtime node name"
+      solana_validator_ha_priority:
+        type: int
+        required: false
+        description: "Deterministic failover priority for this node; lower value wins"
       solana_validator_ha_public_ip_value:
         type: str
         required: false
         description: "Public IP value written to the local public-ip helper file"
+      solana_validator_ha_active_identity_path:
+        type: str
+        required: false
+        description: "Absolute path to the shared active identity keypair file"
+      solana_validator_ha_passive_identity_path:
+        type: str
+        required: false
+        description: "Absolute path to this node's fixed passive identity keypair file"
       solana_validator_ha_cluster_name:
         type: str
         required: false
