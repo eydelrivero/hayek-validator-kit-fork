@@ -100,7 +100,7 @@ compose down --remove-orphans --volumes || true
 
 log "Removing generated key and IAM files..."
 # These directories are created by initialize-localnet-and-demo-validators.sh and must be regenerated for each test run.
-rm -rf "$REPO_ROOT/solana-localnet/localnet-ssh-keys" "$REPO_ROOT/solana-localnet/localnet-new-metal-box"
+"$REPO_ROOT/solana-localnet/cleanup-generated-localnet-dirs.sh" "$ENGINE"
 
 log "Starting stack with $ENGINE..."
 compose up -d

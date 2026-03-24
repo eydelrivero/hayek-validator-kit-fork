@@ -182,7 +182,7 @@ down() {
   validate >/dev/null
   echo "[$ADAPTER] tearing down compose stack..." >&2
   compose_exec down --remove-orphans --volumes || true
-  rm -rf "$REPO_ROOT/solana-localnet/localnet-ssh-keys" "$REPO_ROOT/solana-localnet/localnet-new-metal-box" || true
+  "$REPO_ROOT/solana-localnet/cleanup-generated-localnet-dirs.sh" "$COMPOSE_ENGINE" || true
   hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "Compose stack torn down"
 }
 
