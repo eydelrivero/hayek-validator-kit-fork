@@ -37,7 +37,7 @@ solana_validator_ha_public_ip_value: ""
 solana_validator_ha_public_ip_service_urls:
   - "http://{{ solana_validator_ha_public_ip_bind_host }}:{{ solana_validator_ha_public_ip_port }}/public-ip.txt"
 solana_validator_ha_validator_rpc_url: "http://127.0.0.1:{{ solana_rpc_port | default(8899) }}"
-solana_validator_ha_cluster_name: "{{ 'mainnet-beta' if solana_cluster == 'mainnet' else ('testnet' if solana_cluster in ['testnet', 'localnet'] else solana_cluster) }}"
+solana_validator_ha_cluster_name: "{{ 'mainnet-beta' if (solana_cluster | default('localnet')) == 'mainnet' else ('testnet' if (solana_cluster | default('localnet')) in ['testnet', 'localnet'] else (solana_cluster | default('localnet'))) }}"
 solana_validator_ha_cluster_rpc_urls:
   - "{{ solana_rpc_url | default('http://127.0.0.1:' ~ (solana_rpc_port | default(8899) | string)) }}"
   - "{{ solana_validator_ha_validator_rpc_url }}"
