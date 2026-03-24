@@ -117,7 +117,6 @@ export SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:
 export SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
 export SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 export SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
-
 cleanup() {
   local exit_code="$1"
 
@@ -149,7 +148,7 @@ fi
 
 "$REPO_ROOT/test-harness/targets/compose.sh" wait "${target_args[@]}" --timeout-seconds "$TIMEOUT_SECONDS"
 
-exec "$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh" \
+exec "$REPO_ROOT/test-harness/scripts/verify-compose-ha-reconcile.sh" \
   --compose-engine "$COMPOSE_ENGINE" \
   --inventory "$INVENTORY_PATH" \
   --source-host "$SOURCE_HOST" \
