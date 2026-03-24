@@ -9,6 +9,9 @@ solana_validator_ha_releases_dir: "{{ solana_validator_ha_install_root }}/releas
 solana_validator_ha_active_release_dir: "{{ solana_validator_ha_install_root }}/active_release"
 solana_validator_ha_binary_name: "solana-validator-ha"
 solana_validator_ha_binary_path: "/usr/local/bin/solana-validator-ha"
+solana_validator_ha_download_timeout_seconds: 60
+solana_validator_ha_download_retries: 5
+solana_validator_ha_download_retry_delay_seconds: 5
 solana_validator_ha_build_dir: "{{ system_shared_build_dir | default('/opt/build') }}/solana-validator-ha-{{ solana_validator_ha_version }}"
 solana_validator_ha_service_name: "solana-validator-ha"
 solana_validator_ha_public_ip_service_name: "solana-validator-ha-public-ip"

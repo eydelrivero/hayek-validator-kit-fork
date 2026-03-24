@@ -483,11 +483,9 @@ SSH_PUBLIC_KEY="$(cat "${SSH_PRIVATE_KEY_FILE}.pub")"
 
 ensure_local_keyset() {
   local target_dir="$HOME/.validator-keys/$VALIDATOR_NAME"
-  if [[ -d "$target_dir" ]]; then
-    return 0
-  fi
   mkdir -p "$(dirname "$target_dir")"
-  cp -R "$VALIDATOR_KEYSET_SOURCE_DIR" "$target_dir"
+  mkdir -p "$target_dir"
+  cp -a --update=none "$VALIDATOR_KEYSET_SOURCE_DIR"/. "$target_dir"/
 }
 
 expected_client_regex_for_flavor() {
