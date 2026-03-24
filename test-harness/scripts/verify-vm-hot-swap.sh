@@ -106,6 +106,11 @@ BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
 SKIP_CONFIRMATION_PAUSES="${SKIP_CONFIRMATION_PAUSES:-true}"
 SOLANA_VALIDATOR_HA_RUNTIME_ENABLED="${SOLANA_VALIDATOR_HA_RUNTIME_ENABLED:-false}"
+SOLANA_VALIDATOR_HA_RECONCILE_GROUP="${SOLANA_VALIDATOR_HA_RECONCILE_GROUP:-ha_vm_hot_swap}"
+SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
+SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
+SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
+SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
 
 if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
   VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE="hvk-vm-gossip-entrypoint:${AGAVE_VERSION}"
@@ -2237,6 +2242,8 @@ all:
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
       solana_validator_ha_public_ip_value: ${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}
+      solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID}
+      solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY}
     vm-destination:
       ansible_host: ${DESTINATION_OPERATOR_HOST_EFFECTIVE}
       ansible_port: ${DESTINATION_OPERATOR_PORT_EFFECTIVE}
@@ -2245,6 +2252,8 @@ all:
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
       solana_validator_ha_public_ip_value: ${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}
+      solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID}
+      solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY}
   children:
     ${CITY_GROUP}:
       hosts:
@@ -2255,6 +2264,12 @@ all:
         vm-source:
         vm-destination:
     solana_localnet:
+      hosts:
+        vm-source:
+        vm-destination:
+    ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}:
+      vars:
+        solana_validator_ha_inventory_group: ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}
       hosts:
         vm-source:
         vm-destination:
@@ -2332,13 +2347,6 @@ setup_host_flavor() {
     -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
   )
 
-  if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
-    base_args+=(
-      -e "solana_validator_ha_runtime_enabled=true"
-      -e "{\"solana_validator_ha_pair_hosts\":[\"vm-source\",\"vm-destination\"]}"
-    )
-  fi
-
   case "$flavor" in
     agave)
       ansible-playbook \
@@ -2382,6 +2390,17 @@ setup_host_flavor() {
       exit 2
       ;;
   esac
+}
+
+reconcile_validator_ha_cluster() {
+  ansible-playbook \
+    -i "$OPERATOR_INVENTORY" \
+    "$REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml" \
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+    -e "target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP" \
+    -e "operator_user=$VALIDATOR_OPERATOR_USER" \
+    -e "ha_reconcile_mode=in_place" \
+    -e "ha_enforce_hostname_prefix=false"
 }
 
 assert_host_client() {
@@ -2469,6 +2488,19 @@ assert_host_validator_runtime() {
     echo "$journal_output" >&2
     exit 1
   fi
+}
+
+assert_host_ha_runtime_config() {
+  local host="$1"
+  local expected_node_id="$2"
+  local expected_priority="$3"
+  local expected_peer_node_id="$4"
+  local expected_peer_ip="$5"
+  local config_cmd
+
+  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null"
+  ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+    -m shell -a "$config_cmd" -o >/dev/null
 }
 
 wait_for_host_validator_runtime_ready() {
@@ -3183,6 +3215,14 @@ else
   setup_host_flavor "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
   assert_host_can_query_localnet_entrypoint "vm-destination" "destination"
   DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+fi
+
+if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
+  CURRENT_PHASE="ha cluster reconcile"
+  echo "[vm-hot-swap] Reconciling HA runtime across ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}..." >&2
+  reconcile_validator_ha_cluster
+  assert_host_ha_runtime_config "vm-source" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}"
+  assert_host_ha_runtime_config "vm-destination" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}"
 fi
 
 phase_start_ts="$(date +%s)"
