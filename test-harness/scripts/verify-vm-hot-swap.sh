@@ -2399,6 +2399,8 @@ reconcile_validator_ha_cluster() {
     "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
     -e "target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP" \
     -e "operator_user=$VALIDATOR_OPERATOR_USER" \
+    -e "validator_name=$VALIDATOR_NAME" \
+    -e "solana_cluster=$SOLANA_CLUSTER" \
     -e "ha_reconcile_mode=in_place" \
     -e "ha_enforce_hostname_prefix=false"
 }
