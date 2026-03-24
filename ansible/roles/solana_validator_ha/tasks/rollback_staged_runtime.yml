@@ -1,0 +1,38 @@
+---
+- name: solana_validator_ha - Prepare runtime variables before rollback
+  ansible.builtin.import_tasks: prepare_runtime_vars.yml
+
+- name: solana_validator_ha - Restore backed up public IP file when present
+  ansible.builtin.copy:
+    src: "{{ solana_validator_ha_public_ip_file_path }}.bak.{{ solana_validator_ha_reconcile_generation }}"
+    dest: "{{ solana_validator_ha_public_ip_file_path }}"
+    remote_src: true
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "0644"
+  become: true
+  ignore_errors: true
+
+- name: solana_validator_ha - Restore backed up HA configuration file when present
+  ansible.builtin.copy:
+    src: "{{ solana_validator_ha_config_path }}.bak.{{ solana_validator_ha_reconcile_generation }}"
+    dest: "{{ solana_validator_ha_config_path }}"
+    remote_src: true
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "0640"
+  become: true
+  ignore_errors: true
+
+- name: solana_validator_ha - Reload systemd after rollback
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: solana_validator_ha - Restart HA service after rollback
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_service_name }}"
+    enabled: true
+    state: restarted
+  become: true
+  ignore_errors: true
