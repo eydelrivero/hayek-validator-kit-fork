@@ -11,9 +11,15 @@
     url: "{{ solana_validator_ha_checksum_url }}"
     method: GET
     return_content: true
-    timeout: 30
+    timeout: "{{ solana_validator_ha_download_timeout_seconds }}"
   register: solana_validator_ha_checksum_response
   changed_when: false
+  retries: "{{ solana_validator_ha_download_retries }}"
+  delay: "{{ solana_validator_ha_download_retry_delay_seconds }}"
+  until:
+    - solana_validator_ha_checksum_response is succeeded
+    - solana_validator_ha_checksum_response.status | default(0) == 200
+    - (solana_validator_ha_checksum_response.content | default('') | trim) != ''
 
 - name: solana_validator_ha - Extract checksum from published checksum file
   ansible.builtin.set_fact:
@@ -26,7 +32,11 @@
     mode: "0644"
     force: false
     checksum: "sha256:{{ solana_validator_ha_checksum_value }}"
-    timeout: 60
+    timeout: "{{ solana_validator_ha_download_timeout_seconds }}"
+  register: solana_validator_ha_download_result
+  retries: "{{ solana_validator_ha_download_retries }}"
+  delay: "{{ solana_validator_ha_download_retry_delay_seconds }}"
+  until: solana_validator_ha_download_result is succeeded
   become: true
 
 - name: solana_validator_ha - Unpack published binary
