@@ -1,0 +1,19 @@
+---
+- name: solana_validator_ha - reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: solana_validator_ha - restart ha service
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_service_name }}"
+    enabled: true
+    state: restarted
+  become: true
+
+- name: solana_validator_ha - restart public ip helper
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_public_ip_service_name }}"
+    enabled: true
+    state: restarted
+  become: true
