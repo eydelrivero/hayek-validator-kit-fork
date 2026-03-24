@@ -22,3 +22,4 @@ if [[ -n "$volumes" ]]; then
 fi
 
 "${COMPOSE_CMD[@]}" down --remove-orphans --volumes || true
+"$SCRIPT_DIR/cleanup-generated-localnet-dirs.sh" podman
