@@ -15,7 +15,7 @@
 #   -e "target_host=host-charlie" \
 #   -e "ansible_user=bob" \
 #   -e "validator_name=demo1" \
-#   -e "solana_validator_ha_version=0.1.17" \
+#   -e "solana_validator_ha_version=0.1.19" \
 #   -K
 #
 # install binary and enable HA runtime

@@ -80,7 +80,7 @@ argument_specs:
       solana_validator_ha_version:
         type: str
         required: false
-        default: "0.1.17"
+        default: "0.1.19"
         description: "Version of solana-validator-ha to install"
       solana_validator_ha_node_name:
         type: str
