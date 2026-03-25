@@ -315,9 +315,10 @@ assert_host_ha_runtime_config() {
   local expected_priority="$3"
   local expected_peer_node_id="$4"
   local expected_peer_ip="$5"
+  local expected_peer_priority="$6"
   local config_cmd
 
-  config_cmd="set -euo pipefail; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null"
+  config_cmd="set -euo pipefail; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_peer_priority}' \"\$cfg\" >/dev/null"
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$config_cmd\" -o" >/dev/null
 }
 
@@ -346,8 +347,8 @@ setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare"
 if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
   echo "[hot-swap] Reconciling HA runtime across $SOLANA_VALIDATOR_HA_RECONCILE_GROUP..." >&2
   reconcile_validator_ha_cluster
-  assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$DESTINATION_HOST'"))"
-  assert_host_ha_runtime_config "$DESTINATION_HOST" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$SOURCE_HOST'"))"
+  assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$DESTINATION_HOST'"))" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY"
+  assert_host_ha_runtime_config "$DESTINATION_HOST" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$SOURCE_HOST'"))" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY"
 
   if [[ "$VERIFY_HA_RECONCILE_NOOP" == "true" ]]; then
     local_source_ha_pid="$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha")"
