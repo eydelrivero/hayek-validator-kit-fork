@@ -117,6 +117,10 @@ if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
 fi
 
 VALIDATOR_KEYSET_SOURCE_DIR="${VALIDATOR_KEYSET_SOURCE_DIR:-$REPO_ROOT/solana-localnet/validator-keys/demo1}"
+SOURCE_VALIDATOR_KEYSET_NAME="${SOURCE_VALIDATOR_KEYSET_NAME:-${VALIDATOR_NAME}-vm-source}"
+DESTINATION_VALIDATOR_KEYSET_NAME="${DESTINATION_VALIDATOR_KEYSET_NAME:-${VALIDATOR_NAME}-vm-destination}"
+SOURCE_HOT_SPARE_IDENTITY_SOURCE="${SOURCE_HOT_SPARE_IDENTITY_SOURCE:-$VALIDATOR_KEYSET_SOURCE_DIR/hot-spare-identity.json}"
+DESTINATION_HOT_SPARE_IDENTITY_SOURCE="${DESTINATION_HOT_SPARE_IDENTITY_SOURCE:-$REPO_ROOT/solana-localnet/validator-keys/demo2/hot-spare-identity.json}"
 
 RETAIN_ALWAYS=false
 RETAIN_ON_FAILURE=false
@@ -476,6 +480,14 @@ if [[ ! -r "$VALIDATOR_KEYSET_SOURCE_DIR/vote-account.json" ]]; then
   echo "Validator keyset source directory is missing vote-account.json: $VALIDATOR_KEYSET_SOURCE_DIR" >&2
   exit 3
 fi
+if [[ ! -r "$SOURCE_HOT_SPARE_IDENTITY_SOURCE" ]]; then
+  echo "Source hot-spare identity is not readable: $SOURCE_HOT_SPARE_IDENTITY_SOURCE" >&2
+  exit 3
+fi
+if [[ ! -r "$DESTINATION_HOT_SPARE_IDENTITY_SOURCE" ]]; then
+  echo "Destination hot-spare identity is not readable: $DESTINATION_HOT_SPARE_IDENTITY_SOURCE" >&2
+  exit 3
+fi
 
 mkdir -p "$(dirname "$SSH_PRIVATE_KEY_FILE")"
 if [[ ! -r "$SSH_PRIVATE_KEY_FILE" ]]; then
@@ -487,10 +499,30 @@ fi
 SSH_PUBLIC_KEY="$(cat "${SSH_PRIVATE_KEY_FILE}.pub")"
 
 ensure_local_keyset() {
-  local target_dir="$HOME/.validator-keys/$VALIDATOR_NAME"
+  local target_dir="$1"
+  local hot_spare_source="$2"
+
   mkdir -p "$(dirname "$target_dir")"
+  rm -rf "$target_dir"
   mkdir -p "$target_dir"
-  cp -a --update=none "$VALIDATOR_KEYSET_SOURCE_DIR"/. "$target_dir"/
+  cp -a "$VALIDATOR_KEYSET_SOURCE_DIR"/. "$target_dir"/
+  cp -f "$hot_spare_source" "$target_dir/hot-spare-identity.json"
+}
+
+ha_client_for_flavor() {
+  local flavor="$1"
+  case "$flavor" in
+    agave)
+      printf '%s\n' "agave"
+      ;;
+    jito-shared|jito-cohosted|jito-bam)
+      printf '%s\n' "jito"
+      ;;
+    *)
+      echo "Unsupported HA client flavor: $flavor" >&2
+      exit 2
+      ;;
+  esac
 }
 
 expected_client_regex_for_flavor() {
@@ -2170,7 +2202,8 @@ start_vm "vm-source" "$SRC_VM_NAME" "$SRC_VM_DIR" "$SOURCE_BOOTSTRAP_HOST" "$SOU
 echo "[vm-hot-swap] Starting destination VM..." >&2
 start_vm "vm-destination" "$DST_VM_NAME" "$DST_VM_DIR" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_QEMU_LOG" "$DST_PID_FILE" "$(vm_tap_iface_for vm-destination)" "" "${VM_BASE_IMAGE}" "${VM_DESTINATION_DISK_PARENT_PREFIX}" "$DESTINATION_START_WAIT_PORT"
 
-ensure_local_keyset
+ensure_local_keyset "$HOME/.validator-keys/$SOURCE_VALIDATOR_KEYSET_NAME" "$SOURCE_HOT_SPARE_IDENTITY_SOURCE"
+ensure_local_keyset "$HOME/.validator-keys/$DESTINATION_VALIDATOR_KEYSET_NAME" "$DESTINATION_HOT_SPARE_IDENTITY_SOURCE"
 
 IAM_CSV="$CASE_DIR/iam_setup_vm_validator.csv"
 AUTHORIZED_IPS_CSV="$CASE_DIR/authorized_ips_vm.csv"
@@ -2233,6 +2266,8 @@ EOF
 
 cat >"$OPERATOR_INVENTORY" <<EOF
 all:
+  vars:
+    solana_rpc_url: http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}
   hosts:
     vm-source:
       ansible_host: ${SOURCE_OPERATOR_HOST_EFFECTIVE}
@@ -2241,6 +2276,8 @@ all:
       ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
+      validator_keyset_name: ${SOURCE_VALIDATOR_KEYSET_NAME}
+      solana_validator_ha_client: $(ha_client_for_flavor "$SOURCE_FLAVOR")
       solana_validator_ha_public_ip_value: ${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}
       solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID}
       solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY}
@@ -2251,6 +2288,8 @@ all:
       ansible_ssh_private_key_file: ${SSH_PRIVATE_KEY_FILE}
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
+      validator_keyset_name: ${DESTINATION_VALIDATOR_KEYSET_NAME}
+      solana_validator_ha_client: $(ha_client_for_flavor "$DESTINATION_FLAVOR")
       solana_validator_ha_public_ip_value: ${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}
       solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID}
       solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY}
@@ -2270,10 +2309,19 @@ all:
     ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}:
       vars:
         solana_validator_ha_inventory_group: ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}
+        solana_validator_ha_cluster_name: testnet
+        solana_validator_ha_cluster_rpc_urls:
+          - http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}
       hosts:
         vm-source:
         vm-destination:
 EOF
+
+mkdir -p "$CASE_DIR/group_vars"
+cp "$REPO_ROOT/ansible/group_vars/all.yml" "$CASE_DIR/group_vars/all.yml"
+cp "$REPO_ROOT/ansible/group_vars/solana.yml" "$CASE_DIR/group_vars/solana.yml"
+cp "$SOLANA_CLUSTER_VARS_FILE" "$CASE_DIR/group_vars/$(basename "$SOLANA_CLUSTER_VARS_FILE")"
+cp "$CITY_GROUP_VARS_FILE" "$CASE_DIR/group_vars/$(basename "$CITY_GROUP_VARS_FILE")"
 
 phase_start_ts="$(date +%s)"
 if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
