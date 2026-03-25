@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 WORK_ROOT="${WORK_ROOT:-$REPO_ROOT/test-harness/work}"
 KEEP_RUNS="${KEEP_RUNS:-6}"
+MANUAL_KEEP_RUNS="${MANUAL_KEEP_RUNS:-1}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"
 DRY_RUN=false
 PRUNE_MUTABLE_CACHE_DIRS=false
@@ -23,6 +24,7 @@ Usage:
 Options:
   --work-root <path>         (default: ./test-harness/work)
   --keep-runs <n>            Keep newest N runs per suite root (default: 6)
+  --manual-keep-runs <n>     Keep newest N manual-cluster runs (default: 1)
   --min-free-gb <n>          Keep pruning oldest runs until free space >= N GB (default: 40)
   --dry-run                  Show what would be removed without deleting
   --prune-mutable-cache-dirs Remove mutable/legacy cache dirs (_shared-entrypoint-vm, _prepared-vms)
@@ -41,6 +43,10 @@ while (($# > 0)); do
       ;;
     --keep-runs)
       KEEP_RUNS="${2:-}"
+      shift 2
+      ;;
+    --manual-keep-runs)
+      MANUAL_KEEP_RUNS="${2:-}"
       shift 2
       ;;
     --min-free-gb)
@@ -85,6 +91,10 @@ done
 
 if ! [[ "$KEEP_RUNS" =~ ^[0-9]+$ ]]; then
   echo "--keep-runs must be a non-negative integer (got: $KEEP_RUNS)" >&2
+  exit 2
+fi
+if ! [[ "$MANUAL_KEEP_RUNS" =~ ^[0-9]+$ ]]; then
+  echo "--manual-keep-runs must be a non-negative integer (got: $MANUAL_KEEP_RUNS)" >&2
   exit 2
 fi
 if ! [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]]; then
@@ -147,12 +157,22 @@ get_free_gb() {
   df -BG "$path" | awk 'NR==2 { gsub(/G/, "", $4); print $4 }'
 }
 
+keep_runs_for_root() {
+  local root="$1"
+  case "$(basename "$root")" in
+    vm-hot-swap-manual) printf '%s\n' "$MANUAL_KEEP_RUNS" ;;
+    *) printf '%s\n' "$KEEP_RUNS" ;;
+  esac
+}
+
 prune_by_count_for_root() {
   local root="$1"
+  local keep_runs
+  keep_runs="$(keep_runs_for_root "$root")"
   mapfile -t dirs < <(list_run_dirs_desc "$root")
   local idx=0
   for dir in "${dirs[@]}"; do
-    if ((idx >= KEEP_RUNS)); then
+    if ((idx >= keep_runs)); then
       remove_dir "$dir"
     fi
     idx=$((idx + 1))
