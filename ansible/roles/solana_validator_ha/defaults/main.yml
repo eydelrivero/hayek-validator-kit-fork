@@ -1,6 +1,6 @@
 ---
 solana_validator_ha_enabled: true
-solana_validator_ha_version: "0.1.17"
+solana_validator_ha_version: "0.1.19"
 solana_validator_ha_install_from_source: false
 solana_validator_ha_runtime_enabled: false
 solana_validator_ha_repo_url: "https://github.com/SOL-Strategies/solana-validator-ha.git"
