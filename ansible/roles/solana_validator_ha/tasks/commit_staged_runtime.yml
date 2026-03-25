@@ -163,6 +163,18 @@
     state: "{{ 'restarted' if (solana_validator_ha_commit_public_ip_service_needs_restart | default(false) | bool) else 'started' }}"
   become: true
 
+- name: solana_validator_ha - Wait for public IP helper to serve the expected IP after staged commit
+  ansible.builtin.uri:
+    url: "http://{{ solana_validator_ha_public_ip_bind_host }}:{{ solana_validator_ha_public_ip_port }}/public-ip.txt"
+    return_content: true
+  register: solana_validator_ha_public_ip_helper_probe
+  changed_when: false
+  until:
+    - solana_validator_ha_public_ip_helper_probe.status == 200
+    - (solana_validator_ha_public_ip_helper_probe.content | default('') | trim) == (solana_validator_ha_effective_public_ip_value | trim)
+  retries: 10
+  delay: 1
+
 - name: solana_validator_ha - Reset failed state before restarting HA service
   ansible.builtin.command: "systemctl reset-failed {{ solana_validator_ha_service_name }}"
   changed_when: false
@@ -189,6 +201,9 @@
     name: "{{ solana_validator_ha_service_name }}"
   register: solana_validator_ha_service_status_after_commit
   changed_when: false
+  until: solana_validator_ha_service_status_after_commit.status.ActiveState == "active"
+  retries: 10
+  delay: 1
   become: true
 
 - name: solana_validator_ha - Assert HA service is active after staged commit
