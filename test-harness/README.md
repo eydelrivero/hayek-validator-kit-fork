@@ -284,6 +284,7 @@ after manual-cluster shutdown.
 To avoid manual cleanup during repeated VM runs, L2/L3 now auto-prune old run directories before execution:
 - keep newest `6` runs per suite root
 - additionally prune oldest runs until at least `40GB` is free under `test-harness/work`
+- suite roots are auto-discovered from top-level `test-harness/work/vm-*` directories
 - cache directories prefixed with `_` (for example `_shared-entrypoint-vm`, `_prepared-vms`) are preserved by the pruner
 
 Override via environment or flags:
