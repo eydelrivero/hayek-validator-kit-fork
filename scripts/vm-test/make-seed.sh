@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME=${1:-}
 SSH_PUBLIC_KEY=${2:-}
-WORK_DIR=${WORK_DIR:-"$(pwd)/scripts/vm-test/work"}
-TEMPLATE_DIR=${TEMPLATE_DIR:-"$(pwd)/scripts/vm-test/cloud-init"}
+WORK_DIR=${WORK_DIR:-"$SCRIPT_DIR/work"}
+TEMPLATE_DIR=${TEMPLATE_DIR:-"$SCRIPT_DIR/cloud-init"}
 VM_STATIC_IPV4=${VM_STATIC_IPV4:-}
 VM_GATEWAY_IPV4=${VM_GATEWAY_IPV4:-}
 VM_DNS_IPV4=${VM_DNS_IPV4:-}
