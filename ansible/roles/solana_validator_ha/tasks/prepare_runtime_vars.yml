@@ -135,7 +135,7 @@
 
 - name: solana_validator_ha - Derive peer map from peer hostnames
   ansible.builtin.set_fact:
-    solana_validator_ha_peers: "{{ solana_validator_ha_peers | combine({solana_validator_ha_peer_name: {'ip': solana_validator_ha_peer_ip}}) }}"
+    solana_validator_ha_peers: "{{ solana_validator_ha_peers | combine({solana_validator_ha_peer_name: solana_validator_ha_peer_data}) }}"
   vars:
     solana_validator_ha_peer_name: >-
       {{
@@ -161,6 +161,16 @@
           if (hostvars[item].solana_validator_ha_public_ip_value | default('') | string | trim | length > 0)
           else (hostvars[item].ansible_host | default(item))
         )
+      }}
+    solana_validator_ha_peer_priority: "{{ hostvars[item].solana_validator_ha_priority | default('') | string | trim }}"
+    solana_validator_ha_peer_data: >-
+      {{
+        {'ip': solana_validator_ha_peer_ip}
+        | combine(
+            {'priority': (solana_validator_ha_peer_priority | int)}
+            if (solana_validator_ha_peer_priority | length > 0)
+            else {}
+          )
       }}
   loop: "{{ solana_validator_ha_peer_hostnames | default([]) }}"
   loop_control:
@@ -193,6 +203,65 @@
   loop: "{{ (solana_validator_ha_peers_normalized | default({})) | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+
+- name: solana_validator_ha - Validate optional peer priorities are non-negative
+  ansible.builtin.assert:
+    that:
+      - item.value.priority | int >= 0
+    fail_msg: >-
+      solana_validator_ha_peers entry {{ item.key }} has invalid priority={{ item.value.priority }}.
+      Priority must be a non-negative integer when provided.
+  loop: "{{ (solana_validator_ha_peers_normalized | default({})) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value.priority is defined
+    - item.value.priority | string | trim | length > 0
+
+- name: solana_validator_ha - Determine priority coverage across self and peers
+  ansible.builtin.set_fact:
+    solana_validator_ha_peer_priority_values_effective: >-
+      {{
+        (
+          solana_validator_ha_peers_normalized
+          | dict2items
+          | selectattr('value.priority', 'defined')
+          | map(attribute='value.priority')
+          | map('string')
+          | map('trim')
+          | reject('equalto', '')
+          | list
+        )
+      }}
+    solana_validator_ha_priority_total_nodes: "{{ (solana_validator_ha_peers_normalized | length) + 1 }}"
+
+- name: solana_validator_ha - Validate priority coverage across self and peers
+  ansible.builtin.assert:
+    that:
+      - >
+        (
+          (solana_validator_ha_priority_effective | length == 0) and
+          (solana_validator_ha_peer_priority_values_effective | length == 0)
+        ) or (
+          (solana_validator_ha_priority_effective | length > 0) and
+          ((solana_validator_ha_peer_priority_values_effective | length) == (solana_validator_ha_peers_normalized | length))
+        )
+    fail_msg: >-
+      failover.priority must be configured consistently across self and every peer.
+      Either all nodes (self + all peers) must declare a priority, or none should.
+
+- name: solana_validator_ha - Validate priority uniqueness across self and peers
+  ansible.builtin.assert:
+    that:
+      - >
+        (
+          [solana_validator_ha_priority_effective]
+          + solana_validator_ha_peer_priority_values_effective
+        ) | unique | length == solana_validator_ha_priority_total_nodes | int
+    fail_msg: >-
+      failover.priority values must be unique across self and all peers.
+  when:
+    - solana_validator_ha_priority_effective | length > 0
 
 - name: solana_validator_ha - Validate runtime variables
   ansible.builtin.assert:
