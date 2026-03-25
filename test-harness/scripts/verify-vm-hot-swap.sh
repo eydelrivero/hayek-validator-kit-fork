@@ -2546,9 +2546,10 @@ assert_host_ha_runtime_config() {
   local expected_priority="$3"
   local expected_peer_node_id="$4"
   local expected_peer_ip="$5"
+  local expected_peer_priority="$6"
   local config_cmd
 
-  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null"
+  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_peer_priority}' \"\$cfg\" >/dev/null"
   ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
     -m shell -a "$config_cmd" -o >/dev/null
 }
@@ -3271,8 +3272,8 @@ if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
   CURRENT_PHASE="ha cluster reconcile"
   echo "[vm-hot-swap] Reconciling HA runtime across ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}..." >&2
   reconcile_validator_ha_cluster
-  assert_host_ha_runtime_config "vm-source" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}"
-  assert_host_ha_runtime_config "vm-destination" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}"
+  assert_host_ha_runtime_config "vm-source" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY"
+  assert_host_ha_runtime_config "vm-destination" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY"
 fi
 
 phase_start_ts="$(date +%s)"
