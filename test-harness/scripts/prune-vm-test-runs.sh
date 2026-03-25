@@ -257,11 +257,12 @@ oldest_dir_across_immutable_roots() {
   printf '%s\n' "$oldest"
 }
 
-SUITE_ROOTS=(
-  "$WORK_ROOT/vm-hot-swap"
-  "$WORK_ROOT/vm-hot-swap-l2"
-  "$WORK_ROOT/vm-hot-swap-l3"
-)
+discover_suite_roots() {
+  [[ -d "$WORK_ROOT" ]] || return 0
+  find "$WORK_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'vm-*' -printf '%p\n' | sort
+}
+
+mapfile -t SUITE_ROOTS < <(discover_suite_roots)
 
 IMMUTABLE_PRUNE_ROOTS=(
   "$IMMUTABLE_CACHE_ROOT/entrypoint-vm-cli"
