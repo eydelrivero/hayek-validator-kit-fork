@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCH=${1:-}
 VM_NAME=${2:-}
 BASE_IMAGE=${3:-}
-WORK_DIR=${WORK_DIR:-"$(pwd)/scripts/vm-test/work"}
+WORK_DIR=${WORK_DIR:-"$SCRIPT_DIR/work"}
 VM_DISK_SYSTEM_GB=${VM_DISK_SYSTEM_GB:-40}
 VM_DISK_LEDGER_GB=${VM_DISK_LEDGER_GB:-20}
 VM_DISK_ACCOUNTS_GB=${VM_DISK_ACCOUNTS_GB:-10}

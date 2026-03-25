@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME=${1:-}
-WORK_DIR=${WORK_DIR:-"$(pwd)/scripts/vm-test/work"}
+WORK_DIR=${WORK_DIR:-"$SCRIPT_DIR/work"}
 SSH_PORT=${SSH_PORT:-2222}
 SSH_PORT_ALT=${SSH_PORT_ALT:-2522}
 GUEST_SSH_PORT_ALT=${GUEST_SSH_PORT_ALT:-2522}
