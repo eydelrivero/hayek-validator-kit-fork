@@ -283,6 +283,7 @@ after manual-cluster shutdown.
 
 To avoid manual cleanup during repeated VM runs, L2/L3 now auto-prune old run directories before execution:
 - keep newest `6` runs per suite root
+- keep newest `1` manual-cluster run under `test-harness/work/vm-hot-swap-manual`
 - additionally prune oldest runs until at least `40GB` is free under `test-harness/work`
 - suite roots are auto-discovered from top-level `test-harness/work/vm-*` directories
 - cache directories prefixed with `_` (for example `_shared-entrypoint-vm`, `_prepared-vms`) are preserved by the pruner
@@ -290,6 +291,7 @@ To avoid manual cleanup during repeated VM runs, L2/L3 now auto-prune old run di
 Override via environment or flags:
 - `PRUNE_OLD_RUNS=false` or `--no-prune`
 - `PRUNE_KEEP_RUNS=<n>` or `--prune-keep-runs <n>`
+- `MANUAL_KEEP_RUNS=<n>` or `--manual-keep-runs <n>`
 - `PRUNE_MIN_FREE_GB=<n>` or `--prune-min-free-gb <n>`
 - `PRUNE_MUTABLE_CACHE_DIRS=true|false|auto` or `--prune-mutable-caches` / `--no-prune-mutable-caches`
 - `KILL_STALE_QEMU=false` or `--no-kill-stale-qemu` (default behavior is to clear stale QEMU processes that still hold the shared tap interfaces)
@@ -300,6 +302,7 @@ You can also run the pruner directly:
 ./test-harness/scripts/prune-vm-test-runs.sh \
   --work-root test-harness/work \
   --keep-runs 6 \
+  --manual-keep-runs 1 \
   --min-free-gb 40 \
   --prune-mutable-cache-dirs
 ```
