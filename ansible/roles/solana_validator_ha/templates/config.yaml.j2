@@ -67,4 +67,7 @@ failover:
 {% for peer_name, peer in solana_validator_ha_peers_normalized | dictsort %}
     {{ peer_name }}:
       ip: {{ peer.ip | to_json }}
+{% if peer.priority is defined and (peer.priority | string | trim | length > 0) %}
+      priority: {{ peer.priority | int }}
+{% endif %}
 {% endfor %}

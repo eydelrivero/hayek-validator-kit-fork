@@ -269,9 +269,10 @@ assert_host_ha_runtime_config() {
   local expected_priority="$3"
   local expected_peer_node_id="$4"
   local expected_peer_ip="$5"
+  local expected_peer_priority="$6"
   local config_cmd
 
-  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null"
+  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_peer_priority}' \"\$cfg\" >/dev/null"
   host_exec "$host" "$config_cmd" >/dev/null
 }
 
@@ -307,8 +308,8 @@ assert_host_service_active "$DESTINATION_HOST" "solana-validator-ha"
 assert_host_service_active "$SOURCE_HOST" "solana-validator-ha-public-ip"
 assert_host_service_active "$DESTINATION_HOST" "solana-validator-ha-public-ip"
 
-assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$destination_host_ip"
-assert_host_ha_runtime_config "$DESTINATION_HOST" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$source_host_ip"
+assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$destination_host_ip" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY"
+assert_host_ha_runtime_config "$DESTINATION_HOST" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$source_host_ip" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY"
 
 source_ha_pid="$(host_systemd_main_pid "$SOURCE_HOST" "solana-validator-ha")"
 destination_ha_pid="$(host_systemd_main_pid "$DESTINATION_HOST" "solana-validator-ha")"
