@@ -15,6 +15,12 @@ Host-side prerequisites for VM localnet and hot-swap flows include:
 - Docker for compose-backed control-plane paths when used
 - Solana CLI tools on the host `PATH`: `solana`, `solana-keygen`, `solana-test-validator`
 
+Host-side prerequisites for Latitude flows include:
+- Latitude CLI `lsh`
+- Ansible
+- `jq`
+- one SSH keypair that can be uploaded for the disposable host
+
 ## Entry Point
 
 ```bash
@@ -138,6 +144,88 @@ REQUIRE_SSH_SOCKET_PRECONDITION=false \
 
 Artifacts and probe output are written under `vm-access-validation/` next to the
 inventory by default, or under `--workdir <path>` if provided.
+
+### Latitude L2 Access-Validation Suite
+
+For disposable real bare-metal coverage of the same SSH / firewall / reboot path,
+use the Latitude wrapper:
+
+```bash
+./test-harness/scripts/run-latitude-access-validation.sh \
+  --operator-name <operator-name> \
+  --operator-ssh-public-key-file ~/.ssh/id_ed25519.pub \
+  --operator-ssh-private-key-file ~/.ssh/id_ed25519
+```
+
+This flow:
+
+- provisions one disposable Latitude host
+- generates a trusted-IP CSV from the current public IP by default
+- runs `pb_setup_users_validator`
+- applies a disposable-host-only temporary `NOPASSWD` sudo policy for harness automation
+- runs `pb_setup_metal_box --tags access-validation` twice
+- asserts the post-hardening SSH state after each pass
+- tears the host down automatically unless retention is requested
+
+Useful options:
+
+```bash
+./test-harness/scripts/run-latitude-access-validation.sh \
+  --operator-name <operator-name> \
+  --operator-ssh-public-key-file ~/.ssh/id_ed25519.pub \
+  --operator-ssh-private-key-file ~/.ssh/id_ed25519 \
+  --plan m4-metal-medium \
+  --retain-on-failure
+```
+
+If you already have a Latitude inventory and only want the verifier:
+
+```bash
+./test-harness/scripts/verify-latitude-access-validation.sh \
+  --inventory <path-to-latitude-inventory>
+```
+
+Optional trusted IP handling:
+
+```bash
+./test-harness/scripts/verify-latitude-access-validation.sh \
+  --inventory <path-to-latitude-inventory> \
+  --authorized-ip <bastion-ip> \
+  --authorized-ip <vpn-egress-ip>
+```
+
+If `--authorized-ips-csv` is omitted, the verifier auto-detects the current
+public IP and writes a temporary CSV for the canary run.
+
+### Latitude L3 Role Canary Suite
+
+For disposable real bare-metal role-level canaries after users + metal-box
+bootstrap, use:
+
+```bash
+./test-harness/scripts/run-latitude-role-canary.sh \
+  --operator-name <operator-name> \
+  --operator-ssh-public-key-file ~/.ssh/id_ed25519.pub \
+  --operator-ssh-private-key-file ~/.ssh/id_ed25519 \
+  --mode agave-cli
+```
+
+Supported modes:
+
+- `rust`
+- `agave-cli`
+- `jito-cli`
+- `agave-validator`
+- `jito-validator`
+
+Current recommendation:
+
+- use `rust`, `agave-cli`, and `jito-cli` as the default real-metal L3 confidence path
+- use `agave-validator` and `jito-validator` only when the disposable host has the
+  usual validator key material and cluster-specific inputs available
+
+This keeps the real-metal harness useful immediately without pretending full
+validator bring-up is always possible on a disposable host.
 
 ### VM Two-Host Hot-Swap Matrix
 
