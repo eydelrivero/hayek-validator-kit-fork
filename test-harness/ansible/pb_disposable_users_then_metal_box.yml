@@ -1,0 +1,21 @@
+---
+# Wrapper playbook for disposable-host harness automation.
+# Intentionally preserves the requested order:
+#   1) pb_setup_users_validator
+#   2) pb_setup_metal_box
+
+- import_playbook: ../../ansible/playbooks/pb_setup_users_validator.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ bootstrap_user }}"
+    csv_file: "{{ users_csv_file }}"
+    users_base_dir: "{{ users_base_dir }}"
+    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+
+- import_playbook: ../../ansible/playbooks/pb_setup_metal_box.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ metal_box_user | default(bootstrap_user) }}"
+    csv_file: "{{ authorized_ips_csv_file }}"
+    authorized_access_csv: "{{ authorized_access_csv }}"
+    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"

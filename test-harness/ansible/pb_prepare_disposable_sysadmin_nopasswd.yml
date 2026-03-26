@@ -1,0 +1,16 @@
+---
+- name: Prepare temporary sudo policy for disposable harness hosts
+  hosts: "{{ target_hosts }}"
+  user: "{{ bootstrap_user }}"
+  become: true
+  tasks:
+    - name: Ensure disposable harness operator groups can sudo without password
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/98-hvk-test-disposable-sysadmin
+        content: |
+          %sysadmin ALL=(ALL) NOPASSWD: ALL
+          %validator_operators ALL=(ALL) NOPASSWD: ALL
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "visudo -cf %s"
