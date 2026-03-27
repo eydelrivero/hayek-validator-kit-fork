@@ -20,6 +20,7 @@ Host-side prerequisites for Latitude flows include:
 - Ansible
 - `jq`
 - one SSH keypair that can be uploaded for the disposable host
+- a dedicated Latitude `Development` project, currently `ZZZ HVK Test Harness`
 
 ## Entry Point
 
@@ -223,9 +224,46 @@ Current recommendation:
 - use `rust`, `agave-cli`, and `jito-cli` as the default real-metal L3 confidence path
 - use `agave-validator` and `jito-validator` only when the disposable host has the
   usual validator key material and cluster-specific inputs available
+- validator-mode defaults currently target `testnet`, not `mainnet`
 
 This keeps the real-metal harness useful immediately without pretending full
 validator bring-up is always possible on a disposable host.
+
+### Latitude Combined L2 + L3 Suite
+
+To minimize provisioning churn and cost, the preferred real-metal canary path is
+now a single-host combined suite:
+
+```bash
+./test-harness/scripts/run-latitude-combined-canary.sh \
+  --operator-name <operator-name> \
+  --operator-ssh-public-key-file ~/.ssh/id_ed25519.pub \
+  --operator-ssh-private-key-file ~/.ssh/id_ed25519
+```
+
+This flow:
+
+- provisions one disposable Latitude host
+- runs L2 access-validation on that host
+- reuses the same hardened host for one or more L3 role canary modes
+- tears the host down once at the end
+
+Default L3 modes are:
+
+- `rust`
+- `agave-cli`
+- `jito-cli`
+
+You can override or extend them with repeatable `--mode` flags:
+
+```bash
+./test-harness/scripts/run-latitude-combined-canary.sh \
+  --operator-name <operator-name> \
+  --operator-ssh-public-key-file ~/.ssh/id_ed25519.pub \
+  --operator-ssh-private-key-file ~/.ssh/id_ed25519 \
+  --mode rust \
+  --mode agave-validator
+```
 
 ### VM Two-Host Hot-Swap Matrix
 

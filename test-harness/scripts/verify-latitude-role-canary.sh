@@ -10,13 +10,14 @@ source "$REPO_ROOT/test-harness/lib/disposable_host_common.sh"
 INVENTORY_PATH=""
 TARGET_HOST="${TARGET_HOST:-latitude-host}"
 MODE="${MODE:-agave-cli}"
+POST_METAL_ONLY=false
 BOOTSTRAP_USER="${BOOTSTRAP_USER:-}"
 METAL_BOX_SYSADMIN_USER="${METAL_BOX_SYSADMIN_USER:-alice}"
 VALIDATOR_OPERATOR_USER="${VALIDATOR_OPERATOR_USER:-bob}"
 POST_METAL_SSH_PORT="${POST_METAL_SSH_PORT:-2522}"
-CITY_GROUP="${CITY_GROUP:-dc_latitude}"
+CITY_GROUP="${CITY_GROUP:-city_dal}"
 CITY_GROUP_VARS_FILE="${CITY_GROUP_VARS_FILE:-$REPO_ROOT/ansible/group_vars/${CITY_GROUP}.yml}"
-SOLANA_CLUSTER="${SOLANA_CLUSTER:-mainnet}"
+SOLANA_CLUSTER="${SOLANA_CLUSTER:-testnet}"
 AUTHORIZED_IPS_INPUT="${AUTHORIZED_IPS_INPUT:-}"
 PUBLIC_IP_DETECT_URL="${PUBLIC_IP_DETECT_URL:-https://api.ipify.org}"
 OPERATOR_SSH_PUBLIC_KEY_FILE="${OPERATOR_SSH_PUBLIC_KEY_FILE:-}"
@@ -29,13 +30,15 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 WAIT_POLL_INTERVAL_SECONDS="${WAIT_POLL_INTERVAL_SECONDS:-5}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-true}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
-VALIDATOR_NAME="${VALIDATOR_NAME:-latitude-canary}"
+VALIDATOR_NAME="${VALIDATOR_NAME:-latitude-testnet-canary}"
 VALIDATOR_TYPE="${VALIDATOR_TYPE:-primary}"
 AGAVE_VERSION="${AGAVE_VERSION:-3.1.10}"
 JITO_VERSION="${JITO_VERSION:-3.1.10}"
 JITO_VERSION_PATCH="${JITO_VERSION_PATCH:-}"
 XDP_ENABLED="${XDP_ENABLED:-true}"
+USE_OFFICIAL_REPO="${USE_OFFICIAL_REPO:-false}"
 METAL_BOX_SKIP_TAGS="${METAL_BOX_SKIP_TAGS:-}"
+ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=false
 
 declare -a EXTRA_AUTHORIZED_IPS=()
 
@@ -49,6 +52,7 @@ Required:
 
 Optional:
   --mode <rust|agave-cli|jito-cli|agave-validator|jito-validator>
+  --post-metal-only                    Skip users + metal-box and reuse an already hardened host
   --target-host <name>                  (default: latitude-host)
   --bootstrap-user <name>               (default: inventory ansible_user or ubuntu)
   --validator-operator-user <name>      (default: bob)
@@ -57,6 +61,15 @@ Optional:
   --operator-ssh-public-key-file <path> (default: derived from inventory key)
   --authorized-ips-csv <path>           (default: auto-generate from current public IP)
   --authorized-ip <ip>                  (repeatable; adds extra trusted IPs)
+  --solana-cluster <name>               (default: testnet)
+  --agave-version <semver>              (default: 3.1.10)
+  --jito-version <semver>               (default: 3.1.10)
+  --jito-version-patch <suffix>         (default: empty)
+  --validator-name <name>               (default: latitude-testnet-canary)
+  --validator-type <primary|hot-spare>  (default: primary)
+  --use-official-repo                   (default: use team forked repos)
+  --allow-unconventional-testnet-two-disk-layout
+                                        Force the special Latitude-safe testnet two-disk layout
   --workdir <path>                      (default: <inventory_dir>/latitude-role-canary)
 EOF
 }
@@ -70,6 +83,10 @@ while (($# > 0)); do
     --mode)
       MODE="${2:-}"
       shift 2
+      ;;
+    --post-metal-only)
+      POST_METAL_ONLY=true
+      shift
       ;;
     --target-host)
       TARGET_HOST="${2:-}"
@@ -103,6 +120,38 @@ while (($# > 0)); do
       EXTRA_AUTHORIZED_IPS+=("${2:-}")
       shift 2
       ;;
+    --solana-cluster)
+      SOLANA_CLUSTER="${2:-}"
+      shift 2
+      ;;
+    --agave-version)
+      AGAVE_VERSION="${2:-}"
+      shift 2
+      ;;
+    --jito-version)
+      JITO_VERSION="${2:-}"
+      shift 2
+      ;;
+    --jito-version-patch)
+      JITO_VERSION_PATCH="${2:-}"
+      shift 2
+      ;;
+    --validator-name)
+      VALIDATOR_NAME="${2:-}"
+      shift 2
+      ;;
+    --validator-type)
+      VALIDATOR_TYPE="${2:-}"
+      shift 2
+      ;;
+    --use-official-repo)
+      USE_OFFICIAL_REPO=true
+      shift
+      ;;
+    --allow-unconventional-testnet-two-disk-layout)
+      ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
+      shift
+      ;;
     --workdir)
       WORK_DIR="${2:-}"
       shift 2
@@ -119,8 +168,10 @@ while (($# > 0)); do
   esac
 done
 
+SOLANA_CLUSTER="${SOLANA_CLUSTER#solana_}"
+
 build_inventory_children_block() {
-  local cluster_group="solana_${SOLANA_CLUSTER#solana_}"
+  local cluster_group="solana_${SOLANA_CLUSTER}"
 
   cat <<EOF
   children:
@@ -185,6 +236,89 @@ generate_authorized_ips_csv() {
   } >"$output_path"
 }
 
+is_validator_mode() {
+  [[ "$MODE" == "agave-validator" || "$MODE" == "jito-validator" ]]
+}
+
+detect_allow_unconventional_testnet_two_disk_layout_via_ssh() {
+  local ssh_user="$1"
+  local ssh_port="$2"
+  local ssh_opts=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o ConnectTimeout=10
+    -o IdentitiesOnly=yes
+    -o IdentityAgent=none
+    -i "$SSH_PRIVATE_KEY_FILE"
+    -p "$ssh_port"
+  )
+  local non_root_disk_count=""
+
+  if [[ "$SOLANA_CLUSTER" != "testnet" ]]; then
+    return 1
+  fi
+
+  non_root_disk_count="$(
+    ssh "${ssh_opts[@]}" "${ssh_user}@${TARGET_IP}" '
+      root_source=$(findmnt -n -o SOURCE /)
+      root_node=$(basename "$(readlink -f "$root_source")")
+
+      while true; do
+        parent=$(lsblk -ndo PKNAME "/dev/$root_node" 2>/dev/null | head -n1)
+        [ -z "$parent" ] && break
+        root_node="$parent"
+      done
+
+      root_disk="$root_node"
+
+      lsblk -b -d -o NAME,TYPE,SIZE | awk '"'"'"'"'$2 == "disk" { print $1 }'"'"'"'"' | while read -r name; do
+        if [ "$name" != "$root_disk" ] && ! grep -q "/dev/$name" /proc/mounts; then
+          echo "$name"
+        fi
+      done
+    ' 2>/dev/null | wc -l | tr -d '[:space:]'
+  )"
+
+  [[ "$non_root_disk_count" == "1" ]]
+}
+
+detect_allow_unconventional_testnet_two_disk_layout() {
+  detect_allow_unconventional_testnet_two_disk_layout_via_ssh "$METAL_BOX_SYSADMIN_USER" "$POST_METAL_SSH_PORT"
+}
+
+prepare_post_metal_validator_host() {
+  local prep_log="$WORK_DIR/post-metal-validator-host-prep.log"
+  local allow_unconventional_testnet_two_disk_layout=false
+  local prep_args=(
+    -i "$SYSADMIN_INVENTORY"
+    "$REPO_ROOT/ansible/playbooks/pb_setup_metal_box.yml"
+    --limit "$TARGET_HOST"
+    --tags precheck,initial-setup,validator-dir,system-tuning,disk-setup,post-check
+    -e "target_host=$TARGET_HOST"
+    -e "ansible_user=$METAL_BOX_SYSADMIN_USER"
+    -e "solana_cluster=$SOLANA_CLUSTER"
+    -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+    -e "csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+    -e "users_base_dir=$(dirname "$AUTHORIZED_IPS_CSV")"
+    -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+  )
+
+  if [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == "true" ]]; then
+    allow_unconventional_testnet_two_disk_layout=true
+    prep_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+  elif detect_allow_unconventional_testnet_two_disk_layout; then
+    allow_unconventional_testnet_two_disk_layout=true
+    prep_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+  fi
+
+  echo "[latitude-role-canary] Preparing post-metal validator host prerequisites..." >&2
+  if [[ "$allow_unconventional_testnet_two_disk_layout" == "true" ]]; then
+    echo "[latitude-role-canary] Enabling special two-disk testnet layout for this disposable Latitude host." >&2
+  fi
+
+  ansible-playbook "${prep_args[@]}" | tee "$prep_log"
+}
+
 run_mode_canary() {
   case "$MODE" in
     rust)
@@ -203,6 +337,7 @@ run_mode_canary() {
         -e "operator_user=$VALIDATOR_OPERATOR_USER" \
         -e "agave_version=$AGAVE_VERSION" \
         -e "solana_cluster=$SOLANA_CLUSTER" \
+        -e "use_official_repo=$USE_OFFICIAL_REPO" \
         -e "build_from_source=$BUILD_FROM_SOURCE" | tee "$MODE_LOG"
       ;;
     jito-cli)
@@ -215,12 +350,14 @@ run_mode_canary() {
         -e "jito_version=$JITO_VERSION" \
         -e "jito_version_patch=$JITO_VERSION_PATCH" \
         -e "solana_cluster=$SOLANA_CLUSTER" \
+        -e "use_official_repo=$USE_OFFICIAL_REPO" \
         -e "build_from_source=$BUILD_FROM_SOURCE" | tee "$MODE_LOG"
       ;;
     agave-validator)
       ansible-playbook \
         -i "$OPERATOR_INVENTORY" \
         "$REPO_ROOT/ansible/playbooks/pb_setup_validator_agave.yml" \
+        --limit "$TARGET_HOST" \
         "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
         -e "target_host=$TARGET_HOST" \
         -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
@@ -228,6 +365,7 @@ run_mode_canary() {
         -e "validator_type=$VALIDATOR_TYPE" \
         -e "agave_version=$AGAVE_VERSION" \
         -e "solana_cluster=$SOLANA_CLUSTER" \
+        -e "use_official_repo=$USE_OFFICIAL_REPO" \
         -e "build_from_source=$BUILD_FROM_SOURCE" \
         -e "force_host_cleanup=$FORCE_HOST_CLEANUP" \
         -e "xdp_enabled=$XDP_ENABLED" | tee "$MODE_LOG"
@@ -236,6 +374,7 @@ run_mode_canary() {
       ansible-playbook \
         -i "$OPERATOR_INVENTORY" \
         "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml" \
+        --limit "$TARGET_HOST" \
         "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
         -e "target_host=$TARGET_HOST" \
         -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
@@ -244,6 +383,7 @@ run_mode_canary() {
         -e "jito_version=$JITO_VERSION" \
         -e "jito_version_patch=$JITO_VERSION_PATCH" \
         -e "solana_cluster=$SOLANA_CLUSTER" \
+        -e "use_official_repo=$USE_OFFICIAL_REPO" \
         -e "build_from_source=$BUILD_FROM_SOURCE" \
         -e "force_host_cleanup=$FORCE_HOST_CLEANUP" \
         -e "xdp_enabled=$XDP_ENABLED" | tee "$MODE_LOG"
@@ -276,10 +416,12 @@ if [[ -n "$CITY_GROUP" ]]; then
     echo "City group vars file is not readable: $CITY_GROUP_VARS_FILE" >&2
     exit 3
   fi
-  COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "@$CITY_GROUP_VARS_FILE")
+  if grep -Eq '^[[:space:]]*[^#[:space:]]' "$CITY_GROUP_VARS_FILE"; then
+    COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "@$CITY_GROUP_VARS_FILE")
+  fi
 fi
 
-SOLANA_CLUSTER_NORMALIZED="${SOLANA_CLUSTER#solana_}"
+SOLANA_CLUSTER_NORMALIZED="${SOLANA_CLUSTER}"
 SOLANA_CLUSTER_VARS_FILE="$REPO_ROOT/ansible/group_vars/solana_${SOLANA_CLUSTER_NORMALIZED}.yml"
 if [[ -r "$SOLANA_CLUSTER_VARS_FILE" ]]; then
   COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "@$SOLANA_CLUSTER_VARS_FILE")
@@ -332,6 +474,7 @@ mkdir -p "$WORK_DIR"
 IAM_CSV="$WORK_DIR/iam_setup_latitude_validator.csv"
 AUTHORIZED_IPS_CSV="$WORK_DIR/authorized_ips_latitude.csv"
 BOOTSTRAP_INVENTORY="$WORK_DIR/inventory.bootstrap.yml"
+SYSADMIN_INVENTORY="$WORK_DIR/inventory.sysadmin.yml"
 OPERATOR_INVENTORY="$WORK_DIR/inventory.operator.yml"
 MODE_LOG="$WORK_DIR/${MODE}.log"
 
@@ -346,44 +489,66 @@ EOF
 generate_authorized_ips_csv "$AUTHORIZED_IPS_CSV"
 
 write_inventory "$BOOTSTRAP_INVENTORY" "$BOOTSTRAP_USER" "$BOOTSTRAP_SSH_PORT"
+write_inventory "$SYSADMIN_INVENTORY" "$METAL_BOX_SYSADMIN_USER" "$POST_METAL_SSH_PORT"
 write_inventory "$OPERATOR_INVENTORY" "$VALIDATOR_OPERATOR_USER" "$POST_METAL_SSH_PORT"
 
-if [[ "$ENABLE_DISPOSABLE_SYSADMIN_NOPASSWD" == "true" ]]; then
-  echo "[latitude-role-canary] Preparing temporary sysadmin sudo policy on ${TARGET_HOST}..." >&2
-  ansible-playbook \
-    -i "$BOOTSTRAP_INVENTORY" \
-    "$REPO_ROOT/test-harness/ansible/pb_prepare_disposable_sysadmin_nopasswd.yml" \
-    -e "target_hosts=$TARGET_HOST" \
+if [[ "$POST_METAL_ONLY" != "true" ]]; then
+  allow_unconventional_testnet_two_disk_layout=false
+
+  if [[ "$ENABLE_DISPOSABLE_SYSADMIN_NOPASSWD" == "true" ]]; then
+    echo "[latitude-role-canary] Preparing temporary sysadmin sudo policy on ${TARGET_HOST}..." >&2
+    ansible-playbook \
+      -i "$BOOTSTRAP_INVENTORY" \
+      "$REPO_ROOT/test-harness/ansible/pb_prepare_disposable_sysadmin_nopasswd.yml" \
+      -e "target_hosts=$TARGET_HOST" \
+      -e "bootstrap_user=$BOOTSTRAP_USER"
+  fi
+
+  wrapper_args=(
+    -i "$BOOTSTRAP_INVENTORY"
+    "$REPO_ROOT/test-harness/ansible/pb_disposable_users_then_metal_box.yml"
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
+    -e "target_host=$TARGET_HOST"
     -e "bootstrap_user=$BOOTSTRAP_USER"
+    -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
+    -e "solana_cluster=$SOLANA_CLUSTER"
+    -e "users_csv_file=$(basename "$IAM_CSV")"
+    -e "users_base_dir=$(dirname "$IAM_CSV")"
+    -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+    -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+    -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+  )
+
+  if is_validator_mode && [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == "true" ]]; then
+    allow_unconventional_testnet_two_disk_layout=true
+    wrapper_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+  elif is_validator_mode && detect_allow_unconventional_testnet_two_disk_layout_via_ssh "$BOOTSTRAP_USER" "$BOOTSTRAP_SSH_PORT"; then
+    allow_unconventional_testnet_two_disk_layout=true
+    wrapper_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+  fi
+
+  if [[ -n "$HOST_NAME" ]]; then
+    wrapper_args+=(-e "host_name=$HOST_NAME")
+  fi
+  if [[ -n "$METAL_BOX_SKIP_TAGS" ]]; then
+    wrapper_args+=(--skip-tags "$METAL_BOX_SKIP_TAGS")
+  fi
+
+  echo "[latitude-role-canary] Running users -> metal-box..." >&2
+  if [[ "$allow_unconventional_testnet_two_disk_layout" == "true" ]]; then
+    echo "[latitude-role-canary] Enabling special two-disk testnet layout for this disposable Latitude host." >&2
+  fi
+  ansible-playbook "${wrapper_args[@]}" | tee "$WORK_DIR/users-metal-box.log"
 fi
 
-wrapper_args=(
-  -i "$BOOTSTRAP_INVENTORY"
-  "$REPO_ROOT/test-harness/ansible/pb_disposable_users_then_metal_box.yml"
-  "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
-  -e "target_host=$TARGET_HOST"
-  -e "bootstrap_user=$BOOTSTRAP_USER"
-  -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
-  -e "users_csv_file=$(basename "$IAM_CSV")"
-  -e "users_base_dir=$(dirname "$IAM_CSV")"
-  -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
-  -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
-  -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
-)
-if [[ -n "$HOST_NAME" ]]; then
-  wrapper_args+=(-e "host_name=$HOST_NAME")
-fi
-if [[ -n "$METAL_BOX_SKIP_TAGS" ]]; then
-  wrapper_args+=(--skip-tags "$METAL_BOX_SKIP_TAGS")
+if [[ "$POST_METAL_ONLY" == "true" ]] && is_validator_mode; then
+  echo "[latitude-role-canary] Waiting for SSH on post-metal sysadmin path ${POST_METAL_SSH_PORT}..." >&2
+  th_wait_for_ssh "$METAL_BOX_SYSADMIN_USER" "$TARGET_IP" "$POST_METAL_SSH_PORT" "$SSH_PRIVATE_KEY_FILE" "$WAIT_TIMEOUT_SECONDS" "$WAIT_POLL_INTERVAL_SECONDS"
+  prepare_post_metal_validator_host
 fi
 
-echo "[latitude-role-canary] Running users -> metal-box..." >&2
-ansible-playbook "${wrapper_args[@]}" | tee "$WORK_DIR/users-metal-box.log"
-
-if [[ "$POST_METAL_SSH_PORT" != "$BOOTSTRAP_SSH_PORT" ]]; then
-  echo "[latitude-role-canary] Waiting for SSH on post-metal port ${POST_METAL_SSH_PORT}..." >&2
-  th_wait_for_ssh "$VALIDATOR_OPERATOR_USER" "$TARGET_IP" "$POST_METAL_SSH_PORT" "$SSH_PRIVATE_KEY_FILE" "$WAIT_TIMEOUT_SECONDS" "$WAIT_POLL_INTERVAL_SECONDS"
-fi
+echo "[latitude-role-canary] Waiting for SSH on post-metal port ${POST_METAL_SSH_PORT}..." >&2
+th_wait_for_ssh "$VALIDATOR_OPERATOR_USER" "$TARGET_IP" "$POST_METAL_SSH_PORT" "$SSH_PRIVATE_KEY_FILE" "$WAIT_TIMEOUT_SECONDS" "$WAIT_POLL_INTERVAL_SECONDS"
 
 echo "[latitude-role-canary] Running mode: $MODE" >&2
 run_mode_canary

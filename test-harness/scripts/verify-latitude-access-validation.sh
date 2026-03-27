@@ -309,7 +309,9 @@ if [[ -n "$CITY_GROUP" ]]; then
     echo "City group vars file is not readable: $CITY_GROUP_VARS_FILE" >&2
     exit 3
   fi
-  COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "@$CITY_GROUP_VARS_FILE")
+  if grep -Eq '^[[:space:]]*[^#[:space:]]' "$CITY_GROUP_VARS_FILE"; then
+    COMMON_ANSIBLE_EXTRA_VARS_ARGS+=(-e "@$CITY_GROUP_VARS_FILE")
+  fi
 fi
 
 INVENTORY_PATH="$(th_resolve_path "$INVENTORY_PATH" "$(pwd)")"
