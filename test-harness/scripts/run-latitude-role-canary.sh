@@ -15,13 +15,52 @@ OPERATOR_NAME="${LATITUDE_OPERATOR_NAME:-}"
 OPERATOR_SSH_PUBLIC_KEY_FILE="${LATITUDE_OPERATOR_SSH_PUBLIC_KEY_FILE:-}"
 OPERATOR_SSH_PRIVATE_KEY_FILE="${LATITUDE_OPERATOR_SSH_PRIVATE_KEY_FILE:-}"
 PLAN="${LATITUDE_PLAN:-m4-metal-small}"
-PROJECT="${PROJECT:-Automated Provisioning}"
+PROJECT="${PROJECT:-ZZZ HVK Test Harness}"
 SSH_USER="${SSH_USER:-ubuntu}"
 HOST_NAME="${HOST_NAME:-}"
 POST_METAL_SSH_PORT="${POST_METAL_SSH_PORT:-2522}"
 AUTHORIZED_IPS_INPUT="${AUTHORIZED_IPS_INPUT:-}"
+SOLANA_CLUSTER="${SOLANA_CLUSTER:-}"
+AGAVE_VERSION="${AGAVE_VERSION:-}"
+JITO_VERSION="${JITO_VERSION:-}"
+JITO_VERSION_PATCH="${JITO_VERSION_PATCH:-}"
+VALIDATOR_NAME="${VALIDATOR_NAME:-}"
+VALIDATOR_TYPE="${VALIDATOR_TYPE:-}"
+USE_OFFICIAL_REPO=false
+ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=false
 RETAIN_ON_FAILURE=false
 RETAIN_ALWAYS=false
+
+print_retained_server_destroy_commands() {
+  local state_dir="$ADAPTER_WORKDIR/state/latitude/$RUN_ID"
+  local server_id_file="$state_dir/server_id.txt"
+  local server_id=""
+
+  if [[ ! -r "$server_id_file" ]]; then
+    return 0
+  fi
+
+  server_id="$(<"$server_id_file")"
+  if [[ -z "$server_id" ]]; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+[latitude-role-canary] Destroy retained server directly:
+./bare-metal/latitudesh/destroy_latitude_server.sh \\
+  --server-id $server_id \\
+  --project "$PROJECT"
+
+[latitude-role-canary] Or via the harness wrapper:
+./test-harness/targets/latitude.sh down \\
+  --scenario "$MODE" \\
+  --run-id "$RUN_ID" \\
+  --workdir "$ADAPTER_WORKDIR" \\
+  --operator-name "$OPERATOR_NAME" \\
+  --operator-ssh-public-key-file "$OPERATOR_SSH_PUBLIC_KEY_FILE" \\
+  --operator-ssh-private-key-file "$OPERATOR_SSH_PRIVATE_KEY_FILE"
+EOF
+}
 
 usage() {
   cat <<'EOF'
@@ -40,9 +79,18 @@ Options:
   --operator-ssh-public-key-file <path> (required)
   --operator-ssh-private-key-file <path> (required)
   --plan <slug>                         (default: m4-metal-small)
-  --project <name>                      (default: Automated Provisioning)
+  --project <name>                      (default: ZZZ HVK Test Harness)
   --ssh-user <name>                     (default: ubuntu)
   --host-name <name>                    (default: unset)
+  --solana-cluster <name>               (default: verify script default)
+  --agave-version <semver>              (default: verify script default)
+  --jito-version <semver>               (default: verify script default)
+  --jito-version-patch <suffix>         (default: verify script default)
+  --validator-name <name>               (default: verify script default)
+  --validator-type <primary|hot-spare>  (default: verify script default)
+  --use-official-repo                   (default: use team forked repos)
+  --allow-unconventional-testnet-two-disk-layout
+                                        Force the special Latitude-safe testnet two-disk layout
   --authorized-ips-csv <path>           (default: auto-generate from current public IP)
   --retain-on-failure
   --retain-always
@@ -95,6 +143,38 @@ while (($# > 0)); do
       HOST_NAME="${2:-}"
       shift 2
       ;;
+    --solana-cluster)
+      SOLANA_CLUSTER="${2:-}"
+      shift 2
+      ;;
+    --agave-version)
+      AGAVE_VERSION="${2:-}"
+      shift 2
+      ;;
+    --jito-version)
+      JITO_VERSION="${2:-}"
+      shift 2
+      ;;
+    --jito-version-patch)
+      JITO_VERSION_PATCH="${2:-}"
+      shift 2
+      ;;
+    --validator-name)
+      VALIDATOR_NAME="${2:-}"
+      shift 2
+      ;;
+    --validator-type)
+      VALIDATOR_TYPE="${2:-}"
+      shift 2
+      ;;
+    --use-official-repo)
+      USE_OFFICIAL_REPO=true
+      shift
+      ;;
+    --allow-unconventional-testnet-two-disk-layout)
+      ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
+      shift
+      ;;
     --authorized-ips-csv)
       AUTHORIZED_IPS_INPUT="${2:-}"
       shift 2
@@ -136,6 +216,7 @@ cleanup() {
   if [[ -n "${CASE_DIR:-}" ]]; then
     if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) ]]; then
       echo "[latitude-role-canary] Retained artifacts under: $CASE_DIR" >&2
+      print_retained_server_destroy_commands
     else
       echo "[latitude-role-canary] Artifacts written under: $CASE_DIR" >&2
     fi
@@ -208,6 +289,30 @@ verify_args=(
 )
 if [[ -n "$HOST_NAME" ]]; then
   verify_args+=(--host-name "$HOST_NAME")
+fi
+if [[ -n "$SOLANA_CLUSTER" ]]; then
+  verify_args+=(--solana-cluster "$SOLANA_CLUSTER")
+fi
+if [[ -n "$AGAVE_VERSION" ]]; then
+  verify_args+=(--agave-version "$AGAVE_VERSION")
+fi
+if [[ -n "$JITO_VERSION" ]]; then
+  verify_args+=(--jito-version "$JITO_VERSION")
+fi
+if [[ -n "$JITO_VERSION_PATCH" ]]; then
+  verify_args+=(--jito-version-patch "$JITO_VERSION_PATCH")
+fi
+if [[ -n "$VALIDATOR_NAME" ]]; then
+  verify_args+=(--validator-name "$VALIDATOR_NAME")
+fi
+if [[ -n "$VALIDATOR_TYPE" ]]; then
+  verify_args+=(--validator-type "$VALIDATOR_TYPE")
+fi
+if [[ "$USE_OFFICIAL_REPO" == "true" ]]; then
+  verify_args+=(--use-official-repo)
+fi
+if [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == "true" ]]; then
+  verify_args+=(--allow-unconventional-testnet-two-disk-layout)
 fi
 if [[ -n "$AUTHORIZED_IPS_INPUT" ]]; then
   verify_args+=(--authorized-ips-csv "$AUTHORIZED_IPS_INPUT")
