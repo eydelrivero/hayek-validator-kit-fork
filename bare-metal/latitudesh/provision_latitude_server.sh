@@ -16,6 +16,7 @@ Usage:
   ./provision_latitude_server.sh \
     --operator-name <name> \
     --operator-ssh-public-key "<ssh-pub-key>" \
+    [--hostname <hostname>] \
     [--plan <plan-slug>] \
     [--dry-run] \
     [--skip-post-checks]
@@ -23,15 +24,23 @@ Usage:
 Options:
   --operator-name              Required. Used for hostname and SSH key naming.
   --operator-ssh-public-key    Required. Public key to upload/reuse in Latitude.
+  --hostname                   Optional. Exact hostname to create. Safer for harness use.
   --plan                       Optional. Defaults to m4-metal-small.
   --dry-run                    Optional. Show create command and exit before provisioning.
   --skip-post-checks           Optional. Skip SSH post-provision validations.
   -h, --help                   Show this help.
 
 Environment variables:
-  PROJECT                      Latitude project name (default: "Automated Provisioning")
+  PROJECT                      Latitude project name (default: "ZZZ HVK Test Harness")
   OS                           Latitude OS slug (default: ubuntu_24_04_x64_lts)
   HOSTNAME_SUFFIX              Hostname suffix (default: test-server)
+  PROJECT_DESCRIPTION_SENTINEL Sentinel required on the project description (default: "managed-by-hvk-test-harness")
+  PROJECT_ENVIRONMENT          Expected Latitude project environment (default: Development)
+  ALLOW_PROJECT_CREATE_IF_MISSING
+                               Set to true to create the harness project if absent (default: false)
+  DANGEROUS_PROJECT_NAMES_REGEX
+                               Refuse to operate on matching project names
+                               (default: "^(Automated Provisioning|Solana Validator)$")
   PREFERRED_SITES_CSV          Comma-separated site preference order (default: FRA,NYC)
   WAIT_MAX_POLLS               Server status polls before timeout (default: 60)
   WAIT_INTERVAL_SECONDS        Seconds between server status polls (default: 30)
@@ -98,10 +107,15 @@ SKIP_POST_CHECKS=false
 OPERATOR_SSH_PUBLIC_KEY=""
 PLAN="m4-metal-small"
 OPERATOR_NAME=""
+EXACT_HOSTNAME=""
 
-PROJECT="${PROJECT:-Automated Provisioning}"
+PROJECT="${PROJECT:-ZZZ HVK Test Harness}"
 OS="${OS:-ubuntu_24_04_x64_lts}"
 HOSTNAME_SUFFIX="${HOSTNAME_SUFFIX:-test-server}"
+PROJECT_DESCRIPTION_SENTINEL="${PROJECT_DESCRIPTION_SENTINEL:-managed-by-hvk-test-harness}"
+PROJECT_ENVIRONMENT="${PROJECT_ENVIRONMENT:-Development}"
+ALLOW_PROJECT_CREATE_IF_MISSING="${ALLOW_PROJECT_CREATE_IF_MISSING:-false}"
+DANGEROUS_PROJECT_NAMES_REGEX="${DANGEROUS_PROJECT_NAMES_REGEX:-^(Automated Provisioning|Solana Validator)$}"
 PREFERRED_SITES_CSV="${PREFERRED_SITES_CSV:-FRA,NYC}"
 WAIT_MAX_POLLS="${WAIT_MAX_POLLS:-60}"
 WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-30}"
@@ -121,6 +135,11 @@ while (($# > 0)); do
     --plan)
       [[ $# -ge 2 ]] || fail "Missing value for $1"
       PLAN="$2"
+      shift 2
+      ;;
+    --hostname)
+      [[ $# -ge 2 ]] || fail "Missing value for $1"
+      EXACT_HOSTNAME="$2"
       shift 2
       ;;
     --operator-name)
@@ -153,7 +172,7 @@ if is_empty_or_null "$OPERATOR_NAME"; then
   fail "--operator-name is required"
 fi
 
-HOSTNAME="${OPERATOR_NAME}-${HOSTNAME_SUFFIX}"
+HOSTNAME="${EXACT_HOSTNAME:-${OPERATOR_NAME}-${HOSTNAME_SUFFIX}}"
 KEY_NAME="${OPERATOR_NAME}-key"
 
 require_cmd lsh
@@ -162,19 +181,29 @@ require_cmd ssh
 require_cmd scp
 
 log "Project: $PROJECT"
+if [[ "$PROJECT" =~ $DANGEROUS_PROJECT_NAMES_REGEX ]]; then
+  fail "Refusing to operate on project '$PROJECT' because it matches DANGEROUS_PROJECT_NAMES_REGEX"
+fi
+
 if ! PROJECTS_JSON="$(lsh projects list --json)"; then
   fail "Failed to list Latitude projects"
 fi
 
-PROJECT_ID="$(
-  normalize_to_list <<<"$PROJECTS_JSON" | jq -r --arg project "$PROJECT" '
-    map(select(.attributes.name == $project)) | .[0].id // empty
+PROJECT_JSON="$(
+  normalize_to_list <<<"$PROJECTS_JSON" | jq -c --arg project "$PROJECT" '
+    map(select(.attributes.name == $project)) | .[0] // empty
   '
+)"
+PROJECT_ID="$(
+  jq -r '.id // empty' <<<"$PROJECT_JSON"
 )"
 
 if is_empty_or_null "$PROJECT_ID"; then
+  if [[ "$ALLOW_PROJECT_CREATE_IF_MISSING" != "true" ]]; then
+    fail "Project '$PROJECT' not found. Refusing to auto-create it unless ALLOW_PROJECT_CREATE_IF_MISSING=true."
+  fi
   log "Project '$PROJECT' not found. Creating it..."
-  if ! CREATE_OUTPUT="$(lsh projects create --name "$PROJECT" --provisioning_type on_demand --description "Solana validator automation" --environment development --json 2>&1)"; then
+  if ! CREATE_OUTPUT="$(lsh projects create --name "$PROJECT" --provisioning_type on_demand --description "$PROJECT_DESCRIPTION_SENTINEL" --environment "$PROJECT_ENVIRONMENT" --json 2>&1)"; then
     fail "Failed to create project '$PROJECT': $CREATE_OUTPUT"
   fi
 
@@ -186,6 +215,14 @@ if is_empty_or_null "$PROJECT_ID"; then
   fi
   log "Created project. Project ID: $PROJECT_ID"
 else
+  EXISTING_PROJECT_DESCRIPTION="$(jq -r '.attributes.description // empty' <<<"$PROJECT_JSON")"
+  EXISTING_PROJECT_ENVIRONMENT="$(jq -r '.attributes.environment // empty' <<<"$PROJECT_JSON")"
+  if [[ "$EXISTING_PROJECT_DESCRIPTION" != *"$PROJECT_DESCRIPTION_SENTINEL"* ]]; then
+    fail "Refusing to use project '$PROJECT' because it is missing sentinel '$PROJECT_DESCRIPTION_SENTINEL' in its description"
+  fi
+  if [[ "$EXISTING_PROJECT_ENVIRONMENT" != "$PROJECT_ENVIRONMENT" ]]; then
+    fail "Refusing to use project '$PROJECT' because its environment is '$EXISTING_PROJECT_ENVIRONMENT', expected '$PROJECT_ENVIRONMENT'"
+  fi
   log "Using existing project ID: $PROJECT_ID"
 fi
 
@@ -269,8 +306,7 @@ EXISTING_SERVER_ID="$(
 
 SERVER_ID=""
 if ! is_empty_or_null "$EXISTING_SERVER_ID"; then
-  SERVER_ID="$EXISTING_SERVER_ID"
-  log "Found existing server with hostname '$HOSTNAME'. Using ID: $SERVER_ID"
+  fail "Refusing to reuse existing server '$HOSTNAME' (id=$EXISTING_SERVER_ID). Pick a unique hostname or clean up the previous harness server first."
 else
   log "No server named '$HOSTNAME' found. Creating a new server..."
   if [[ "$DRY_RUN" == true ]]; then
@@ -439,7 +475,7 @@ chmod +x "$LOCAL_POST_CHECKS_SCRIPT"
 REMOTE_POST_CHECKS_SCRIPT="/tmp/post_provision_checks.sh"
 log "Running post-provision checks on the server..."
 scp "${SSH_OPTS[@]}" "$LOCAL_POST_CHECKS_SCRIPT" "${SSH_USER}@${PUBLIC_IP}:${REMOTE_POST_CHECKS_SCRIPT}"
-ssh "${SSH_OPTS[@]}" "${SSH_USER}@${PUBLIC_IP}" REMOTE_POST_CHECKS_SCRIPT="$REMOTE_POST_CHECKS_SCRIPT" \
-  'bash "$REMOTE_POST_CHECKS_SCRIPT"; rc=$?; rm -f "$REMOTE_POST_CHECKS_SCRIPT"; exit $rc'
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${PUBLIC_IP}" \
+  "bash '$REMOTE_POST_CHECKS_SCRIPT'; rc=\$?; rm -f '$REMOTE_POST_CHECKS_SCRIPT'; exit \$rc"
 
 log "All post-provisioning verifications completed."
