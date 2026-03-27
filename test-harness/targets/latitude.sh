@@ -22,9 +22,11 @@ OPERATOR_SSH_PUBLIC_KEY="${LATITUDE_OPERATOR_SSH_PUBLIC_KEY:-}"
 OPERATOR_SSH_PUBLIC_KEY_FILE="${LATITUDE_OPERATOR_SSH_PUBLIC_KEY_FILE:-}"
 OPERATOR_SSH_PRIVATE_KEY_FILE="${LATITUDE_OPERATOR_SSH_PRIVATE_KEY_FILE:-}"
 PLAN="${LATITUDE_PLAN:-m4-metal-small}"
-PROJECT="${PROJECT:-Automated Provisioning}"
+PROJECT="${PROJECT:-ZZZ HVK Test Harness}"
 SKIP_POST_CHECKS=true
 SSH_USER="${SSH_USER:-ubuntu}"
+PROJECT_DESCRIPTION_SENTINEL="${PROJECT_DESCRIPTION_SENTINEL:-managed-by-hvk-test-harness}"
+PROJECT_ENVIRONMENT="${PROJECT_ENVIRONMENT:-Development}"
 
 while (($# > 0)); do
   case "$1" in
@@ -113,11 +115,17 @@ PROVISION_SCRIPT="$REPO_ROOT/bare-metal/latitudesh/provision_latitude_server.sh"
 DESTROY_SCRIPT="$REPO_ROOT/bare-metal/latitudesh/destroy_latitude_server.sh"
 
 hostname_for_run() {
-  if [[ -n "$OPERATOR_NAME" ]]; then
-    printf '%s-test-server\n' "$OPERATOR_NAME"
-  else
-    printf 'unknown-test-server\n'
-  fi
+  local base
+  local scenario
+  base="${OPERATOR_NAME:-unknown}"
+  scenario="${SCENARIO:-default}"
+  base="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
+  scenario="$(printf '%s' "$scenario" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
+  base="${base#-}"
+  base="${base%-}"
+  scenario="${scenario#-}"
+  scenario="${scenario%-}"
+  printf 'hvk-%s-%s-%s\n' "${base:0:12}" "${scenario:0:16}" "${RUN_ID:0:12}"
 }
 
 validate() {
@@ -141,6 +149,7 @@ up() {
   local args=(
     --operator-name "$OPERATOR_NAME"
     --operator-ssh-public-key "$OPERATOR_SSH_PUBLIC_KEY"
+    --hostname "$(hostname_for_run)"
     --plan "$PLAN"
   )
   if [[ "$SKIP_POST_CHECKS" == true ]]; then
@@ -150,6 +159,8 @@ up() {
   OUTPUT_IP_FILE="$IP_FILE" \
   OUTPUT_SERVER_ID_FILE="$SERVER_ID_FILE" \
   PROJECT="$PROJECT" \
+  PROJECT_DESCRIPTION_SENTINEL="$PROJECT_DESCRIPTION_SENTINEL" \
+  PROJECT_ENVIRONMENT="$PROJECT_ENVIRONMENT" \
   WAIT_MAX_POLLS="$((TIMEOUT_SECONDS / POLL_INTERVAL_SECONDS))" \
   WAIT_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
   SSH_USER="$SSH_USER" \
@@ -221,12 +232,8 @@ down() {
   local args=()
   if [[ -r "$SERVER_ID_FILE" ]]; then
     args+=(--server-id "$(cat "$SERVER_ID_FILE")")
-  elif [[ -r "$HOSTNAME_FILE" ]]; then
-    args+=(--hostname "$(cat "$HOSTNAME_FILE")")
-  elif [[ -n "$OPERATOR_NAME" ]]; then
-    args+=(--hostname "${OPERATOR_NAME}-test-server")
   else
-    hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_state" "Missing server ID/hostname for teardown" 4
+    hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_state" "Missing server ID for teardown. Refusing hostname-based deletion." 4
   fi
 
   args+=(--project "$PROJECT")
