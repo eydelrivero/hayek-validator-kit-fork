@@ -34,7 +34,6 @@ exec agave-validator \
 {% endif %}
 {% if solana_cluster == "localnet" %}
 --no-snapshots \
---bind-address {{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }} \
 --no-os-network-limits-test \
 --allow-private-addr \
 {% endif %}

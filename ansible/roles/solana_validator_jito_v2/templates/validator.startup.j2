@@ -46,7 +46,6 @@ exec agave-validator \
 --block-engine-url {{ jito_block_engine_url }} \
 --shred-receiver-address {{ jito_shred_receiver_addr }} \
 {% if solana_cluster == "localnet" %}
---bind-address {{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }} \
 --no-os-network-limits-test \
 --allow-private-addr \
 {% endif %}
