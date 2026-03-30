@@ -2310,6 +2310,10 @@ all:
       hosts:
         vm-source:
         vm-destination:
+    ha_reconcile_inventory_group_all:
+      hosts:
+        vm-source:
+        vm-destination:
     ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}:
       vars:
         solana_validator_ha_inventory_group: ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}
