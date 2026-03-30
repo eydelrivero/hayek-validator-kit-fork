@@ -92,14 +92,14 @@
           target_ha_group={{ target_ha_group }} must contain at least two retained hosts.
       when: not (ha_reconcile_experimental_fake_peer_enabled_effective | bool)
 
-    - name: Assert experimental fake peer path is only used for singleton contract
+    - name: Assert experimental fake peer path is only used for singleton in-place or contract reconcile
       ansible.builtin.assert:
         that:
-          - ha_reconcile_mode_effective == 'contract'
+          - ha_reconcile_mode_effective in ['in_place', 'contract']
           - ha_reconcile_target_hosts | length == 1
         fail_msg: >-
           ha_reconcile_experimental_fake_peer_enabled is only supported for
-          ha_reconcile_mode=contract with exactly one retained host.
+          ha_reconcile_mode in_place/contract with exactly one retained host.
       when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
 
     - name: Derive experimental fake peer defaults
