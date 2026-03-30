@@ -264,7 +264,19 @@
 
     - name: Collect best-effort peer HA groups for cross-cluster uniqueness checks
       ansible.builtin.set_fact:
-        ha_reconcile_peer_groups: "{{ groups.keys() | select('match', '^ha_') | difference([target_ha_group]) | list }}"
+        ha_reconcile_peer_groups: >-
+          {{
+            groups.keys()
+            | select('match', '^ha_')
+            | difference(
+                [
+                  target_ha_group,
+                  hostvars['localhost'].ha_reconcile_inventory_group_all_effective | default(''),
+                  'ha_reconcile_removed_members'
+                ]
+              )
+            | list
+          }}
       run_once: true
 
     - name: Assert node ids do not collide with other available HA groups
