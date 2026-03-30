@@ -38,6 +38,8 @@
     - name: Normalize HA reconcile optional host lists
       ansible.builtin.set_fact:
         ha_reconcile_mode_effective: "{{ ha_reconcile_mode | default('in_place') }}"
+        ha_reconcile_experimental_fake_peer_enabled_effective: >-
+          {{ ha_reconcile_experimental_fake_peer_enabled | default(false) | bool }}
         ha_reconcile_removed_hosts: >-
           {{
             []
@@ -82,12 +84,78 @@
       ansible.builtin.set_fact:
         ha_reconcile_target_hosts: "{{ groups[target_ha_group] | list }}"
 
-    - name: Assert desired HA target group has at least two hosts
+    - name: Assert desired HA target group has enough retained hosts for the selected mode
       ansible.builtin.assert:
         that:
           - ha_reconcile_target_hosts | length > 1
         fail_msg: >-
           target_ha_group={{ target_ha_group }} must contain at least two retained hosts.
+      when: not (ha_reconcile_experimental_fake_peer_enabled_effective | bool)
+
+    - name: Assert experimental fake peer path is only used for singleton contract
+      ansible.builtin.assert:
+        that:
+          - ha_reconcile_mode_effective == 'contract'
+          - ha_reconcile_target_hosts | length == 1
+        fail_msg: >-
+          ha_reconcile_experimental_fake_peer_enabled is only supported for
+          ha_reconcile_mode=contract with exactly one retained host.
+      when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
+
+    - name: Derive experimental fake peer defaults
+      ansible.builtin.set_fact:
+        ha_reconcile_experimental_fake_peer_name_effective: >-
+          {{ ha_reconcile_experimental_fake_peer_name | default('synthetic-peer') | string | trim }}
+        ha_reconcile_experimental_fake_peer_ip_effective: >-
+          {{ ha_reconcile_experimental_fake_peer_ip | default('192.0.2.254') | string | trim }}
+        ha_reconcile_retained_singleton_host: "{{ ha_reconcile_target_hosts | first }}"
+      when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
+
+    - name: Derive experimental fake peer priority
+      ansible.builtin.set_fact:
+        ha_reconcile_experimental_fake_peer_priority_effective: >-
+          {{
+            (ha_reconcile_experimental_fake_peer_priority | string | trim)
+            if (ha_reconcile_experimental_fake_peer_priority is defined and (ha_reconcile_experimental_fake_peer_priority | string | trim | length > 0))
+            else (
+              '9999'
+              if (
+                hostvars[ha_reconcile_retained_singleton_host].solana_validator_ha_priority | default('') | string | trim | length > 0
+              )
+              else ''
+            )
+          }}
+      when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
+
+    - name: Assert experimental fake peer values are valid
+      ansible.builtin.assert:
+        that:
+          - ha_reconcile_experimental_fake_peer_name_effective | length > 0
+          - ha_reconcile_experimental_fake_peer_ip_effective | length > 0
+          - ha_reconcile_experimental_fake_peer_ip_effective != (hostvars[ha_reconcile_retained_singleton_host].ansible_host | default(''))
+          - ha_reconcile_experimental_fake_peer_name_effective != (hostvars[ha_reconcile_retained_singleton_host].solana_validator_ha_node_id | default('') | string | trim)
+        fail_msg: >-
+          Experimental fake peer values must be non-empty and must not collide with the
+          retained host's management IP or declared node id.
+      when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
+
+    - name: Build experimental fake peer map
+      ansible.builtin.set_fact:
+        ha_reconcile_injected_peer_map: >-
+          {{
+            {
+              ha_reconcile_experimental_fake_peer_name_effective:
+              (
+                {'ip': ha_reconcile_experimental_fake_peer_ip_effective}
+                | combine(
+                    {'priority': (ha_reconcile_experimental_fake_peer_priority_effective | int)}
+                    if (ha_reconcile_experimental_fake_peer_priority_effective | length > 0)
+                    else {}
+                  )
+              )
+            }
+          }}
+      when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
 
     - name: Assert contract mode provides removed hosts
       ansible.builtin.assert:
@@ -274,7 +342,7 @@
               | map('default', '', true)
               | map('trim')
               | intersect(
-                  ha_reconcile_target_hosts
+                  hostvars['localhost'].ha_reconcile_target_hosts
                   | map('extract', hostvars, 'solana_validator_ha_node_id')
                   | map('trim')
                   | list
@@ -293,6 +361,15 @@
       ansible.builtin.include_role:
         name: solana_validator_ha
         tasks_from: stage_runtime.yml
+      when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
+
+    - name: Stage HA runtime artifacts on every cluster member with experimental fake peer map
+      ansible.builtin.include_role:
+        name: solana_validator_ha
+        tasks_from: stage_runtime.yml
+      vars:
+        solana_validator_ha_peers: "{{ hostvars['localhost'].ha_reconcile_injected_peer_map }}"
+      when: hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool
 
 - name: Commit HA runtime artifacts serially
   hosts: "{{ target_ha_group }}"
@@ -314,6 +391,16 @@
             tasks_from: commit_staged_runtime.yml
           vars:
             solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+          when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
+
+        - name: Commit staged HA runtime artifacts with experimental fake peer map
+          ansible.builtin.include_role:
+            name: solana_validator_ha
+            tasks_from: commit_staged_runtime.yml
+          vars:
+            solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+            solana_validator_ha_peers: "{{ hostvars['localhost'].ha_reconcile_injected_peer_map }}"
+          when: hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool
 
         - name: Record successfully committed host
           ansible.builtin.set_fact:
@@ -328,6 +415,16 @@
             tasks_from: rollback_staged_runtime.yml
           vars:
             solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+          when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
+
+        - name: Roll back staged runtime on the failing host with experimental fake peer map
+          ansible.builtin.include_role:
+            name: solana_validator_ha
+            tasks_from: rollback_staged_runtime.yml
+          vars:
+            solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+            solana_validator_ha_peers: "{{ hostvars['localhost'].ha_reconcile_injected_peer_map }}"
+          when: hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool
 
         - name: Record HA reconcile failure on controller
           ansible.builtin.set_fact:
@@ -354,6 +451,19 @@
       vars:
         solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
       when:
+        - not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
+        - hostvars['localhost'].ha_reconcile_abort | default(false) | bool
+        - inventory_hostname in (hostvars['localhost'].ha_reconcile_committed_hosts | default([]))
+
+    - name: Roll back previously committed HA runtime artifacts with experimental fake peer map
+      ansible.builtin.include_role:
+        name: solana_validator_ha
+        tasks_from: rollback_staged_runtime.yml
+      vars:
+        solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+        solana_validator_ha_peers: "{{ hostvars['localhost'].ha_reconcile_injected_peer_map }}"
+      when:
+        - hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool
         - hostvars['localhost'].ha_reconcile_abort | default(false) | bool
         - inventory_hostname in (hostvars['localhost'].ha_reconcile_committed_hosts | default([]))
 
