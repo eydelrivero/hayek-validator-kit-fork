@@ -111,6 +111,9 @@ SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
 SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
 SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
+HA_RECONCILE_MODE="${HA_RECONCILE_MODE:-in_place}"
+HA_PREVIOUS_HOSTS="${HA_PREVIOUS_HOSTS:-}"
+HA_REMOVED_HOSTS="${HA_REMOVED_HOSTS:-}"
 
 if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
   VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE="hvk-vm-gossip-entrypoint:${AGAVE_VERSION}"
@@ -223,6 +226,8 @@ Environment:
   VM_PREPARE_ONLY=true with VM_PREPARE_EXPORT_DIR=<dir> (prepare source/destination VM disks and exit before swap)
   VM_ENTRYPOINT_PREPARE_ONLY=true (prepare shared entrypoint VM cache [CLI + launcher], do not start localnet runtime)
   VM_MANUAL_TEST_ONLY=true (boot a full pre-swap cluster for manual testing, emit report, retain VMs if requested, and skip the swap)
+  HA_RECONCILE_MODE=in_place|expand|contract (default: in_place)
+  HA_PREVIOUS_HOSTS=<csv> and HA_REMOVED_HOSTS=<csv> (forwarded to pb_reconcile_validator_ha_cluster.yml when HA runtime reconcile is enabled)
 EOF
 }
 
@@ -2441,15 +2446,30 @@ setup_host_flavor() {
 }
 
 reconcile_validator_ha_cluster() {
+  local extra_args=()
+  local previous_hosts_json=""
+  local removed_hosts_json=""
+
+  if [[ -n "$HA_PREVIOUS_HOSTS" ]]; then
+    previous_hosts_json="$(jq -cn --arg csv "$HA_PREVIOUS_HOSTS" '$csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+    extra_args+=(-e "{\"ha_previous_hosts\":${previous_hosts_json}}")
+  fi
+
+  if [[ -n "$HA_REMOVED_HOSTS" ]]; then
+    removed_hosts_json="$(jq -cn --arg csv "$HA_REMOVED_HOSTS" '$csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+    extra_args+=(-e "{\"ha_removed_hosts\":${removed_hosts_json}}")
+  fi
+
   ansible-playbook \
     -i "$OPERATOR_INVENTORY" \
     "$REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml" \
     "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+    "${extra_args[@]}" \
     -e "target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP" \
     -e "operator_user=$VALIDATOR_OPERATOR_USER" \
     -e "validator_name=$VALIDATOR_NAME" \
     -e "solana_cluster=$SOLANA_CLUSTER" \
-    -e "ha_reconcile_mode=in_place" \
+    -e "ha_reconcile_mode=$HA_RECONCILE_MODE" \
     -e "ha_enforce_hostname_prefix=false"
 }
 

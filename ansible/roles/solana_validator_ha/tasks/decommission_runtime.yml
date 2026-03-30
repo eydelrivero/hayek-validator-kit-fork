@@ -1,0 +1,57 @@
+---
+- name: solana_validator_ha - Stop and disable public IP helper on removed host
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_public_ip_service_name }}"
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: solana_validator_ha - Stop and disable HA service on removed host
+  ansible.builtin.systemd:
+    name: "{{ solana_validator_ha_service_name }}"
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: solana_validator_ha - Reset failed HA runtime units on removed host
+  ansible.builtin.command: "systemctl reset-failed {{ item }}"
+  loop:
+    - "{{ solana_validator_ha_public_ip_service_name }}"
+    - "{{ solana_validator_ha_service_name }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: solana_validator_ha - Remove HA runtime systemd units from removed host
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service"
+    state: absent
+  loop:
+    - "{{ solana_validator_ha_public_ip_service_name }}"
+    - "{{ solana_validator_ha_service_name }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+
+- name: solana_validator_ha - Remove HA runtime artifacts from removed host
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ solana_validator_ha_public_ip_file_path }}"
+    - "{{ solana_validator_ha_config_path }}"
+    - "{{ solana_validator_ha_staged_public_ip_file_path }}"
+    - "{{ solana_validator_ha_staged_config_path }}"
+    - "{{ solana_validator_ha_wrapper_script_path }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+
+- name: solana_validator_ha - Reload systemd after runtime decommission
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
