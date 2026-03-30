@@ -8,4 +8,4 @@ destination_host_primary_target_identity_path: "{{ destination_host_keys_dir }}/
 destination_host_hot_spare_identity_path: "{{ destination_host_keys_dir }}/hot-spare-identity.json"
 source_host_address: "{{ hostvars[source_host]['ansible_host'] | default(hostvars[source_host]['inventory_hostname'] | default(source_host)) }}"
 destination_host_address: "{{ hostvars[destination_host]['ansible_host'] | default(hostvars[destination_host]['inventory_hostname'] | default(destination_host)) }}"
-destination_host_port: "{{ hostvars[destination_host]['ansible_port'] | default(2522) }}"
+destination_host_port: "{{ hostvars[destination_host]['ansible_port'] | default(22) }}"
