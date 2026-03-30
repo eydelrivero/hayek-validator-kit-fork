@@ -63,21 +63,16 @@ argument_specs:
         required: false
         default: true
         description: "Run shared NUMA placement assessment between XDP retransmit cores and PoH pinned core"
-      solana_validator_ha_enabled:
+      solana_validator_ha_install_enabled:
         type: bool
         required: false
         default: true
-        description: "Install solana-validator-ha alongside the validator setup"
+        description: "Install solana-validator-ha alongside the validator setup without enabling the HA runtime"
       solana_validator_ha_install_from_source:
         type: bool
         required: false
         default: false
         description: "Build solana-validator-ha from source instead of installing the published binary release"
-      solana_validator_ha_runtime_enabled:
-        type: bool
-        required: false
-        default: false
-        description: "Render and start the solana-validator-ha runtime integration on the validator host"
       solana_validator_ha_version:
         type: str
         required: false
