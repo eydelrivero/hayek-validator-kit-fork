@@ -1,6 +1,22 @@
 ---
+- name: solana_validator_ha - Fail on deprecated enable flag
+  ansible.builtin.fail:
+    msg: >-
+      solana_validator_ha_enabled has been renamed to solana_validator_ha_install_enabled.
+      Use solana_validator_ha_install_enabled to control whether the HA binary is installed.
+  when: solana_validator_ha_enabled is defined
+
+- name: solana_validator_ha - Fail when runtime enablement is requested through single-host setup
+  ansible.builtin.assert:
+    that:
+      - not (solana_validator_ha_runtime_enabled | bool)
+    fail_msg: >-
+      solana-validator-ha runtime must be enabled through the cluster-aware
+      pb_reconcile_validator_ha_cluster.yml flow, not through single-host validator
+      setup or pb_setup_validator_ha.yml.
+
 - name: solana_validator_ha - Install Solana Validator HA
-  when: solana_validator_ha_enabled | bool
+  when: solana_validator_ha_install_enabled | bool
   block:
     - name: solana_validator_ha - Install runtime prerequisites
       ansible.builtin.apt:
@@ -103,7 +119,3 @@
     - name: solana_validator_ha - Verify installed binary is executable
       ansible.builtin.command: "{{ solana_validator_ha_binary_path }} --help"
       changed_when: false
-
-    - name: solana_validator_ha - Configure runtime integration
-      ansible.builtin.include_tasks: configure_runtime.yml
-      when: solana_validator_ha_runtime_enabled | bool

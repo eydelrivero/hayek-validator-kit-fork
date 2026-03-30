@@ -2,7 +2,8 @@
 # Solana Validator HA Setup
 # ------------------------
 # Installs or upgrades solana-validator-ha on an existing Hayek validator host.
-# Optionally renders the runtime config, wrapper scripts, and systemd services.
+# This playbook is intentionally install-only. Use pb_reconcile_validator_ha_cluster.yml
+# for cluster-aware HA runtime staging and enablement.
 #
 # Usage:
 # ------
@@ -18,34 +19,11 @@
 #   -e "solana_validator_ha_version=0.1.19" \
 #   -K
 #
-# install binary and enable HA runtime
-# ansible-playbook playbooks/pb_setup_validator_ha.yml \
-#   -i solana_localnet.yml \
-#   --limit host-alpha \
-#   -e "target_host=host-alpha" \
-#   -e "ansible_user=bob" \
-#   -e "validator_name=demo1" \
-#   -e "solana_validator_ha_runtime_enabled=true" \
-#   -e "solana_validator_ha_public_ip_value=192.168.100.11" \
-#   -e '{"solana_validator_ha_pair_hosts":["host-alpha","host-bravo"]}' \
-#   -e '{"solana_validator_ha_cluster_rpc_urls":["http://192.168.100.13:8899","http://127.0.0.1:8899"]}' \
-#   -K
-#
 # Extended vars:
 # - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the pinned latest binary release in the role.
 # - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of using the published GitHub release binary.
-# - solana_validator_ha_runtime_enabled (OPTIONAL): Render and start the solana-validator-ha runtime config and services.
-# - solana_validator_ha_node_name (OPTIONAL): Vanity node name written to the HA config. Usually superseded by solana_validator_ha_node_id for stable short naming.
-# - solana_validator_ha_node_id (OPTIONAL): Stable globally-unique HA short name for this host (for example ark, fog, ice).
-# - solana_validator_ha_priority (OPTIONAL): Deterministic failover priority for this host; lower value wins.
-# - solana_validator_ha_public_ip_value (OPTIONAL for localnet, REQUIRED for non-localnet): Public IP written to the local public-ip helper file.
-# - solana_validator_ha_active_identity_path (OPTIONAL): Override the active identity keypair path written to the HA config.
-# - solana_validator_ha_passive_identity_path (OPTIONAL): Override the passive identity keypair path written to the HA config and startup symlink.
-# - solana_validator_ha_pair_hosts (OPTIONAL): Ordered list of HA hosts used to auto-derive node naming and peers.
-# - solana_validator_ha_inventory_group (OPTIONAL): Inventory group used to auto-derive node naming and peers.
-# - solana_validator_ha_peer_hostnames (OPTIONAL): Explicit peer inventory hostnames used to derive peer IPs when solana_validator_ha_peers is omitted.
-# - solana_validator_ha_peers (OPTIONAL): Mapping of peer validator names to IPs, excluding this node.
-# - solana_validator_ha_cluster_rpc_urls (OPTIONAL): RPC URLs used by solana-validator-ha for gossip state.
+# - solana_validator_ha_install_enabled (OPTIONAL): Install or upgrade the solana-validator-ha binary on the target host.
+# - HA runtime configuration, service enablement, peer wiring, and public-IP helper rollout are intentionally handled only by pb_reconcile_validator_ha_cluster.yml.
 
 - name: Install or configure Solana Validator HA on an existing validator host
   hosts: "{{ target_host }}"
@@ -112,48 +90,13 @@
           This playbook is intended for existing Hayek validator hosts.
       when: not validator_keyset_dir_stat.stat.isdir | default(false)
 
-    - name: Validate validator systemd service unit exists when runtime is enabled
-      ansible.builtin.stat:
-        path: "/etc/systemd/system/{{ validator_service_name }}.service"
-      register: validator_service_unit_stat
-      become: true
-      when: solana_validator_ha_runtime_enabled | default(false) | bool
-
-    - name: Fail if validator systemd service unit is missing when runtime is enabled
-      ansible.builtin.fail:
-        msg: >-
-          Validator systemd unit /etc/systemd/system/{{ validator_service_name }}.service was not found on
-          {{ inventory_hostname }}. Install the validator before enabling solana-validator-ha runtime wiring.
-      when:
-        - solana_validator_ha_runtime_enabled | default(false) | bool
-        - not validator_service_unit_stat.stat.exists | default(false)
-
-    - name: Validate required HA runtime peer inputs are defined
+    - name: Fail if single-host HA playbook is asked to enable runtime
       ansible.builtin.assert:
         that:
-          - >
-            (
-              solana_validator_ha_peers is defined and
-              solana_validator_ha_peers is mapping and
-              solana_validator_ha_peers | length > 0
-            ) or (
-              solana_validator_ha_peer_hostnames is defined and
-              solana_validator_ha_peer_hostnames | length > 0
-            ) or (
-              solana_validator_ha_pair_hosts is defined and
-              solana_validator_ha_pair_hosts | length > 1
-            ) or (
-              solana_validator_ha_inventory_group is defined and
-              solana_validator_ha_inventory_group | length > 0
-            ) or (
-              'solana_validator_ha_pair' in group_names
-            )
+          - not (solana_validator_ha_runtime_enabled | default(false) | bool)
         fail_msg: >-
-          Runtime-enabled HA setup requires either solana_validator_ha_peers,
-          solana_validator_ha_peer_hostnames, solana_validator_ha_pair_hosts,
-          solana_validator_ha_inventory_group, or membership in a solana_validator_ha_pair
-          inventory group so peers and node names can be derived automatically.
-      when: solana_validator_ha_runtime_enabled | default(false) | bool
+          pb_setup_validator_ha.yml is install-only. Use pb_reconcile_validator_ha_cluster.yml
+          to stage and enable solana-validator-ha runtime across the full HA group.
 
   roles:
     - role: solana_validator_ha

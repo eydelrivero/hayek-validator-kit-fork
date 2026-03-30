@@ -120,7 +120,7 @@
           on {{ inventory_hostname }}.
           Install it via the Agave/Jito validator setup before running the swap playbook.
       when: not solana_validator_ha_binary.stat.exists
-  when: solana_validator_ha_enabled | default(true) | bool
+  when: solana_validator_ha_install_enabled | default(true) | bool
 
 - name: precheck - Validate destination host validator status
   block:
