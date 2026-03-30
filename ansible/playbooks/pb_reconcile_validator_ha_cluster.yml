@@ -10,13 +10,14 @@
 #   -i solana_mainnet.yml \
 #   -e "target_ha_group=ha_hayek_mainnet" \
 #   -e "operator_user=bob" \
-#   -e "ha_reconcile_mode=in_place"
+#   -e "ha_reconcile_allow_decommission=true"
 #
-# Modes:
-# - in_place: desired membership matches the current cluster membership
-# - expand: desired membership is a superset of the previous cluster membership
-# - contract: desired membership is a subset of the previous cluster membership and
-#             removed members are decommissioned after the retained cluster converges
+# Desired-state model:
+# - target_ha_group: retained HA members after reconcile
+# - ha_reconcile_inventory_group_all (optional): explicit HA universe group
+# - otherwise the HA universe defaults to every host in the inventory
+# - removed members are inferred as (ha universe - target_ha_group)
+# - decommission of inferred removed members requires ha_reconcile_allow_decommission=true
 
 - name: Initialize HA reconcile controller state
   hosts: localhost
@@ -30,48 +31,17 @@
           - target_ha_group | string | trim | length > 0
           - operator_user is defined
           - operator_user | string | trim | length > 0
-          - ha_reconcile_mode | default('in_place') in ['expand', 'in_place', 'contract']
         fail_msg: >-
-          HA reconcile requires target_ha_group, operator_user, and ha_reconcile_mode
-          (expand, in_place, or contract).
+          HA reconcile requires target_ha_group and operator_user.
 
-    - name: Normalize HA reconcile optional host lists
+    - name: Normalize HA reconcile optional settings
       ansible.builtin.set_fact:
-        ha_reconcile_mode_effective: "{{ ha_reconcile_mode | default('in_place') }}"
         ha_reconcile_experimental_fake_peer_enabled_effective: >-
           {{ ha_reconcile_experimental_fake_peer_enabled | default(false) | bool }}
-        ha_reconcile_removed_hosts: >-
-          {{
-            []
-            if ha_removed_hosts is not defined
-            else (
-              [ha_removed_hosts | trim]
-              if (ha_removed_hosts is string)
-              else (
-                ha_removed_hosts
-                | map('string')
-                | map('trim')
-                | reject('equalto', '')
-                | list
-              )
-            )
-          }}
-        ha_reconcile_previous_hosts_requested: >-
-          {{
-            []
-            if ha_previous_hosts is not defined
-            else (
-              [ha_previous_hosts | trim]
-              if (ha_previous_hosts is string)
-              else (
-                ha_previous_hosts
-                | map('string')
-                | map('trim')
-                | reject('equalto', '')
-                | list
-              )
-            )
-          }}
+        ha_reconcile_allow_decommission_effective: >-
+          {{ ha_reconcile_allow_decommission | default(false) | bool }}
+        ha_reconcile_inventory_group_all_effective: >-
+          {{ ha_reconcile_inventory_group_all | default('') | string | trim }}
 
     - name: Assert HA target group exists
       ansible.builtin.assert:
@@ -84,7 +54,37 @@
       ansible.builtin.set_fact:
         ha_reconcile_target_hosts: "{{ groups[target_ha_group] | list }}"
 
-    - name: Assert desired HA target group has enough retained hosts for the selected mode
+    - name: Assert optional HA universe group exists
+      ansible.builtin.assert:
+        that:
+          - ha_reconcile_inventory_group_all_effective in groups
+        fail_msg: >-
+          ha_reconcile_inventory_group_all={{ ha_reconcile_inventory_group_all_effective }}
+          must exist in the inventory.
+      when: ha_reconcile_inventory_group_all_effective | length > 0
+
+    - name: Derive effective HA universe hosts from explicit group
+      ansible.builtin.set_fact:
+        ha_reconcile_all_hosts_effective: "{{ groups[ha_reconcile_inventory_group_all_effective] | list }}"
+      when: ha_reconcile_inventory_group_all_effective | length > 0
+
+    - name: Derive effective HA universe hosts from inventory
+      ansible.builtin.set_fact:
+        ha_reconcile_all_hosts_effective: "{{ groups['all'] | difference(['localhost']) | list }}"
+      when: ha_reconcile_inventory_group_all_effective | length == 0
+
+    - name: Assert desired retained hosts stay inside the HA universe
+      ansible.builtin.assert:
+        that:
+          - (ha_reconcile_target_hosts | difference(ha_reconcile_all_hosts_effective) | length) == 0
+        fail_msg: >-
+          target_ha_group={{ target_ha_group }} must be a subset of the effective HA universe.
+
+    - name: Derive inferred removed HA hosts
+      ansible.builtin.set_fact:
+        ha_reconcile_removed_hosts: "{{ ha_reconcile_all_hosts_effective | difference(ha_reconcile_target_hosts) }}"
+
+    - name: Assert desired HA target group has enough retained hosts
       ansible.builtin.assert:
         that:
           - ha_reconcile_target_hosts | length > 1
@@ -92,15 +92,24 @@
           target_ha_group={{ target_ha_group }} must contain at least two retained hosts.
       when: not (ha_reconcile_experimental_fake_peer_enabled_effective | bool)
 
-    - name: Assert experimental fake peer path is only used for singleton in-place or contract reconcile
+    - name: Assert experimental fake peer path is only used for singleton retained topology
       ansible.builtin.assert:
         that:
-          - ha_reconcile_mode_effective in ['in_place', 'contract']
           - ha_reconcile_target_hosts | length == 1
         fail_msg: >-
-          ha_reconcile_experimental_fake_peer_enabled is only supported for
-          ha_reconcile_mode in_place/contract with exactly one retained host.
+          ha_reconcile_experimental_fake_peer_enabled is only supported with exactly one retained host.
       when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
+
+    - name: Assert inferred removals require explicit decommission approval
+      ansible.builtin.assert:
+        that:
+          - ha_reconcile_allow_decommission_effective | bool
+        fail_msg: >-
+          Reconcile inferred removed HA hosts {{ ha_reconcile_removed_hosts | join(', ') }} from the
+          effective HA universe {{ ha_reconcile_all_hosts_effective | join(', ') }}. Re-run with
+          ha_reconcile_allow_decommission=true to decommission those hosts, or narrow the universe with
+          ha_reconcile_inventory_group_all.
+      when: ha_reconcile_removed_hosts | length > 0
 
     - name: Derive experimental fake peer defaults
       ansible.builtin.set_fact:
@@ -157,33 +166,6 @@
           }}
       when: ha_reconcile_experimental_fake_peer_enabled_effective | bool
 
-    - name: Assert contract mode provides removed hosts
-      ansible.builtin.assert:
-        that:
-          - ha_reconcile_removed_hosts | length > 0
-        fail_msg: >-
-          ha_reconcile_mode=contract requires ha_removed_hosts so the removed peers
-          can be decommissioned after the retained cluster converges.
-      when: ha_reconcile_mode_effective == 'contract'
-
-    - name: Assert non-contract modes do not provide removed hosts
-      ansible.builtin.assert:
-        that:
-          - ha_reconcile_removed_hosts | length == 0
-        fail_msg: >-
-          ha_removed_hosts is only valid when ha_reconcile_mode=contract.
-      when: ha_reconcile_mode_effective != 'contract'
-
-    - name: Assert removed hosts exist in inventory
-      ansible.builtin.assert:
-        that:
-          - item in hostvars
-        fail_msg: >-
-          Removed host {{ item }} is not present in the inventory.
-      loop: "{{ ha_reconcile_removed_hosts }}"
-      loop_control:
-        label: "{{ item }}"
-
     - name: Assert removed hosts are not retained in target_ha_group
       ansible.builtin.assert:
         that:
@@ -192,53 +174,6 @@
           Removed hosts must not also appear in target_ha_group={{ target_ha_group }}.
       when: ha_reconcile_removed_hosts | length > 0
 
-    - name: Derive effective previous HA membership
-      ansible.builtin.set_fact:
-        ha_reconcile_previous_hosts_effective: >-
-          {{
-            (
-              ha_reconcile_previous_hosts_requested
-              if (ha_reconcile_previous_hosts_requested | length > 0)
-              else (
-                (ha_reconcile_target_hosts + ha_reconcile_removed_hosts) | unique
-                if ha_reconcile_mode_effective == 'contract'
-                else ha_reconcile_target_hosts
-              )
-            )
-          }}
-
-    - name: Assert in-place reconcile keeps membership unchanged
-      ansible.builtin.assert:
-        that:
-          - (ha_reconcile_previous_hosts_effective | difference(ha_reconcile_target_hosts) | length) == 0
-          - (ha_reconcile_target_hosts | difference(ha_reconcile_previous_hosts_effective) | length) == 0
-        fail_msg: >-
-          ha_reconcile_mode=in_place requires the desired retained membership to match
-          the prior membership exactly.
-      when: ha_reconcile_mode_effective == 'in_place'
-
-    - name: Assert expand reconcile grows or preserves membership
-      ansible.builtin.assert:
-        that:
-          - ha_reconcile_previous_hosts_requested | length > 0
-          - (ha_reconcile_previous_hosts_effective | difference(ha_reconcile_target_hosts) | length) == 0
-        fail_msg: >-
-          ha_reconcile_mode=expand requires ha_previous_hosts and the desired retained
-          membership must be a superset of that prior membership.
-      when: ha_reconcile_mode_effective == 'expand'
-
-    - name: Assert contract reconcile shrinks membership
-      ansible.builtin.assert:
-        that:
-          - (ha_reconcile_target_hosts | difference(ha_reconcile_previous_hosts_effective) | length) == 0
-          - (ha_reconcile_removed_hosts | difference(ha_reconcile_previous_hosts_effective) | length) == 0
-          - (ha_reconcile_previous_hosts_effective | difference((ha_reconcile_target_hosts + ha_reconcile_removed_hosts) | unique) | length) == 0
-          - (ha_reconcile_previous_hosts_effective | length) > (ha_reconcile_target_hosts | length)
-        fail_msg: >-
-          ha_reconcile_mode=contract requires the prior membership to be exactly the
-          union of retained target_ha_group and ha_removed_hosts.
-      when: ha_reconcile_mode_effective == 'contract'
-
     - name: Register removed hosts as a dynamic decommission group
       ansible.builtin.add_host:
         name: "{{ item }}"
@@ -246,7 +181,7 @@
       loop: "{{ ha_reconcile_removed_hosts }}"
       loop_control:
         label: "{{ item }}"
-      when: ha_reconcile_mode_effective == 'contract'
+      when: ha_reconcile_removed_hosts | length > 0
 
     - name: Reset HA reconcile controller facts
       ansible.builtin.set_fact:
@@ -467,7 +402,7 @@
         - hostvars['localhost'].ha_reconcile_abort | default(false) | bool
         - inventory_hostname in (hostvars['localhost'].ha_reconcile_committed_hosts | default([]))
 
-- name: Decommission removed HA runtime members after successful contract reconcile
+- name: Decommission inferred removed HA runtime members after successful reconcile
   hosts: ha_reconcile_removed_members
   user: "{{ operator_user }}"
   become: false
@@ -500,7 +435,7 @@
     - name: Report successful HA reconcile
       ansible.builtin.debug:
         msg: >-
-          HA reconcile mode={{ ha_reconcile_mode_effective | default(ha_reconcile_mode | default('in_place')) }}
-          committed successfully for retained group {{ target_ha_group }}
-          with generation {{ ha_reconcile_generation }}.
+          HA reconcile committed successfully for retained group {{ target_ha_group }}
+          with inferred removed hosts {{ ha_reconcile_removed_hosts | default([]) | join(', ') | default('none', true) }}
+          and generation {{ ha_reconcile_generation }}.
       when: not (ha_reconcile_abort | default(false) | bool)
