@@ -118,12 +118,6 @@
     - "{{ agave_backup_release_dir }}"
   become: true
 
-- name: Remove existing Solana release payload before unarchive
-  ansible.builtin.file:
-    path: "{{ solana_installed_release_dir }}/solana-release"
-    state: absent
-  become: true
-
 - name: Fail when solana archive download is unavailable
   ansible.builtin.fail:
     msg: >-
