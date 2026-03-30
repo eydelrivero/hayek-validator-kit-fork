@@ -271,6 +271,7 @@
             | difference(
                 [
                   target_ha_group,
+                  'ha_reconcile_inventory_group_all',
                   hostvars['localhost'].ha_reconcile_inventory_group_all_effective | default(''),
                   'ha_reconcile_removed_members'
                 ]
