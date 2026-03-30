@@ -45,9 +45,8 @@
       🔍 Check for running validator process:
       ps aux | grep validator
 
-      📊 Monitor validator service:
-      sudo systemctl status {{ validator_service_name }}
-      sudo journalctl -u {{ validator_service_name }} -f
+      📊 Monitor validator startup:
+      agave-validator -l {{ ledger_path }} monitor
 
       🛠️ Also inspect service state if needed:
       sudo systemctl status {{ validator_service_name }}
@@ -56,8 +55,8 @@
       ⚡ View validator catchup status:
       solana catchup {{ solana_cluster_param }} --our-localhost 8899
 
-      🔍 Inspect recent service logs:
-      sudo journalctl -u {{ validator_service_name }} -n 200 --no-pager
+      🔍 Inspect logs:
+      tail -f {{ validator_logs_dir }}/agave-validator.log
 
       🛠️ Also inspect recent service logs if needed:
       sudo journalctl -u {{ validator_service_name }} -n 200 --no-pager
