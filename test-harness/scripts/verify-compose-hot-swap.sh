@@ -35,6 +35,9 @@ VERIFY_HA_RECONCILE_NOOP="${VERIFY_HA_RECONCILE_NOOP:-false}"
 PRE_SWAP_CATCHUP_TIMEOUT_SEC="${PRE_SWAP_CATCHUP_TIMEOUT_SEC:-180}"
 PRE_SWAP_TOWER_TIMEOUT_SEC="${PRE_SWAP_TOWER_TIMEOUT_SEC:-180}"
 LOCALNET_ENTRYPOINT_RPC_URL="${LOCALNET_ENTRYPOINT_RPC_URL:-http://gossip-entrypoint:8899}"
+PRE_SWAP_CLUSTER_STATE=""
+READY_SWAP_CLUSTER_STATE=""
+POST_SWAP_CLUSTER_STATE=""
 
 usage() {
   cat <<'EOF'
@@ -480,6 +483,75 @@ report_host_status() {
   printf '[hot-swap] %s %s catchup:\n%s\n' "$stage" "$host" "$catchup_snapshot" >&2
 }
 
+capture_cluster_state() {
+  local genesis_hash=""
+  local cluster_slot=""
+  local container_id=""
+  local container_started_at=""
+
+  genesis_hash="$(control_exec "solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' genesis-hash" | tail -n 1 | tr -d '\r')"
+  cluster_slot="$(control_exec "solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' slot" | tail -n 1 | tr -d '\r')"
+  container_id="$(compose_exec ps -q gossip-entrypoint | tail -n 1 | tr -d '\r')"
+  container_started_at="$("$COMPOSE_BIN" inspect --format '{{.State.StartedAt}}' "$container_id" | tail -n 1 | tr -d '\r')"
+
+  printf '%s\t%s\t%s\t%s\n' "$genesis_hash" "$cluster_slot" "$container_id" "$container_started_at"
+}
+
+report_cluster_state() {
+  local stage="$1"
+  local cluster_state="$2"
+  local genesis_hash=""
+  local cluster_slot=""
+  local container_id=""
+  local container_started_at=""
+
+  IFS=$'\t' read -r genesis_hash cluster_slot container_id container_started_at <<<"$cluster_state"
+  echo "[hot-swap] ${stage} cluster: genesis=${genesis_hash} slot=${cluster_slot} entrypoint=${container_id} started_at=${container_started_at}" >&2
+}
+
+assert_cluster_continuity() {
+  local previous_label="$1"
+  local previous_state="$2"
+  local current_label="$3"
+  local current_state="$4"
+  local previous_genesis=""
+  local previous_slot=""
+  local previous_container_id=""
+  local previous_container_started_at=""
+  local current_genesis=""
+  local current_slot=""
+  local current_container_id=""
+  local current_container_started_at=""
+
+  IFS=$'\t' read -r previous_genesis previous_slot previous_container_id previous_container_started_at <<<"$previous_state"
+  IFS=$'\t' read -r current_genesis current_slot current_container_id current_container_started_at <<<"$current_state"
+
+  if [[ "$current_genesis" != "$previous_genesis" ]]; then
+    echo "Cluster genesis hash changed between ${previous_label} and ${current_label}: ${previous_genesis} -> ${current_genesis}" >&2
+    exit 1
+  fi
+
+  if [[ "$current_container_id" != "$previous_container_id" ]]; then
+    echo "Gossip entrypoint container changed between ${previous_label} and ${current_label}: ${previous_container_id} -> ${current_container_id}" >&2
+    exit 1
+  fi
+
+  if [[ "$current_container_started_at" != "$previous_container_started_at" ]]; then
+    echo "Gossip entrypoint start time changed between ${previous_label} and ${current_label}: ${previous_container_started_at} -> ${current_container_started_at}" >&2
+    exit 1
+  fi
+
+  if ! [[ "$previous_slot" =~ ^[0-9]+$ && "$current_slot" =~ ^[0-9]+$ ]]; then
+    echo "Cluster slot snapshots were not numeric between ${previous_label} and ${current_label}: ${previous_slot} -> ${current_slot}" >&2
+    exit 1
+  fi
+
+  if (( current_slot < previous_slot )); then
+    echo "Cluster slot went backwards between ${previous_label} and ${current_label}: ${previous_slot} -> ${current_slot}" >&2
+    exit 1
+  fi
+}
+
 assert_host_ha_runtime_config() {
   local host="$1"
   local expected_node_id="$2"
@@ -554,6 +626,8 @@ assert_host_client "$DESTINATION_HOST" "$DESTINATION_FLAVOR"
 echo "[hot-swap] Reporting pre-swap identity and catchup status..." >&2
 report_host_status "pre-swap" "$SOURCE_HOST"
 report_host_status "pre-swap" "$DESTINATION_HOST"
+PRE_SWAP_CLUSTER_STATE="$(capture_cluster_state)"
+report_cluster_state "pre-swap" "$PRE_SWAP_CLUSTER_STATE"
 echo "[hot-swap] Waiting for validators to finish catchup..." >&2
 wait_for_host_validator_catchup "$SOURCE_HOST"
 wait_for_host_validator_catchup "$DESTINATION_HOST"
@@ -562,6 +636,9 @@ wait_for_source_tower_file
 echo "[hot-swap] Reporting ready-to-swap identity and catchup status..." >&2
 report_host_status "ready" "$SOURCE_HOST"
 report_host_status "ready" "$DESTINATION_HOST"
+READY_SWAP_CLUSTER_STATE="$(capture_cluster_state)"
+report_cluster_state "ready" "$READY_SWAP_CLUSTER_STATE"
+assert_cluster_continuity "pre-swap" "$PRE_SWAP_CLUSTER_STATE" "ready" "$READY_SWAP_CLUSTER_STATE"
 
 echo "[hot-swap] Executing pb_hot_swap_validator_hosts_v2..." >&2
 ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_hot_swap_validator_hosts_v2.yml' -e source_host=$SOURCE_HOST -e destination_host=$DESTINATION_HOST -e operator_user=$OPERATOR_USER -e auto_confirm_swap=true -e deprovision_source_host=false -e swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC"
@@ -571,6 +648,9 @@ assert_swap_identity_state
 echo "[hot-swap] Reporting post-swap identity and catchup status..." >&2
 report_host_status "post-swap" "$SOURCE_HOST"
 report_host_status "post-swap" "$DESTINATION_HOST"
+POST_SWAP_CLUSTER_STATE="$(capture_cluster_state)"
+report_cluster_state "post-swap" "$POST_SWAP_CLUSTER_STATE"
+assert_cluster_continuity "ready" "$READY_SWAP_CLUSTER_STATE" "post-swap" "$POST_SWAP_CLUSTER_STATE"
 
 echo "[hot-swap] Verifying post-swap client flavors remain intact..." >&2
 assert_host_validator_runtime "$SOURCE_HOST"
