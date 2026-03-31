@@ -325,8 +325,8 @@ assert_host_ha_runtime_config() {
 assert_swap_identity_state() {
   local source_cmd
   local destination_cmd
-  source_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
-  destination_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
+  source_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
+  destination_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
 
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$SOURCE_HOST' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$source_cmd\" -o"
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$DESTINATION_HOST' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$destination_cmd\" -o"

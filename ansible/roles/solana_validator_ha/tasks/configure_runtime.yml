@@ -2,20 +2,10 @@
 - name: solana_validator_ha - Prepare runtime variables
   ansible.builtin.import_tasks: prepare_runtime_vars.yml
 
-- name: solana_validator_ha - Keep persistent startup identity passive
-  ansible.builtin.file:
-    src: "{{ solana_validator_ha_passive_identity_path }}"
-    dest: "{{ validator_keyset_dir }}/identity.json"
-    state: link
-    force: true
-  become: true
-
-- name: solana_validator_ha - Set ownership on persistent startup identity symlink
+- name: solana_validator_ha - Remove legacy startup identity symlink
   ansible.builtin.file:
     path: "{{ validator_keyset_dir }}/identity.json"
-    owner: "{{ solana_user }}"
-    group: "{{ validator_operators_group }}"
-    follow: false
+    state: absent
   become: true
 
 - name: solana_validator_ha - Ensure runtime configuration directory exists

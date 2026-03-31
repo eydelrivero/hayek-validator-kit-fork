@@ -2762,8 +2762,8 @@ apply_pre_swap_injection() {
 assert_swap_identity_state() {
   local source_cmd
   local destination_cmd
-  source_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
-  destination_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/identity.json\"); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
+  source_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
+  destination_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
 
   ansible "vm-source" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b -m shell -a "$source_cmd" -o
 
@@ -2781,7 +2781,7 @@ capture_host_identity_state() {
   local primary_key
   local hot_key
 
-  cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; pubkey_or_missing() { f=\"\$1\"; if [ -f \"\$f\" ]; then /opt/solana/active_release/bin/solana-keygen pubkey \"\$f\"; else printf 'missing\\n'; fi; }; run=\$(pubkey_or_missing \"\$kdir/identity.json\"); primary=\$(pubkey_or_missing \"\$kdir/primary-target-identity.json\"); hot=\$(pubkey_or_missing \"\$kdir/hot-spare-identity.json\"); printf '%s\\t%s\\t%s\\n' \"\$run\" \"\$primary\" \"\$hot\""
+  cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; pubkey_or_missing() { f=\"\$1\"; if [ -f \"\$f\" ]; then /opt/solana/active_release/bin/solana-keygen pubkey \"\$f\"; else printf 'missing\\n'; fi; }; runtime_or_missing() { runtime=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info 2>/dev/null | awk '/^Identity:/ { print \$2; exit }' || true); if [ -n \"\$runtime\" ]; then printf '%s\\n' \"\$runtime\"; else printf 'missing\\n'; fi; }; run=\$(runtime_or_missing); primary=\$(pubkey_or_missing \"\$kdir/primary-target-identity.json\"); hot=\$(pubkey_or_missing \"\$kdir/hot-spare-identity.json\"); printf '%s\\t%s\\t%s\\n' \"\$run\" \"\$primary\" \"\$hot\""
   output="$(
     ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
       -m shell -a "$cmd" -o 2>/dev/null | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' || true
@@ -3002,18 +3002,18 @@ Localnet Entrypoint Reachability
 - Destination VM: ${ENTRYPOINT_PREFLIGHT_VM_DESTINATION} (${ENTRYPOINT_PREFLIGHT_DETAILS_VM_DESTINATION:-not checked})
 
 Identity State Before Swap
-- Source identity.json: ${SOURCE_IDENTITY_BEFORE:-not captured}
+- Source runtime identity: ${SOURCE_IDENTITY_BEFORE:-not captured}
 - Source primary-target-identity.json: ${SOURCE_PRIMARY_TARGET_BEFORE:-not captured}
 - Source hot-spare-identity.json: ${SOURCE_HOT_SPARE_BEFORE:-not captured}
-- Destination identity.json: ${DESTINATION_IDENTITY_BEFORE:-not captured}
+- Destination runtime identity: ${DESTINATION_IDENTITY_BEFORE:-not captured}
 - Destination primary-target-identity.json: ${DESTINATION_PRIMARY_TARGET_BEFORE:-not captured}
 - Destination hot-spare-identity.json: ${DESTINATION_HOT_SPARE_BEFORE:-not captured}
 
 Identity State After Swap
-- Source identity.json: ${SOURCE_IDENTITY_AFTER:-not captured}
+- Source runtime identity: ${SOURCE_IDENTITY_AFTER:-not captured}
 - Source primary-target-identity.json: ${SOURCE_PRIMARY_TARGET_AFTER:-not captured}
 - Source hot-spare-identity.json: ${SOURCE_HOT_SPARE_AFTER:-not captured}
-- Destination identity.json: ${DESTINATION_IDENTITY_AFTER:-not captured}
+- Destination runtime identity: ${DESTINATION_IDENTITY_AFTER:-not captured}
 - Destination primary-target-identity.json: ${DESTINATION_PRIMARY_TARGET_AFTER:-not captured}
 - Destination hot-spare-identity.json: ${DESTINATION_HOT_SPARE_AFTER:-not captured}
 
