@@ -32,6 +32,9 @@ SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
 VERIFY_HA_RECONCILE_ONLY="${VERIFY_HA_RECONCILE_ONLY:-false}"
 VERIFY_HA_RECONCILE_NOOP="${VERIFY_HA_RECONCILE_NOOP:-false}"
+PRE_SWAP_CATCHUP_TIMEOUT_SEC="${PRE_SWAP_CATCHUP_TIMEOUT_SEC:-180}"
+PRE_SWAP_TOWER_TIMEOUT_SEC="${PRE_SWAP_TOWER_TIMEOUT_SEC:-180}"
+LOCALNET_ENTRYPOINT_RPC_URL="${LOCALNET_ENTRYPOINT_RPC_URL:-http://gossip-entrypoint:8899}"
 
 usage() {
   cat <<'EOF'
@@ -135,6 +138,20 @@ compose_exec() {
 control_exec() {
   local cmd="$1"
   compose_exec exec -T ansible-control-localnet bash -lc "$cmd"
+}
+
+host_exec() {
+  local host="$1"
+  local cmd="$2"
+  compose_exec exec -T "$host" bash -lc "$cmd"
+}
+
+host_exec_as_solana() {
+  local host="$1"
+  local cmd="$2"
+  local quoted_cmd
+  printf -v quoted_cmd '%q' "$cmd"
+  host_exec "$host" "sudo -n -u sol bash -lc $quoted_cmd"
 }
 
 container_path() {
@@ -260,6 +277,17 @@ reconcile_validator_ha_cluster() {
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml' -e target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP -e operator_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e solana_cluster=$SOLANA_CLUSTER -e ha_enforce_hostname_prefix=false"
 }
 
+ensure_localnet_demo_validator_accounts() {
+  local init_cmd
+
+  if [[ "$SOLANA_CLUSTER" != "localnet" ]]; then
+    return 0
+  fi
+
+  init_cmd="set -eu; payer_key=\"\$HOME/.config/solana/id.json\"; keys_dir='$CONTAINER_REPO_ROOT/solana-localnet/validator-keys/$VALIDATOR_NAME'; primary_key=\"\$keys_dir/primary-target-identity.json\"; vote_key=\"\$keys_dir/vote-account.json\"; withdrawer_key=\"\$keys_dir/authorized-withdrawer.json\"; stake_key=\"\$keys_dir/stake-account.json\"; vote_pubkey=\$(solana-keygen pubkey \"\$vote_key\"); if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$vote_pubkey\" >/dev/null 2>&1; then exit 0; fi; echo '[hot-swap] Initializing localnet vote/stake accounts for $VALIDATOR_NAME...' >&2; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" airdrop 500000 >/dev/null || true; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$primary_key\" airdrop 42 >/dev/null || true; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" create-vote-account \"\$vote_key\" \"\$primary_key\" \"\$withdrawer_key\" >/dev/null; if [ -f \"\$stake_key\" ]; then stake_pubkey=\$(solana-keygen pubkey \"\$stake_key\"); if ! solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$stake_pubkey\" >/dev/null 2>&1; then solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" create-stake-account \"\$stake_key\" 200000 >/dev/null || true; fi; if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$stake_pubkey\" >/dev/null 2>&1; then solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" delegate-stake \"\$stake_key\" \"\$vote_key\" --force >/dev/null || true; fi; fi; for _ in \$(seq 1 30); do if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$vote_pubkey\" >/dev/null 2>&1; then exit 0; fi; sleep 1; done; echo \"Localnet vote account \$vote_pubkey was not visible on $LOCALNET_ENTRYPOINT_RPC_URL after initialization.\" >&2; exit 1"
+  control_exec "$init_cmd"
+}
+
 host_systemd_main_pid() {
   local host="$1"
   local service="$2"
@@ -333,6 +361,125 @@ promote_host_runtime_identity_to_primary() {
   return 1
 }
 
+wait_for_host_validator_catchup() {
+  local host="$1"
+  local catchup_cmd
+  local journal_cmd
+  local output=""
+  local journal_output=""
+  local rc=0
+
+  catchup_cmd="set -eu; export PATH='/opt/solana/active_release/bin:'\"\$PATH\"; timeout ${PRE_SWAP_CATCHUP_TIMEOUT_SEC}s solana catchup -u '$LOCALNET_ENTRYPOINT_RPC_URL' --our-localhost 8899"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 120 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
+
+  output="$(host_exec_as_solana "$host" "$catchup_cmd" 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    journal_output="$(host_exec "$host" "$journal_cmd" 2>&1 || true)"
+    if [[ -z "$journal_output" ]]; then
+      journal_output="catchup diagnostic probe failed with no output"
+    fi
+    echo "Host $host did not reach catchup against ${LOCALNET_ENTRYPOINT_RPC_URL} within ${PRE_SWAP_CATCHUP_TIMEOUT_SEC}s." >&2
+    echo "$output" >&2
+    echo "$journal_output" >&2
+    return 1
+  fi
+}
+
+wait_for_source_tower_file() {
+  local pubkey_cmd
+  local tower_path=""
+  local remaining=0
+  local test_cmd=""
+  local list_cmd=""
+  local journal_cmd
+  local output=""
+  local journal_output=""
+  local rc=0
+
+  pubkey_cmd="set -eu; /opt/solana/active_release/bin/solana-keygen pubkey '/opt/validator/keys/$VALIDATOR_NAME/primary-target-identity.json'"
+  output="$(host_exec_as_solana "$SOURCE_HOST" "$pubkey_cmd" 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    echo "Failed to resolve source primary identity pubkey before tower check." >&2
+    echo "$output" >&2
+    return 1
+  fi
+
+  tower_path="/mnt/ledger/tower-1_9-$(printf '%s\n' "$output" | tail -n 1 | tr -d '\r').bin"
+  test_cmd="sudo -n -u sol test -s '$tower_path'"
+  list_cmd="sudo -n -u sol ls -l '$(dirname "$tower_path")' 2>/dev/null || true"
+  journal_cmd="set -eu; journalctl -u sol -n 120 --no-pager || true; printf -- '\n-- validator log tail --\n'; tail -n 120 /opt/validator/logs/agave-validator.log 2>/dev/null || true"
+
+  remaining=$PRE_SWAP_TOWER_TIMEOUT_SEC
+  while (( remaining > 0 )); do
+    if host_exec "$SOURCE_HOST" "$test_cmd" >/dev/null 2>&1; then
+      echo "[hot-swap] Source tower file ready: $tower_path" >&2
+      return 0
+    fi
+    sleep 2
+    remaining=$((remaining - 2))
+  done
+
+  output="$tower_path"$'\n'"$(host_exec "$SOURCE_HOST" "$list_cmd" 2>&1 || true)"
+  journal_output="$(host_exec "$SOURCE_HOST" "$journal_cmd" 2>&1 || true)"
+  if [[ -z "$journal_output" ]]; then
+    journal_output="tower diagnostic probe failed with no output"
+  fi
+  echo "Source validator did not produce a tower file within ${PRE_SWAP_TOWER_TIMEOUT_SEC}s." >&2
+  echo "$output" >&2
+  echo "$journal_output" >&2
+  return 1
+
+}
+
+capture_host_identity_state() {
+  local host="$1"
+  local cmd
+  local output=""
+  local run_key="unavailable"
+  local primary_key="unavailable"
+  local hot_key="unavailable"
+
+  cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; pubkey_or_missing() { f=\"\$1\"; if [ -f \"\$f\" ]; then /opt/solana/active_release/bin/solana-keygen pubkey \"\$f\"; else printf 'missing\\n'; fi; }; runtime_or_missing() { runtime=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info 2>/dev/null | awk '/^Identity:/ { print \$2; exit }' || true); if [ -n \"\$runtime\" ]; then printf '%s\\n' \"\$runtime\"; else printf 'missing\\n'; fi; }; run=\$(runtime_or_missing); primary=\$(pubkey_or_missing \"\$kdir/primary-target-identity.json\"); hot=\$(pubkey_or_missing \"\$kdir/hot-spare-identity.json\"); printf '%s\\t%s\\t%s\\n' \"\$run\" \"\$primary\" \"\$hot\""
+  output="$(host_exec_as_solana "$host" "$cmd" 2>/dev/null || true)"
+
+  if [[ -n "$output" ]]; then
+    IFS=$'\t' read -r run_key primary_key hot_key <<<"$output"
+  fi
+
+  printf '%s\t%s\t%s\n' "$run_key" "$primary_key" "$hot_key"
+}
+
+capture_single_host_catchup_snapshot() {
+  local host="$1"
+  local catchup_cmd
+  local output=""
+
+  catchup_cmd="set -eu; export PATH='/opt/solana/active_release/bin:'\"\$PATH\"; timeout 20s solana catchup -u '$LOCALNET_ENTRYPOINT_RPC_URL' --our-localhost 8899"
+  output="$(host_exec_as_solana "$host" "$catchup_cmd" 2>&1 || true)"
+  if [[ -z "$output" ]]; then
+    output="No catchup output captured."
+  fi
+
+  printf '%s\n' "$output" | sed -n '1,40p'
+}
+
+report_host_status() {
+  local stage="$1"
+  local host="$2"
+  local identity_state=""
+  local runtime_key=""
+  local primary_key=""
+  local hot_key=""
+  local catchup_snapshot=""
+
+  identity_state="$(capture_host_identity_state "$host")"
+  IFS=$'\t' read -r runtime_key primary_key hot_key <<<"$identity_state"
+  catchup_snapshot="$(capture_single_host_catchup_snapshot "$host")"
+
+  echo "[hot-swap] ${stage} ${host} identity: runtime=${runtime_key} primary=${primary_key} hot-spare=${hot_key}" >&2
+  printf '[hot-swap] %s %s catchup:\n%s\n' "$stage" "$host" "$catchup_snapshot" >&2
+}
+
 assert_host_ha_runtime_config() {
   local host="$1"
   local expected_node_id="$2"
@@ -358,6 +505,7 @@ assert_swap_identity_state() {
 
 trap '[[ -n "$HA_INVENTORY_PATH" ]] && rm -f "$HA_INVENTORY_PATH"' EXIT
 build_ha_inventory
+ensure_localnet_demo_validator_accounts
 
 echo "[hot-swap] Preparing host prerequisites..." >&2
 ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/test-harness/ansible/pb_prepare_hot_swap_test_hosts.yml' --limit '$SOURCE_HOST,$DESTINATION_HOST' -e target_hosts='$SOURCE_HOST,$DESTINATION_HOST' -e operator_user=$OPERATOR_USER"
@@ -403,12 +551,26 @@ assert_host_validator_runtime "$SOURCE_HOST"
 assert_host_validator_runtime "$DESTINATION_HOST"
 assert_host_client "$SOURCE_HOST" "$SOURCE_FLAVOR"
 assert_host_client "$DESTINATION_HOST" "$DESTINATION_FLAVOR"
+echo "[hot-swap] Reporting pre-swap identity and catchup status..." >&2
+report_host_status "pre-swap" "$SOURCE_HOST"
+report_host_status "pre-swap" "$DESTINATION_HOST"
+echo "[hot-swap] Waiting for validators to finish catchup..." >&2
+wait_for_host_validator_catchup "$SOURCE_HOST"
+wait_for_host_validator_catchup "$DESTINATION_HOST"
+echo "[hot-swap] Waiting for source validator tower file..." >&2
+wait_for_source_tower_file
+echo "[hot-swap] Reporting ready-to-swap identity and catchup status..." >&2
+report_host_status "ready" "$SOURCE_HOST"
+report_host_status "ready" "$DESTINATION_HOST"
 
 echo "[hot-swap] Executing pb_hot_swap_validator_hosts_v2..." >&2
 ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_hot_swap_validator_hosts_v2.yml' -e source_host=$SOURCE_HOST -e destination_host=$DESTINATION_HOST -e operator_user=$OPERATOR_USER -e auto_confirm_swap=true -e deprovision_source_host=false -e swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC"
 
 echo "[hot-swap] Verifying post-swap identity state..." >&2
 assert_swap_identity_state
+echo "[hot-swap] Reporting post-swap identity and catchup status..." >&2
+report_host_status "post-swap" "$SOURCE_HOST"
+report_host_status "post-swap" "$DESTINATION_HOST"
 
 echo "[hot-swap] Verifying post-swap client flavors remain intact..." >&2
 assert_host_validator_runtime "$SOURCE_HOST"
