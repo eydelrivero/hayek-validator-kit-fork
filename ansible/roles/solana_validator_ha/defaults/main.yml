@@ -30,6 +30,7 @@ solana_validator_ha_pair_hosts: []
 solana_validator_ha_peer_hostnames: []
 solana_validator_ha_active_identity_path: "{{ validator_keyset_dir ~ '/primary-target-identity.json' }}"
 solana_validator_ha_passive_identity_path: "{{ validator_keyset_dir ~ '/hot-spare-identity.json' }}"
+solana_validator_ha_legacy_identity_symlink_path: "{{ validator_keyset_dir ~ '/identity.json' }}"
 solana_validator_ha_public_ip_bind_host: "127.0.0.1"
 solana_validator_ha_public_ip_port: 8079
 # Set explicitly for non-localnet environments. Localnet falls back to ansible_host/default IPv4.

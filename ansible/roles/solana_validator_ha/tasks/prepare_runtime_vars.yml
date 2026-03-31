@@ -7,6 +7,47 @@
     - validator_keys_dir is defined
     - validator_name is defined
 
+- name: solana_validator_ha - Assert validator keyset directory is known
+  ansible.builtin.assert:
+    that:
+      - validator_keyset_dir is defined
+      - validator_keyset_dir | string | trim | length > 0
+    fail_msg: >-
+      validator_keyset_dir must be defined before configuring solana-validator-ha runtime.
+      Set validator_keyset_dir directly or provide validator_keys_dir and validator_name.
+
+- name: solana_validator_ha - Assert explicit active and passive identity paths are configured
+  ansible.builtin.assert:
+    that:
+      - solana_validator_ha_active_identity_path | string | trim | length > 0
+      - solana_validator_ha_passive_identity_path | string | trim | length > 0
+    fail_msg: >-
+      solana-validator-ha runtime requires explicit primary-target and hot-spare identity paths.
+      Refusing to rely on the legacy identity.json symlink.
+
+- name: solana_validator_ha - Check explicit active and passive identity files exist
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - label: active
+      path: "{{ solana_validator_ha_active_identity_path }}"
+    - label: passive
+      path: "{{ solana_validator_ha_passive_identity_path }}"
+  register: solana_validator_ha_identity_files
+  changed_when: false
+  become: true
+
+- name: solana_validator_ha - Assert explicit active and passive identity files exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+    fail_msg: >-
+      Expected {{ item.item.label }} validator identity file {{ item.item.path }} to exist before
+      solana-validator-ha runtime configuration.
+  loop: "{{ solana_validator_ha_identity_files.results }}"
+  loop_control:
+    label: "{{ item.item.label }}"
+
 - name: solana_validator_ha - Determine effective inventory group
   ansible.builtin.set_fact:
     solana_validator_ha_inventory_group_effective: >-
