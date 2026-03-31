@@ -1,0 +1,565 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=test-harness/lib/common.sh
+source "$REPO_ROOT/test-harness/lib/common.sh"
+
+COMMAND="${1:-}"
+shift || true
+
+JSON_OUTPUT=false
+VERBOSE=false
+
+TARGET=""
+SCENARIO=""
+RUN_ID="$(hvk_default_run_id)"
+WORKDIR="$REPO_ROOT/test-harness/work"
+TIMEOUT_SECONDS=""
+POLL_INTERVAL_SECONDS=""
+
+VERIFY_CMD=""
+RETAIN_ON_FAILURE=false
+RETAIN_ALWAYS=false
+SKIP_ARTIFACTS=false
+SKIP_DOWN=false
+
+PASSTHROUGH_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  hvk-test <command> [options]
+
+Commands:
+  list
+  describe
+  run
+  validate
+  up
+  inventory
+  wait
+  artifacts
+  down
+
+Global options:
+  --target <compose|vm|latitude>
+  --scenario <name>
+  --run-id <id>
+  --workdir <path>
+  --timeout-seconds <int>
+  --poll-interval-seconds <int>
+  --json
+  --verbose
+
+Run options:
+  --verify-cmd "<shell command>"
+  --retain-on-failure
+  --retain-always
+  --skip-artifacts
+  --skip-down
+
+Examples:
+  ./test-harness/bin/hvk-test list --json
+  ./test-harness/bin/hvk-test describe --target vm --scenario agave_only --json
+  ./test-harness/bin/hvk-test run --target compose --scenario agave_only
+EOF
+}
+
+log() {
+  if [[ "$JSON_OUTPUT" == false ]]; then
+    printf '%s\n' "$*" >&2
+  fi
+}
+
+debug() {
+  if [[ "$VERBOSE" == true ]]; then
+    printf '[hvk-test] %s\n' "$*" >&2
+  fi
+}
+
+die_usage() {
+  printf '%s\n' "$*" >&2
+  usage >&2
+  exit 2
+}
+
+json_bool() {
+  if [[ "${1:-false}" == "true" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+require_jq() {
+  hvk_require_cmd jq || {
+    echo "Missing required command: jq" >&2
+    exit 3
+  }
+}
+
+require_command() {
+  if [[ -z "$COMMAND" ]]; then
+    usage
+    exit 2
+  fi
+
+  case "$COMMAND" in
+    list|describe|run|validate|up|inventory|wait|artifacts|down)
+      ;;
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    *)
+      die_usage "Unknown command: $COMMAND"
+      ;;
+  esac
+}
+
+parse_args() {
+  while (($# > 0)); do
+    case "$1" in
+      --target)
+        TARGET="${2:-}"
+        shift 2
+        ;;
+      --scenario)
+        SCENARIO="${2:-}"
+        shift 2
+        ;;
+      --run-id)
+        RUN_ID="${2:-}"
+        shift 2
+        ;;
+      --workdir)
+        WORKDIR="${2:-}"
+        shift 2
+        ;;
+      --timeout-seconds)
+        TIMEOUT_SECONDS="${2:-}"
+        shift 2
+        ;;
+      --poll-interval-seconds)
+        POLL_INTERVAL_SECONDS="${2:-}"
+        shift 2
+        ;;
+      --verify-cmd)
+        VERIFY_CMD="${2:-}"
+        shift 2
+        ;;
+      --retain-on-failure)
+        RETAIN_ON_FAILURE=true
+        shift
+        ;;
+      --retain-always)
+        RETAIN_ALWAYS=true
+        shift
+        ;;
+      --skip-artifacts)
+        SKIP_ARTIFACTS=true
+        shift
+        ;;
+      --skip-down)
+        SKIP_DOWN=true
+        shift
+        ;;
+      --json)
+        JSON_OUTPUT=true
+        shift
+        ;;
+      --verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ "$COMMAND" == "list" ]]; then
+          die_usage "Unknown option for list: $1"
+        fi
+        PASSTHROUGH_ARGS+=("$1")
+        if [[ $# -ge 2 && "$2" != --* ]]; then
+          PASSTHROUGH_ARGS+=("$2")
+          shift 2
+        else
+          shift
+        fi
+        ;;
+    esac
+  done
+}
+
+target_script_path() {
+  case "$TARGET" in
+    compose|vm|latitude)
+      printf '%s/test-harness/targets/%s.sh\n' "$REPO_ROOT" "$TARGET"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+require_target() {
+  if [[ -z "$TARGET" ]]; then
+    die_usage "Missing required --target"
+  fi
+  if ! target_script_path >/dev/null; then
+    die_usage "Unsupported target: $TARGET"
+  fi
+}
+
+adapter_call() {
+  local action="$1"
+  local script
+  script="$(target_script_path)"
+  local args=()
+
+  debug "adapter action=$action target=$TARGET run_id=$RUN_ID"
+
+  if [[ -n "$SCENARIO" ]]; then
+    args+=(--scenario "$SCENARIO")
+  fi
+  if [[ -n "$RUN_ID" ]]; then
+    args+=(--run-id "$RUN_ID")
+  fi
+  if [[ -n "$WORKDIR" ]]; then
+    args+=(--workdir "$WORKDIR")
+  fi
+  if [[ -n "$TIMEOUT_SECONDS" ]]; then
+    args+=(--timeout-seconds "$TIMEOUT_SECONDS")
+  fi
+  if [[ -n "$POLL_INTERVAL_SECONDS" ]]; then
+    args+=(--poll-interval-seconds "$POLL_INTERVAL_SECONDS")
+  fi
+  args+=("${PASSTHROUGH_ARGS[@]}")
+
+  local output=""
+  local status=0
+  set +e
+  output="$("$script" "$action" "${args[@]}")"
+  status=$?
+  set -e
+
+  ADAPTER_OUTPUT="$output"
+  return "$status"
+}
+
+print_adapter_output() {
+  if [[ "$JSON_OUTPUT" == true ]]; then
+    printf '%s\n' "$ADAPTER_OUTPUT"
+  else
+    require_jq
+    printf '%s\n' "$ADAPTER_OUTPUT" | jq '.'
+  fi
+}
+
+scenario_list_json() {
+  local scenarios_json
+  scenarios_json="$(
+    {
+      for f in "$REPO_ROOT"/test-harness/scenarios/*.env; do
+        basename "$f" .env
+      done
+    } | sort | jq -R . | jq -s .
+  )"
+  printf '%s\n' "$scenarios_json"
+}
+
+vm_profiles_json() {
+  local profiles_json
+  profiles_json="$(
+    {
+      for f in "$REPO_ROOT"/test-harness/profiles/vm/*.env; do
+        basename "$f" .env
+      done
+    } | sort | jq -R . | jq -s .
+  )"
+  printf '%s\n' "$profiles_json"
+}
+
+list_command() {
+  require_jq
+  local scenarios_json vm_profiles_json_value
+  scenarios_json="$(scenario_list_json)"
+  vm_profiles_json_value="$(vm_profiles_json)"
+
+  if [[ "$JSON_OUTPUT" == true ]]; then
+    jq -cn \
+      --argjson scenarios "$scenarios_json" \
+      --argjson vm_profiles "$vm_profiles_json_value" \
+      '{
+        ok: true,
+        targets: ["compose", "vm", "latitude"],
+        scenarios: $scenarios,
+        profiles: {
+          vm: $vm_profiles
+        }
+      }'
+    return 0
+  fi
+
+  echo "Targets:"
+  echo "  - compose"
+  echo "  - vm"
+  echo "  - latitude"
+  echo
+  echo "Scenarios:"
+  jq -r '.[] | "  - " + .' <<<"$scenarios_json"
+  echo
+  echo "VM profiles:"
+  jq -r '.[] | "  - " + .' <<<"$vm_profiles_json_value"
+}
+
+dispatch_command() {
+  local action="$1"
+  require_target
+
+  if adapter_call "$action"; then
+    print_adapter_output
+    return 0
+  else
+    local status=$?
+    return "$status"
+  fi
+}
+
+vm_default_verify_flavor() {
+  case "$SCENARIO" in
+    agave_only)
+      printf 'agave\n'
+      ;;
+    agave_jito_shared_relayer)
+      printf 'jito-shared\n'
+      ;;
+    agave_jito_cohosted_relayer)
+      printf 'jito-cohosted\n'
+      ;;
+    agave_jito_bam)
+      printf 'jito-bam\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_default_verify() {
+  local inventory_path="$1"
+
+  if [[ "$TARGET" != "vm" ]]; then
+    debug "no default verify mapping for target=$TARGET"
+    return 0
+  fi
+
+  local flavor=""
+  if ! flavor="$(vm_default_verify_flavor)"; then
+    log "[hvk-test] No default verify mapping for vm scenario '$SCENARIO'; skipping verification."
+    return 0
+  fi
+
+  "$REPO_ROOT/test-harness/scripts/verify-vm-users-metal-validator.sh" \
+    --inventory "$inventory_path" \
+    --flavor "$flavor"
+}
+
+run_custom_verify() {
+  local inventory_path="$1"
+  export HVK_REPO_ROOT="$REPO_ROOT"
+  export HVK_TARGET="$TARGET"
+  export HVK_SCENARIO="$SCENARIO"
+  export HVK_RUN_ID="$RUN_ID"
+  export HVK_WORKDIR="$WORKDIR"
+  export HVK_INVENTORY_PATH="$inventory_path"
+  bash -lc "$VERIFY_CMD"
+}
+
+run_command() {
+  require_target
+  require_jq
+
+  if [[ -z "$SCENARIO" ]]; then
+    die_usage "Missing required --scenario"
+  fi
+
+  local started_at
+  started_at="$(date +%s)"
+  local inventory_path=""
+  local artifacts_path=""
+  local verify_ran=false
+  local should_down=true
+  local run_ok=false
+  local failure_code=1
+
+  cleanup() {
+    if [[ "$should_down" != true ]]; then
+      return 0
+    fi
+    if [[ "$SKIP_DOWN" == true || "$RETAIN_ALWAYS" == true ]]; then
+      return 0
+    fi
+    if [[ "$run_ok" == false && "$RETAIN_ON_FAILURE" == true ]]; then
+      return 0
+    fi
+    if [[ -z "$TARGET" ]]; then
+      return 0
+    fi
+
+    log "[hvk-test] down target=$TARGET run_id=$RUN_ID"
+    if adapter_call down; then
+      debug "down completed"
+    else
+      debug "down failed while cleaning up"
+    fi
+  }
+
+  trap cleanup EXIT
+
+  log "[hvk-test] validate target=$TARGET scenario=$SCENARIO run_id=$RUN_ID"
+  if adapter_call validate; then
+    :
+  else
+    failure_code=$?
+    return "$failure_code"
+  fi
+
+  log "[hvk-test] up"
+  if adapter_call up; then
+    :
+  else
+    failure_code=$?
+    return "$failure_code"
+  fi
+
+  log "[hvk-test] inventory"
+  if adapter_call inventory; then
+    :
+  else
+    failure_code=$?
+    return "$failure_code"
+  fi
+  inventory_path="$(jq -r '.inventory_path // empty' <<<"$ADAPTER_OUTPUT")"
+
+  log "[hvk-test] wait"
+  if adapter_call wait; then
+    :
+  else
+    failure_code=$?
+    return "$failure_code"
+  fi
+
+  if [[ -n "$VERIFY_CMD" ]]; then
+    log "[hvk-test] verify custom command"
+    verify_ran=true
+    if ! run_custom_verify "$inventory_path"; then
+      failure_code=5
+      return "$failure_code"
+    fi
+  else
+    if [[ "$TARGET" == "vm" ]]; then
+      log "[hvk-test] verify default vm scenario mapping"
+      verify_ran=true
+    fi
+    if ! run_default_verify "$inventory_path"; then
+      failure_code=5
+      return "$failure_code"
+    fi
+  fi
+
+  if [[ "$SKIP_ARTIFACTS" == false ]]; then
+    log "[hvk-test] artifacts"
+    if adapter_call artifacts; then
+      :
+    else
+      failure_code=$?
+      return "$failure_code"
+    fi
+    artifacts_path="$(jq -r '.artifacts_path // empty' <<<"$ADAPTER_OUTPUT")"
+  fi
+
+  run_ok=true
+  should_down=true
+
+  local duration_seconds
+  duration_seconds=$(( $(date +%s) - started_at ))
+
+  if [[ "$JSON_OUTPUT" == true ]]; then
+    local retained=false
+    if [[ "$SKIP_DOWN" == true || "$RETAIN_ALWAYS" == true ]]; then
+      retained=true
+    fi
+
+    jq -cn \
+      --arg target "$TARGET" \
+      --arg scenario "$SCENARIO" \
+      --arg run_id "$RUN_ID" \
+      --arg inventory_path "$inventory_path" \
+      --arg artifacts_path "$artifacts_path" \
+      --argjson verify_ran "$(json_bool "$verify_ran")" \
+      --argjson retained "$(json_bool "$retained")" \
+      --argjson duration_seconds "$duration_seconds" \
+      '{
+        ok: true,
+        target: $target,
+        scenario: $scenario,
+        run_id: $run_id,
+        inventory_path: $inventory_path,
+        artifacts_path: $artifacts_path,
+        verify_ran: $verify_ran,
+        retained: $retained,
+        duration_seconds: $duration_seconds
+      }'
+    return 0
+  fi
+
+  echo "Result: ok"
+  echo "Target: $TARGET"
+  echo "Scenario: $SCENARIO"
+  echo "Run ID: $RUN_ID"
+  if [[ -n "$inventory_path" ]]; then
+    echo "Inventory: $inventory_path"
+  fi
+  if [[ -n "$artifacts_path" ]]; then
+    echo "Artifacts: $artifacts_path"
+  fi
+  echo "Duration: ${duration_seconds}s"
+}
+
+require_command
+parse_args "$@"
+
+case "$COMMAND" in
+  list)
+    list_command
+    ;;
+  describe)
+    dispatch_command describe
+    ;;
+  validate)
+    dispatch_command validate
+    ;;
+  up)
+    dispatch_command up
+    ;;
+  inventory)
+    dispatch_command inventory
+    ;;
+  wait)
+    dispatch_command wait
+    ;;
+  artifacts)
+    dispatch_command artifacts
+    ;;
+  down)
+    dispatch_command down
+    ;;
+  run)
+    run_command
+    ;;
+esac
