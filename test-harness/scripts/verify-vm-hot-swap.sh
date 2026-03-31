@@ -2653,6 +2653,32 @@ wait_for_host_validator_runtime_ready() {
   exit 1
 }
 
+promote_host_runtime_identity_to_primary() {
+  local host="$1"
+  local promote_cmd
+  local output
+  local attempt
+  local rc=0
+
+  promote_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; key=\"\$kdir/primary-target-identity.json\"; remaining=180; while [ \"\$remaining\" -gt 0 ]; do if /opt/solana/active_release/bin/agave-validator -l /mnt/ledger set-identity \"\$key\" >/dev/null 2>&1; then exit 0; fi; sleep 2; remaining=\$((remaining - 2)); done; echo 'Timed out promoting runtime identity to primary-target-identity.json' >&2; exit 1"
+
+  for attempt in 1 2 3; do
+    rc=0
+    output="$(
+      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+        -m shell -a "$promote_cmd" -o 2>&1
+    )" || rc=$?
+    if (( rc == 0 )); then
+      return 0
+    fi
+    sleep 5
+  done
+
+  echo "Failed to promote runtime identity to primary on $host after multiple attempts." >&2
+  echo "$output" >&2
+  exit 1
+}
+
 wait_for_host_validator_catchup() {
   local host="$1"
   local rpc_url
@@ -3264,6 +3290,8 @@ if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
   echo "[vm-hot-swap] Prepared VM reuse: waiting for validator RPC warmup..." >&2
   wait_for_host_validator_runtime_ready "vm-source" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
   wait_for_host_validator_runtime_ready "vm-destination" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+  echo "[vm-hot-swap] Prepared VM reuse: promoting source runtime identity to primary..." >&2
+  promote_host_runtime_identity_to_primary "vm-source"
   SOURCE_SETUP_DURATION_SEC=0
   DESTINATION_SETUP_DURATION_SEC=0
 else
@@ -3274,6 +3302,9 @@ else
   ensure_localnet_entrypoint
   setup_host_flavor "vm-source" "$SOURCE_FLAVOR" "primary"
   assert_host_can_query_localnet_entrypoint "vm-source" "source"
+  assert_host_validator_runtime "vm-source"
+  echo "[vm-hot-swap] Promoting source runtime identity to primary..." >&2
+  promote_host_runtime_identity_to_primary "vm-source"
   SOURCE_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
   phase_start_ts="$(date +%s)"

@@ -2,9 +2,9 @@
 - name: solana_validator_ha - Prepare runtime variables
   ansible.builtin.import_tasks: prepare_runtime_vars.yml
 
-- name: solana_validator_ha - Remove legacy startup identity symlink
+- name: solana_validator_ha - Remove legacy identity.json symlink if present
   ansible.builtin.file:
-    path: "{{ validator_keyset_dir }}/identity.json"
+    path: "{{ solana_validator_ha_legacy_identity_symlink_path }}"
     state: absent
   become: true
 

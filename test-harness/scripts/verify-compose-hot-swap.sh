@@ -264,7 +264,7 @@ host_systemd_main_pid() {
   local host="$1"
   local service="$2"
   local pid_cmd
-  pid_cmd="set -euo pipefail; systemctl show '$service' --property MainPID --value"
+  pid_cmd="set -eu; systemctl show '$service' --property MainPID --value"
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$pid_cmd\" -o" \
     | awk -F' \\(stdout\\) ' 'NF > 1 { print $2 }' \
     | tail -n 1 \
@@ -288,7 +288,7 @@ assert_host_client() {
   local output
   local version_cmd
   expected_regex="$(expected_client_regex_for_flavor "$flavor")"
-  version_cmd="set -euo pipefail; bindir='/opt/solana/active_release/bin'; if [ -x \"\$bindir/solana\" ]; then \"\$bindir/solana\" --version; elif [ -x \"\$bindir/agave-validator\" ]; then \"\$bindir/agave-validator\" --version; elif [ -x \"\$bindir/solana-validator\" ]; then \"\$bindir/solana-validator\" --version; else echo 'No validator version command found in' \"\$bindir\" >&2; exit 1; fi"
+  version_cmd="set -eu; if [ -x /opt/solana/active_release/bin/solana ]; then /opt/solana/active_release/bin/solana --version; elif [ -x /opt/solana/active_release/bin/agave-validator ]; then /opt/solana/active_release/bin/agave-validator --version; elif [ -x /opt/solana/active_release/bin/solana-validator ]; then /opt/solana/active_release/bin/solana-validator --version; else echo 'No validator version command found in /opt/solana/active_release/bin' >&2; exit 1; fi"
   output="$(
     ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$version_cmd\" -o"
   )"
@@ -303,10 +303,34 @@ assert_host_validator_runtime() {
   local host="$1"
   local service_cmd
 
-  service_cmd="set -euo pipefail; systemctl is-active --quiet sol; status=\$(systemctl show sol --property=ActiveState --property=SubState --property=ExecMainStatus --value --no-pager | tr '\n' ' '); case \"\$status\" in *failed*|*inactive* ) echo \"Validator service unhealthy: \$status\" >&2; exit 1 ;; esac"
+  service_cmd="set -eu; systemctl is-active --quiet sol"
 
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$service_cmd\" -o" >/dev/null
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m wait_for -a 'host=127.0.0.1 port=8899 timeout=30 state=started' -o" >/dev/null
+}
+
+promote_host_runtime_identity_to_primary() {
+  local host="$1"
+  local promote_cmd
+  local attempt
+  local output=""
+  local rc=0
+  promote_cmd="set -eu; remaining=180; while [ \"\\\$remaining\" -gt 0 ]; do if /opt/solana/active_release/bin/agave-validator -l /mnt/ledger set-identity /opt/validator/keys/$VALIDATOR_NAME/primary-target-identity.json >/dev/null 2>&1; then exit 0; fi; sleep 2; remaining=\\\$((remaining - 2)); done; echo 'Timed out promoting runtime identity to primary-target-identity.json' >&2; exit 1"
+
+  for attempt in 1 2 3; do
+    rc=0
+    output="$(
+      ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$promote_cmd\" -o" 2>&1
+    )" || rc=$?
+    if (( rc == 0 )); then
+      return 0
+    fi
+    sleep 5
+  done
+
+  echo "Failed to promote runtime identity to primary on $host after multiple attempts." >&2
+  echo "$output" >&2
+  return 1
 }
 
 assert_host_ha_runtime_config() {
@@ -318,15 +342,15 @@ assert_host_ha_runtime_config() {
   local expected_peer_priority="$6"
   local config_cmd
 
-  config_cmd="set -euo pipefail; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_peer_priority}' \"\$cfg\" >/dev/null"
+  config_cmd="set -eu; cfg='/opt/validator/ha/config.yaml'; test -f \"\$cfg\"; grep -F 'name: \"${expected_node_id}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_priority}' \"\$cfg\" >/dev/null; grep -F '${expected_peer_node_id}:' \"\$cfg\" >/dev/null; grep -F 'ip: \"${expected_peer_ip}\"' \"\$cfg\" >/dev/null; grep -F 'priority: ${expected_peer_priority}' \"\$cfg\" >/dev/null"
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$config_cmd\" -o" >/dev/null
 }
 
 assert_swap_identity_state() {
   local source_cmd
   local destination_cmd
-  source_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
-  destination_cmd="set -euo pipefail; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
+  source_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); hot=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/hot-spare-identity.json\"); test \"\$run\" = \"\$hot\""
+  destination_cmd="set -eu; kdir='/opt/validator/keys/$VALIDATOR_NAME'; run=\$(/opt/solana/active_release/bin/agave-validator -l /mnt/ledger contact-info | awk '/^Identity:/ { print \$2; exit }'); primary=\$(/opt/solana/active_release/bin/solana-keygen pubkey \"\$kdir/primary-target-identity.json\"); test \"\$run\" = \"\$primary\""
 
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$SOURCE_HOST' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$source_cmd\" -o"
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$DESTINATION_HOST' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$destination_cmd\" -o"
@@ -340,6 +364,9 @@ ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAI
 
 echo "[hot-swap] Configuring source host $SOURCE_HOST ($SOURCE_FLAVOR)..." >&2
 setup_host_flavor "$SOURCE_HOST" "$SOURCE_FLAVOR" "primary"
+assert_host_validator_runtime "$SOURCE_HOST"
+echo "[hot-swap] Promoting source host $SOURCE_HOST to primary runtime identity..." >&2
+promote_host_runtime_identity_to_primary "$SOURCE_HOST"
 
 echo "[hot-swap] Configuring destination host $DESTINATION_HOST ($DESTINATION_FLAVOR)..." >&2
 setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare"
