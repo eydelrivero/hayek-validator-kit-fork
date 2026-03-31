@@ -27,6 +27,9 @@ SKIP_ARTIFACTS=false
 SKIP_DOWN=false
 
 PASSTHROUGH_ARGS=()
+RUN_CLEANUP_ACTIVE=false
+RUN_CLEANUP_SHOULD_DOWN=false
+RUN_CLEANUP_RUN_OK=false
 
 usage() {
   cat <<'EOF'
@@ -380,6 +383,31 @@ run_custom_verify() {
   bash -lc "$VERIFY_CMD"
 }
 
+run_cleanup() {
+  if [[ "$RUN_CLEANUP_ACTIVE" != true ]]; then
+    return 0
+  fi
+  if [[ "$RUN_CLEANUP_SHOULD_DOWN" != true ]]; then
+    return 0
+  fi
+  if [[ "$SKIP_DOWN" == true || "$RETAIN_ALWAYS" == true ]]; then
+    return 0
+  fi
+  if [[ "$RUN_CLEANUP_RUN_OK" == false && "$RETAIN_ON_FAILURE" == true ]]; then
+    return 0
+  fi
+  if [[ -z "$TARGET" ]]; then
+    return 0
+  fi
+
+  log "[hvk-test] down target=$TARGET run_id=$RUN_ID"
+  if adapter_call down; then
+    debug "down completed"
+  else
+    debug "down failed while cleaning up"
+  fi
+}
+
 run_command() {
   require_target
   require_jq
@@ -393,33 +421,12 @@ run_command() {
   local inventory_path=""
   local artifacts_path=""
   local verify_ran=false
-  local should_down=true
-  local run_ok=false
   local failure_code=1
 
-  cleanup() {
-    if [[ "$should_down" != true ]]; then
-      return 0
-    fi
-    if [[ "$SKIP_DOWN" == true || "$RETAIN_ALWAYS" == true ]]; then
-      return 0
-    fi
-    if [[ "$run_ok" == false && "$RETAIN_ON_FAILURE" == true ]]; then
-      return 0
-    fi
-    if [[ -z "$TARGET" ]]; then
-      return 0
-    fi
-
-    log "[hvk-test] down target=$TARGET run_id=$RUN_ID"
-    if adapter_call down; then
-      debug "down completed"
-    else
-      debug "down failed while cleaning up"
-    fi
-  }
-
-  trap cleanup EXIT
+  RUN_CLEANUP_ACTIVE=true
+  RUN_CLEANUP_SHOULD_DOWN=true
+  RUN_CLEANUP_RUN_OK=false
+  trap run_cleanup EXIT
 
   log "[hvk-test] validate target=$TARGET scenario=$SCENARIO run_id=$RUN_ID"
   if adapter_call validate; then
@@ -483,8 +490,8 @@ run_command() {
     artifacts_path="$(jq -r '.artifacts_path // empty' <<<"$ADAPTER_OUTPUT")"
   fi
 
-  run_ok=true
-  should_down=true
+  RUN_CLEANUP_RUN_OK=true
+  RUN_CLEANUP_SHOULD_DOWN=true
 
   local duration_seconds
   duration_seconds=$(( $(date +%s) - started_at ))
