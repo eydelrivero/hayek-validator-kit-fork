@@ -77,16 +77,6 @@ run_as_validator_user() {
   sudo -n -u "${CONFIG[user]}" bash -lc "$command"
 }
 
-set_identity_symlink() {
-  local target="$1"
-  rm -f "{{ validator_keyset_dir }}/identity.json"
-  ln -s "${target}" "{{ validator_keyset_dir }}/identity.json"
-}
-
-ensure_passive_startup_identity() {
-  set_identity_symlink "{{ solana_validator_ha_passive_identity_path }}"
-}
-
 remove_tower_file() {
   rm -f "${CONFIG[tower-file]}"
 }
@@ -124,26 +114,23 @@ set_active() {
   rpc_healthy || { log ERROR "local validator RPC is unhealthy; refusing active promotion"; return 1; }
 
   if [[ "$(rpc_identity)" == "${desired_pubkey}" ]]; then
-    ensure_passive_startup_identity
-    log INFO "validator already active with desired identity; persistent startup identity remains passive"
+    log INFO "validator already active with desired identity; service startup remains passive via hot-spare-identity.json"
     return 0
   fi
 
   remove_tower_file
   run_as_validator_user "$(set_identity_command)"
-  ensure_passive_startup_identity
-  log INFO "promoted validator to active identity ${desired_pubkey}; persistent startup identity remains passive"
+  log INFO "promoted validator to active identity ${desired_pubkey}; service startup remains passive via hot-spare-identity.json"
 }
 
 set_passive() {
   local desired_pubkey=""
 
-  set_identity_symlink "${CONFIG[identity-keyfile]}"
   desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
 
   if ! systemctl is-active "{{ validator_service_name }}" >/dev/null 2>&1; then
     remove_tower_file
-    log INFO "validator service is not active; persistent identity now passive"
+    log INFO "validator service is not active; next startup will use the passive hot-spare identity"
     return 0
   fi
 
@@ -159,7 +146,7 @@ set_passive() {
     return 0
   fi
 
-  log WARN "set-identity to passive failed; forcing service controls"
+  log WARN "set-identity to passive failed; forcing service controls so startup falls back to hot-spare"
   ensure_passive_via_service_controls
   remove_tower_file
 }

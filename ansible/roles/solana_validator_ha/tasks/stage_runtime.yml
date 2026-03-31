@@ -11,35 +11,10 @@
     state: directory
   become: true
 
-- name: solana_validator_ha - Inspect persistent startup identity symlink during staging
-  ansible.builtin.stat:
-    path: "{{ validator_keyset_dir }}/identity.json"
-    follow: false
-  register: solana_validator_ha_identity_symlink_state
-  changed_when: false
-  become: true
-
-- name: solana_validator_ha - Determine whether persistent startup identity symlink needs update
-  ansible.builtin.set_fact:
-    solana_validator_ha_identity_symlink_needs_update: >-
-      {{
-        (
-          not (solana_validator_ha_identity_symlink_state.stat.exists | default(false))
-        ) or (
-          not (solana_validator_ha_identity_symlink_state.stat.islnk | default(false))
-        ) or (
-          (solana_validator_ha_identity_symlink_state.stat.lnk_target | default('')) != solana_validator_ha_passive_identity_path
-        )
-      }}
-
-- name: solana_validator_ha - Keep persistent startup identity passive during staging
+- name: solana_validator_ha - Remove legacy startup identity symlink during staging
   ansible.builtin.file:
-    src: "{{ solana_validator_ha_passive_identity_path }}"
-    dest: "{{ validator_keyset_dir }}/identity.json"
-    state: link
-    force: true
-    follow: false
-  when: solana_validator_ha_identity_symlink_needs_update | bool
+    path: "{{ validator_keyset_dir }}/identity.json"
+    state: absent
   become: true
 
 - name: solana_validator_ha - Render role transition wrapper script during staging
