@@ -440,7 +440,9 @@
     destination_host_address: "{{ hostvars[destination_host]['ansible_host'] | default(hostvars[destination_host]['inventory_hostname'] | default(destination_host)) }}"
   run_once: true
 
-# Guarantee SSH access by adding ufw rule on destination_host only if not localnet
+# Optionally guarantee SSH access by adding a destination-side UFW rule for the
+# source host before the inter-host SSH probe. VM shared-bridge runs need this,
+# while compose/localnet flows can leave it disabled.
 - name: Ensure SSH access to destination_host by adding ufw rule on destination_host
   block:
     - name: prepare - Allow source_host SSH access to destination_host
@@ -461,12 +463,34 @@
         state: enabled
   become: true
   when:
-    - not solana_cluster == "localnet"
+    - manage_destination_ufw_peer_ssh_rule | default(false) | bool
     - inventory_hostname == destination_host
     - ansible_facts['os_family'] == 'Debian'
 
 - name: Robust SSH connectivity test from source_host to destination_host
   block:
+    - name: Optional debug hold before inter-host SSH probe
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.pause:
+        seconds: "{{ hot_swap_debug_hold_before_interhost_ssh_probe_sec | int }}"
+        prompt: |
+          Hot-swap debug hold before inter-host SSH probe is active.
+
+          Source host: {{ source_host }} ({{ source_host_address }})
+          Destination host: {{ destination_host }} ({{ destination_host_address }})
+          Operator user: {{ operator_user }}
+          Destination SSH port under test: {{ destination_host_port }}
+
+          The next step will try:
+          ssh -i {{ ssh_key_path }} -o BatchMode=yes -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+            -p {{ destination_host_port }} {{ operator_user }}@{{ destination_host_address }} 'exit 0'
+
+          Inspect the retained VMs now. The playbook will resume automatically when the timer expires.
+      when:
+        - (hot_swap_debug_hold_before_interhost_ssh_probe_sec | default(0) | int) > 0
+
     - name: Run SSH command from source_host to destination_host on inventory port
       ansible.builtin.shell: >
         ssh -i {{ ssh_key_path }} -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p {{ destination_host_port }} {{ operator_user }}@{{ destination_host_address }} 'exit 0'
