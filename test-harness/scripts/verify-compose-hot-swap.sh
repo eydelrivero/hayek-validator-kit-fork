@@ -641,7 +641,7 @@ report_cluster_state "ready" "$READY_SWAP_CLUSTER_STATE"
 assert_cluster_continuity "pre-swap" "$PRE_SWAP_CLUSTER_STATE" "ready" "$READY_SWAP_CLUSTER_STATE"
 
 echo "[hot-swap] Executing pb_hot_swap_validator_hosts_v2..." >&2
-ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_hot_swap_validator_hosts_v2.yml' -e source_host=$SOURCE_HOST -e destination_host=$DESTINATION_HOST -e operator_user=$OPERATOR_USER -e auto_confirm_swap=true -e deprovision_source_host=false -e swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC"
+ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_hot_swap_validator_hosts_v2.yml' -e source_host=$SOURCE_HOST -e destination_host=$DESTINATION_HOST -e operator_user=$OPERATOR_USER -e auto_confirm_swap=true -e deprovision_source_host=false -e swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC -e manage_destination_ufw_peer_ssh_rule=false"
 
 echo "[hot-swap] Verifying post-swap identity state..." >&2
 assert_swap_identity_state

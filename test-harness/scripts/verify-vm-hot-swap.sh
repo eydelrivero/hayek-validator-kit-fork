@@ -89,7 +89,6 @@ VM_PREPARE_ONLY="${VM_PREPARE_ONLY:-false}"
 VM_PREPARE_EXPORT_DIR="${VM_PREPARE_EXPORT_DIR:-}"
 VM_ENTRYPOINT_PREPARE_ONLY="${VM_ENTRYPOINT_PREPARE_ONLY:-false}"
 VM_MANUAL_TEST_ONLY="${VM_MANUAL_TEST_ONLY:-false}"
-VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC="${VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC:-0}"
 PREPARED_VM_REUSE_MODE=false
 ENTRYPOINT_VM_BRIDGE_IP="${ENTRYPOINT_VM_BRIDGE_IP:-}"
 ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-}"
@@ -3453,8 +3452,7 @@ ansible-playbook \
   -e "auto_confirm_swap=true" \
   -e "deprovision_source_host=false" \
   -e "swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC" \
-  -e "manage_destination_ufw_peer_ssh_rule=true" \
-  -e "hot_swap_debug_hold_before_interhost_ssh_probe_sec=$VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC"
+  -e "manage_destination_ufw_peer_ssh_rule=true"
 HOT_SWAP_COMPLETED=true
 HOT_SWAP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 

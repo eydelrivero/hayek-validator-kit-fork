@@ -20,7 +20,6 @@ services:
       GOSSIP_PORT: 8001
       FAUCET_PORT: 9900
       BIND_ADDRESS: 0.0.0.0
-      GOSSIP_HOST: ${VMH_GOSSIP_HOST:-10.0.2.2}
       LEDGER_DIR: /var/tmp/test-ledger
       RESET_FLAG: --reset
     ports:
