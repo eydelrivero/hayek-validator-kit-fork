@@ -1,0 +1,123 @@
+---
+# Shared single-host validator bootstrap flow
+# ------------------------------------------
+# Runs the requested single-host sequence:
+#   1) pb_setup_users_validator
+#   2) password handoff
+#   3) pb_setup_metal_box
+#   4) validator setup (Agave or Jito)
+#   5) pb_setup_validator_ha (install-only)
+#
+# This playbook is orchestration-only and intentionally reuses the existing
+# playbooks as the authoritative implementation for each phase.
+
+- name: Preflight shared validator bootstrap inputs
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Assert required shared bootstrap parameters are provided
+      ansible.builtin.assert:
+        that:
+          - target_host is defined
+          - target_host | string | trim | length > 0
+          - bootstrap_user is defined
+          - bootstrap_user | string | trim | length > 0
+          - metal_box_user is defined
+          - metal_box_user | string | trim | length > 0
+          - validator_operator_user is defined
+          - validator_operator_user | string | trim | length > 0
+          - users_csv_file is defined
+          - users_csv_file | string | trim | length > 0
+          - users_base_dir is defined
+          - users_base_dir | string | trim | length > 0
+          - authorized_ips_csv_file is defined
+          - authorized_ips_csv_file | string | trim | length > 0
+          - authorized_access_csv is defined
+          - authorized_access_csv | string | trim | length > 0
+          - validator_flavor is defined
+          - validator_flavor | string | trim | length > 0
+          - validator_name is defined
+          - validator_name | string | trim | length > 0
+        fail_msg: >-
+          Missing required shared bootstrap variables. Required: target_host,
+          bootstrap_user, metal_box_user, validator_operator_user,
+          users_csv_file, users_base_dir, authorized_ips_csv_file,
+          authorized_access_csv, validator_flavor, validator_name.
+
+    - name: Assert shared bootstrap validator flavor is supported
+      ansible.builtin.assert:
+        that:
+          - validator_flavor in ['agave', 'jito-bam']
+        fail_msg: >-
+          validator_flavor={{ validator_flavor }} is unsupported. Supported
+          values: agave, jito-bam.
+
+    - name: Assert password handoff mode is supported
+      ansible.builtin.assert:
+        that:
+          - (password_handoff_mode | default('manual_reset')) in ['manual_reset', 'assume_ready']
+        fail_msg: >-
+          password_handoff_mode={{ password_handoff_mode | default('manual_reset') }}
+          is unsupported. Supported values: manual_reset, assume_ready.
+
+- import_playbook: pb_setup_users_validator.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ bootstrap_user }}"
+    csv_file: "{{ users_csv_file }}"
+    users_base_dir: "{{ users_base_dir }}"
+    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+
+- name: Manual password handoff before metal-box hardening
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Pause for manual sysadmin password setup
+      ansible.builtin.pause:
+        prompt: |
+          pb_setup_users_validator has completed for {{ target_host }}.
+
+          Complete the manual sysadmin password handoff before continuing:
+          1. SSH to the host as {{ metal_box_user }}.
+          2. Run: sudo reset-my-password
+          3. Complete the password self-service flow.
+          4. Confirm sudo works with: sudo -v
+
+          Press Enter here only after the sysadmin password handoff is complete.
+      when: (password_handoff_mode | default('manual_reset')) == 'manual_reset'
+
+- import_playbook: pb_setup_metal_box.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ metal_box_user }}"
+    csv_file: "{{ authorized_ips_csv_file }}"
+    authorized_access_csv: "{{ authorized_access_csv }}"
+    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+
+- import_playbook: pb_setup_validator_agave.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ validator_operator_user }}"
+    ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
+    ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
+    solana_validator_ha_install_enabled: false
+  when: validator_flavor == 'agave'
+
+- import_playbook: pb_setup_validator_jito_v2.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ validator_operator_user }}"
+    ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
+    ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
+    solana_validator_ha_install_enabled: false
+  when: validator_flavor == 'jito-bam'
+
+- import_playbook: pb_setup_validator_ha.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ validator_operator_user }}"
+    ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
+    ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
+    validator_name: "{{ validator_name }}"

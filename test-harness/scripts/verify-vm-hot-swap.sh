@@ -89,6 +89,7 @@ VM_PREPARE_ONLY="${VM_PREPARE_ONLY:-false}"
 VM_PREPARE_EXPORT_DIR="${VM_PREPARE_EXPORT_DIR:-}"
 VM_ENTRYPOINT_PREPARE_ONLY="${VM_ENTRYPOINT_PREPARE_ONLY:-false}"
 VM_MANUAL_TEST_ONLY="${VM_MANUAL_TEST_ONLY:-false}"
+VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC="${VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC:-0}"
 PREPARED_VM_REUSE_MODE=false
 ENTRYPOINT_VM_BRIDGE_IP="${ENTRYPOINT_VM_BRIDGE_IP:-}"
 ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-}"
@@ -958,7 +959,6 @@ run_compose_vm_control_plane() {
   VMH_GOSSIP_PORT="$VM_LOCALNET_ENTRYPOINT_GOSSIP_PORT" \
   VMH_FAUCET_PORT="$VM_LOCALNET_ENTRYPOINT_FAUCET_PORT" \
   VMH_DYNAMIC_PORT_RANGE="$LOCALNET_ENTRYPOINT_CONTAINER_PORT_RANGE" \
-  VMH_GOSSIP_HOST="$VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS" \
   VMH_SLOTS_PER_EPOCH="$VM_LOCALNET_ENTRYPOINT_SLOTS_PER_EPOCH" \
   VMH_LIMIT_LEDGER_SIZE="$VM_LOCALNET_ENTRYPOINT_LIMIT_LEDGER_SIZE" \
   VMH_REBUILD="$VM_LOCALNET_ENTRYPOINT_CONTAINER_REBUILD" \
@@ -1491,6 +1491,8 @@ assert_vm_can_reach_localnet_entrypoint() {
   local max_attempts="$VM_ENTRYPOINT_PREFLIGHT_RETRIES"
   local retry_sleep="$VM_ENTRYPOINT_PREFLIGHT_RETRY_SLEEP_SEC"
   local resolve_cmd
+  local inventory_path="$OPERATOR_INVENTORY"
+  local ssh_user="$VALIDATOR_OPERATOR_USER"
   local rpc_check_output=""
   local gossip_check_output=""
   local attempt=0
@@ -1500,8 +1502,13 @@ assert_vm_can_reach_localnet_entrypoint() {
     return 0
   fi
 
-  if [[ ! -f "$OPERATOR_INVENTORY" ]]; then
-    echo "[vm-hot-swap] Cannot verify ${label} entrypoint reachability before operator inventory exists." >&2
+  if [[ "$PREPARED_VM_REUSE_MODE" != "true" ]]; then
+    inventory_path="$BOOTSTRAP_INVENTORY"
+    ssh_user="$BOOTSTRAP_USER"
+  fi
+
+  if [[ ! -f "$inventory_path" ]]; then
+    echo "[vm-hot-swap] Cannot verify ${label} entrypoint reachability before inventory ${inventory_path} exists." >&2
     exit 2
   fi
 
@@ -1517,7 +1524,7 @@ assert_vm_can_reach_localnet_entrypoint() {
 
   if ! is_ip_literal "$vm_entrypoint_host"; then
     resolve_cmd="set -eu; getent ahostsv4 \"$vm_entrypoint_host\" >/dev/null 2>&1 || getent hosts \"$vm_entrypoint_host\" >/dev/null 2>&1"
-    if ! ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -e "ansible_become=false" \
+    if ! ansible "$host" -i "$inventory_path" -u "$ssh_user" -e "ansible_become=false" \
       -m shell -a "$resolve_cmd" -o >/dev/null; then
       echo "[vm-hot-swap] ${label} VM cannot resolve entrypoint host ${vm_entrypoint_host}." >&2
       print_localnet_entrypoint_debug
@@ -1539,7 +1546,7 @@ assert_vm_can_reach_localnet_entrypoint() {
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     rc=0
     rpc_check_output="$(
-      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" \
+      ansible "$host" -i "$inventory_path" -u "$ssh_user" \
         -e "ansible_become=false" \
         -m wait_for -a "host=${vm_entrypoint_host} port=${rpc_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o 2>&1
     )" || rc=$?
@@ -1565,7 +1572,7 @@ assert_vm_can_reach_localnet_entrypoint() {
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     rc=0
     gossip_check_output="$(
-      ansible "$host" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" \
+      ansible "$host" -i "$inventory_path" -u "$ssh_user" \
         -e "ansible_become=false" \
         -m wait_for -a "host=${vm_entrypoint_host} port=${gossip_port} timeout=${wait_timeout} connect_timeout=5 state=started" -o 2>&1
     )" || rc=$?
@@ -2336,8 +2343,8 @@ if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
   CURRENT_PHASE="prepared-vm operator SSH readiness"
   echo "[vm-hot-swap] Prepared VM reuse: skipping users/metal bootstrap and validating operator SSH..." >&2
 else
-  CURRENT_PHASE="users-then-metal-box bootstrap"
-  echo "[vm-hot-swap] Running users -> metal-box (requested order)..." >&2
+  CURRENT_PHASE="shared host bootstrap"
+  echo "[vm-hot-swap] Full bootstrap mode: source and destination hosts will be provisioned through the shared validator host flow." >&2
   if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
     echo "[vm-hot-swap] Preparing temporary sysadmin sudo policy for VM automation..." >&2
     for vm_target in vm-source vm-destination; do
@@ -2349,42 +2356,95 @@ else
         -e "bootstrap_user=$BOOTSTRAP_USER"
     done
   fi
-
-  for vm_target in vm-source vm-destination; do
-    echo "[vm-hot-swap] Running users -> metal-box on ${vm_target}..." >&2
-    users_metal_args=(
-      -i "$BOOTSTRAP_INVENTORY"
-      "$REPO_ROOT/test-harness/ansible/pb_vm_users_then_metal_box.yml"
-      --skip-tags "$VM_METAL_BOX_SKIP_TAGS"
-      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
-      -e "target_host=$vm_target"
-      -e "bootstrap_user=$BOOTSTRAP_USER"
-      -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
-      -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE"
-      -e "users_csv_file=$(basename "$IAM_CSV")"
-      -e "users_base_dir=$(dirname "$IAM_CSV")"
-      -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
-      -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
-      -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
-    )
-    ansible-playbook "${users_metal_args[@]}"
-  done
-
-  echo "[vm-hot-swap] Waiting for post-metal SSH ports..." >&2
-  CURRENT_PHASE="post-metal SSH readiness"
 fi
-
-wait_for_ssh_or_qemu_exit "source-post-metal" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" 300 "$SRC_PID_FILE" "$SRC_QEMU_LOG"
-wait_for_ssh_or_qemu_exit "destination-post-metal" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" 300 "$DST_PID_FILE" "$DST_QEMU_LOG"
 USERS_METAL_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 
-phase_start_ts="$(date +%s)"
-CURRENT_PHASE="localnet entrypoint preflight"
-echo "[vm-hot-swap] Verifying VM reachability to the localnet entrypoint..." >&2
-ensure_localnet_entrypoint
-assert_vm_can_reach_localnet_entrypoint "vm-source" "source"
-assert_vm_can_reach_localnet_entrypoint "vm-destination" "destination"
-ENTRYPOINT_PREFLIGHT_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
+run_host_ha_install() {
+  local host="$1"
+  ansible-playbook \
+    -i "$OPERATOR_INVENTORY" \
+    --limit "$host" \
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+    -e "target_host=$host" \
+    -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
+    -e "validator_name=$VALIDATOR_NAME" \
+    -e "solana_cluster=$SOLANA_CLUSTER" \
+    "$REPO_ROOT/ansible/playbooks/pb_setup_validator_ha.yml"
+}
+
+bootstrap_host_with_shared_flow() {
+  local host="$1"
+  local flavor="$2"
+  local validator_type="$3"
+  local base_args=(
+    -i "$BOOTSTRAP_INVENTORY"
+    --limit "$host"
+    --skip-tags "$VM_METAL_BOX_SKIP_TAGS"
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
+    -e "target_host=$host"
+    -e "bootstrap_user=$BOOTSTRAP_USER"
+    -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
+    -e "validator_operator_user=$VALIDATOR_OPERATOR_USER"
+    -e "validator_name=$VALIDATOR_NAME"
+    -e "validator_type=$validator_type"
+    -e "password_handoff_mode=assume_ready"
+    -e "xdp_enabled=true"
+    -e "solana_cluster=$SOLANA_CLUSTER"
+    -e "build_from_source=$BUILD_FROM_SOURCE"
+    -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+    -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE"
+    -e "post_metal_ssh_port=$(vm_operator_port_for "$host")"
+    -e "users_csv_file=$(basename "$IAM_CSV")"
+    -e "users_base_dir=$(dirname "$IAM_CSV")"
+    -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+    -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+    -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+  )
+
+  case "$flavor" in
+    agave)
+      ansible-playbook \
+        "${base_args[@]}" \
+        -e "validator_flavor=agave" \
+        -e "agave_version=$AGAVE_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      ;;
+    jito-shared)
+      ansible-playbook \
+        "${base_args[@]}" \
+        -e "validator_flavor=jito-bam" \
+        -e "jito_version=$JITO_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      ;;
+    jito-cohosted)
+      ansible-playbook \
+        "${base_args[@]}" \
+        -e "validator_flavor=jito-bam" \
+        -e "jito_version=$JITO_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      ;;
+    jito-bam)
+      if [[ -n "$BAM_JITO_VERSION_PATCH" ]]; then
+        ansible-playbook \
+          "${base_args[@]}" \
+          -e "validator_flavor=jito-bam" \
+          -e "jito_version=$BAM_JITO_VERSION" \
+          -e "jito_version_patch=$BAM_JITO_VERSION_PATCH" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      else
+        ansible-playbook \
+          "${base_args[@]}" \
+          -e "validator_flavor=jito-bam" \
+          -e "jito_version=$BAM_JITO_VERSION" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      fi
+      ;;
+    *)
+      echo "Unsupported flavor: $flavor" >&2
+      exit 2
+      ;;
+  esac
+}
 
 setup_host_flavor() {
   local host="$1"
@@ -2401,6 +2461,7 @@ setup_host_flavor() {
     -e "solana_cluster=$SOLANA_CLUSTER"
     -e "build_from_source=$BUILD_FROM_SOURCE"
     -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+    -e "solana_validator_ha_install_enabled=false"
   )
 
   case "$flavor" in
@@ -2446,6 +2507,8 @@ setup_host_flavor() {
       exit 2
       ;;
   esac
+
+  run_host_ha_install "$host"
 }
 
 reconcile_validator_ha_cluster() {
@@ -3298,9 +3361,12 @@ else
   phase_start_ts="$(date +%s)"
   CURRENT_PHASE="configure source flavor"
   echo "[vm-hot-swap] Configuring source flavor: $SOURCE_FLAVOR" >&2
-  assert_vm_alive_and_ssh_ready "source" "$SOURCE_OPERATOR_HOST_EFFECTIVE" "$SOURCE_OPERATOR_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
+  assert_vm_alive_and_ssh_ready "source" "$SOURCE_BOOTSTRAP_HOST" "$SOURCE_BOOTSTRAP_PORT_EFFECTIVE" "$SRC_PID_FILE" "$SRC_QEMU_LOG" 180
+  localnet_preflight_start_ts="$(date +%s)"
   ensure_localnet_entrypoint
-  setup_host_flavor "vm-source" "$SOURCE_FLAVOR" "primary"
+  assert_vm_can_reach_localnet_entrypoint "vm-source" "source"
+  ENTRYPOINT_PREFLIGHT_DURATION_SEC=$(( ENTRYPOINT_PREFLIGHT_DURATION_SEC + $(date +%s) - localnet_preflight_start_ts ))
+  bootstrap_host_with_shared_flow "vm-source" "$SOURCE_FLAVOR" "primary"
   assert_host_can_query_localnet_entrypoint "vm-source" "source"
   assert_host_validator_runtime "vm-source"
   echo "[vm-hot-swap] Promoting source runtime identity to primary..." >&2
@@ -3310,9 +3376,12 @@ else
   phase_start_ts="$(date +%s)"
   CURRENT_PHASE="configure destination flavor"
   echo "[vm-hot-swap] Configuring destination flavor: $DESTINATION_FLAVOR" >&2
-  assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_OPERATOR_HOST_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
+  assert_vm_alive_and_ssh_ready "destination" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DST_PID_FILE" "$DST_QEMU_LOG" 180
+  localnet_preflight_start_ts="$(date +%s)"
   ensure_localnet_entrypoint
-  setup_host_flavor "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
+  assert_vm_can_reach_localnet_entrypoint "vm-destination" "destination"
+  ENTRYPOINT_PREFLIGHT_DURATION_SEC=$(( ENTRYPOINT_PREFLIGHT_DURATION_SEC + $(date +%s) - localnet_preflight_start_ts ))
+  bootstrap_host_with_shared_flow "vm-destination" "$DESTINATION_FLAVOR" "hot-spare"
   assert_host_can_query_localnet_entrypoint "vm-destination" "destination"
   DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 fi
@@ -3383,7 +3452,9 @@ ansible-playbook \
   -e "operator_user=$VALIDATOR_OPERATOR_USER" \
   -e "auto_confirm_swap=true" \
   -e "deprovision_source_host=false" \
-  -e "swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC"
+  -e "swap_epoch_end_threshold_sec=$SWAP_EPOCH_END_THRESHOLD_SEC" \
+  -e "manage_destination_ufw_peer_ssh_rule=true" \
+  -e "hot_swap_debug_hold_before_interhost_ssh_probe_sec=$VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC"
 HOT_SWAP_COMPLETED=true
 HOT_SWAP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 

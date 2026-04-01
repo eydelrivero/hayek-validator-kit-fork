@@ -461,7 +461,7 @@ EOF
 
 ensure_localnet_entrypoint
 
-echo "[vm-e2e] Running users -> metal-box (kept in requested order)..." >&2
+echo "[vm-e2e] Running shared host bootstrap flow..." >&2
 if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
   echo "[vm-e2e] Preparing temporary sysadmin sudo policy for VM automation..." >&2
   echo "[vm-e2e] Preparing temporary sysadmin sudo policy on ${TARGET_HOST}..." >&2
@@ -472,77 +472,68 @@ if [[ "$ENABLE_VM_TEST_SYSADMIN_NOPASSWD" == "true" ]]; then
     -e "bootstrap_user=$BOOTSTRAP_USER"
 fi
 
-ansible-playbook \
-  -i "$BOOTSTRAP_INVENTORY" \
-  "$REPO_ROOT/test-harness/ansible/pb_vm_users_then_metal_box.yml" \
-  --skip-tags "$VM_METAL_BOX_SKIP_TAGS" \
-  "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
-  -e "target_host=$TARGET_HOST" \
-  -e "bootstrap_user=$BOOTSTRAP_USER" \
-  -e "metal_box_user=$METAL_BOX_SYSADMIN_USER" \
-  -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE" \
-  -e "users_csv_file=$(basename "$IAM_CSV")" \
-  -e "users_base_dir=$(dirname "$IAM_CSV")" \
-  -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")" \
-  -e "authorized_access_csv=$AUTHORIZED_IPS_CSV" \
-  -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
-
-if [[ "$POST_METAL_SSH_PORT" != "$BOOTSTRAP_SSH_PORT" ]]; then
-  echo "[vm-e2e] Waiting for SSH on post-metal port ${POST_METAL_SSH_PORT}..." >&2
-  "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "$VM_HOST" "$POST_METAL_SSH_PORT" 300
-fi
-
-setup_base_args=(
-  -i "$OPERATOR_INVENTORY"
+setup_common_args=(
+  -i "$BOOTSTRAP_INVENTORY"
   --limit "$TARGET_HOST"
+  --skip-tags "$VM_METAL_BOX_SKIP_TAGS"
+  "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
   -e "target_host=$TARGET_HOST"
-  -e "ansible_user=$VALIDATOR_OPERATOR_USER"
+  -e "bootstrap_user=$BOOTSTRAP_USER"
+  -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
+  -e "validator_operator_user=$VALIDATOR_OPERATOR_USER"
   -e "validator_name=$VALIDATOR_NAME"
   -e "validator_type=$VALIDATOR_TYPE"
+  -e "password_handoff_mode=assume_ready"
   -e "xdp_enabled=true"
   -e "solana_cluster=$SOLANA_CLUSTER"
   -e "build_from_source=$BUILD_FROM_SOURCE"
   -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+  -e "manage_cpu_governor_service=$CPU_GOVERNOR_MANAGE"
+  -e "post_metal_ssh_port=$POST_METAL_SSH_PORT"
+  -e "users_csv_file=$(basename "$IAM_CSV")"
+  -e "users_base_dir=$(dirname "$IAM_CSV")"
+  -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+  -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+  -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
 )
 
-echo "[vm-e2e] Running validator setup flavor: $FLAVOR..." >&2
-ensure_localnet_entrypoint
+echo "[vm-e2e] Running validator setup flavor through shared flow: $FLAVOR..." >&2
 case "$FLAVOR" in
   agave)
     ansible-playbook \
-      "${setup_base_args[@]}" \
-      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+      "${setup_common_args[@]}" \
+      -e "validator_flavor=agave" \
       -e "agave_version=$AGAVE_VERSION" \
-      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_agave.yml"
+      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
     ;;
   jito-shared)
     ansible-playbook \
-      "${setup_base_args[@]}" \
-      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+      "${setup_common_args[@]}" \
+      -e "validator_flavor=jito-bam" \
       -e "jito_version=$JITO_VERSION" \
-      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
     ;;
   jito-cohosted)
     ansible-playbook \
-      "${setup_base_args[@]}" \
-      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+      "${setup_common_args[@]}" \
+      -e "validator_flavor=jito-bam" \
       -e "jito_version=$JITO_VERSION" \
-      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
     ;;
   jito-bam)
     if [[ -n "$BAM_JITO_VERSION_PATCH" ]]; then
       ansible-playbook \
-        "${setup_base_args[@]}" \
-        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        "${setup_common_args[@]}" \
+        -e "validator_flavor=jito-bam" \
         -e "jito_version=$BAM_JITO_VERSION" \
         -e "jito_version_patch=$BAM_JITO_VERSION_PATCH" \
-        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
     else
       ansible-playbook \
-        "${setup_base_args[@]}" \
-        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        "${setup_common_args[@]}" \
+        -e "validator_flavor=jito-bam" \
         -e "jito_version=$BAM_JITO_VERSION" \
-        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
     fi
     ;;
   *)
@@ -551,4 +542,4 @@ case "$FLAVOR" in
     ;;
 esac
 
-echo "[vm-e2e] Sequence completed: pb_setup_users_validator -> pb_setup_metal_box -> validator setup" >&2
+echo "[vm-e2e] Sequence completed: pb_setup_users_validator -> pb_setup_metal_box -> validator setup -> ha install" >&2
