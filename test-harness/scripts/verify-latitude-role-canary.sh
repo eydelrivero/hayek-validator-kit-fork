@@ -319,6 +319,54 @@ prepare_post_metal_validator_host() {
   ansible-playbook "${prep_args[@]}" | tee "$prep_log"
 }
 
+run_validator_setup_and_ha_with_operator_inventory() {
+  local validator_args=(
+    -i "$OPERATOR_INVENTORY"
+    --limit "$TARGET_HOST"
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
+    -e "target_host=$TARGET_HOST"
+    -e "ansible_user=$VALIDATOR_OPERATOR_USER"
+    -e "validator_name=$VALIDATOR_NAME"
+    -e "validator_type=$VALIDATOR_TYPE"
+    -e "solana_cluster=$SOLANA_CLUSTER"
+    -e "use_official_repo=$USE_OFFICIAL_REPO"
+    -e "build_from_source=$BUILD_FROM_SOURCE"
+    -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+    -e "xdp_enabled=$XDP_ENABLED"
+    -e "solana_validator_ha_install_enabled=false"
+  )
+
+  case "$MODE" in
+    agave-validator)
+      ansible-playbook \
+        "${validator_args[@]}" \
+        -e "agave_version=$AGAVE_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_agave.yml"
+      ;;
+    jito-validator)
+      ansible-playbook \
+        "${validator_args[@]}" \
+        -e "jito_version=$JITO_VERSION" \
+        -e "jito_version_patch=$JITO_VERSION_PATCH" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
+      ;;
+    *)
+      echo "Unsupported validator mode: $MODE" >&2
+      exit 2
+      ;;
+  esac
+
+  ansible-playbook \
+    -i "$OPERATOR_INVENTORY" \
+    --limit "$TARGET_HOST" \
+    "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+    -e "target_host=$TARGET_HOST" \
+    -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
+    -e "validator_name=$VALIDATOR_NAME" \
+    -e "solana_cluster=$SOLANA_CLUSTER" \
+    "$REPO_ROOT/ansible/playbooks/pb_setup_validator_ha.yml"
+}
+
 run_mode_canary() {
   case "$MODE" in
     rust)
@@ -354,39 +402,10 @@ run_mode_canary() {
         -e "build_from_source=$BUILD_FROM_SOURCE" | tee "$MODE_LOG"
       ;;
     agave-validator)
-      ansible-playbook \
-        -i "$OPERATOR_INVENTORY" \
-        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_agave.yml" \
-        --limit "$TARGET_HOST" \
-        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
-        -e "target_host=$TARGET_HOST" \
-        -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
-        -e "validator_name=$VALIDATOR_NAME" \
-        -e "validator_type=$VALIDATOR_TYPE" \
-        -e "agave_version=$AGAVE_VERSION" \
-        -e "solana_cluster=$SOLANA_CLUSTER" \
-        -e "use_official_repo=$USE_OFFICIAL_REPO" \
-        -e "build_from_source=$BUILD_FROM_SOURCE" \
-        -e "force_host_cleanup=$FORCE_HOST_CLEANUP" \
-        -e "xdp_enabled=$XDP_ENABLED" | tee "$MODE_LOG"
+      run_validator_setup_and_ha_with_operator_inventory | tee "$MODE_LOG"
       ;;
     jito-validator)
-      ansible-playbook \
-        -i "$OPERATOR_INVENTORY" \
-        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml" \
-        --limit "$TARGET_HOST" \
-        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
-        -e "target_host=$TARGET_HOST" \
-        -e "ansible_user=$VALIDATOR_OPERATOR_USER" \
-        -e "validator_name=$VALIDATOR_NAME" \
-        -e "validator_type=$VALIDATOR_TYPE" \
-        -e "jito_version=$JITO_VERSION" \
-        -e "jito_version_patch=$JITO_VERSION_PATCH" \
-        -e "solana_cluster=$SOLANA_CLUSTER" \
-        -e "use_official_repo=$USE_OFFICIAL_REPO" \
-        -e "build_from_source=$BUILD_FROM_SOURCE" \
-        -e "force_host_cleanup=$FORCE_HOST_CLEANUP" \
-        -e "xdp_enabled=$XDP_ENABLED" | tee "$MODE_LOG"
+      run_validator_setup_and_ha_with_operator_inventory | tee "$MODE_LOG"
       ;;
     *)
       echo "Unsupported mode: $MODE" >&2
@@ -477,6 +496,7 @@ BOOTSTRAP_INVENTORY="$WORK_DIR/inventory.bootstrap.yml"
 SYSADMIN_INVENTORY="$WORK_DIR/inventory.sysadmin.yml"
 OPERATOR_INVENTORY="$WORK_DIR/inventory.operator.yml"
 MODE_LOG="$WORK_DIR/${MODE}.log"
+VALIDATOR_MODE_COMPLETED_DURING_BOOTSTRAP=false
 
 cat >"$IAM_CSV" <<EOF
 user,key,group_a,group_b,group_c
@@ -504,9 +524,7 @@ if [[ "$POST_METAL_ONLY" != "true" ]]; then
       -e "bootstrap_user=$BOOTSTRAP_USER"
   fi
 
-  wrapper_args=(
-    -i "$BOOTSTRAP_INVENTORY"
-    "$REPO_ROOT/test-harness/ansible/pb_disposable_users_then_metal_box.yml"
+  bootstrap_args=(
     "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
     -e "target_host=$TARGET_HOST"
     -e "bootstrap_user=$BOOTSTRAP_USER"
@@ -521,24 +539,85 @@ if [[ "$POST_METAL_ONLY" != "true" ]]; then
 
   if is_validator_mode && [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == "true" ]]; then
     allow_unconventional_testnet_two_disk_layout=true
-    wrapper_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+    bootstrap_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
   elif is_validator_mode && detect_allow_unconventional_testnet_two_disk_layout_via_ssh "$BOOTSTRAP_USER" "$BOOTSTRAP_SSH_PORT"; then
     allow_unconventional_testnet_two_disk_layout=true
-    wrapper_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+    bootstrap_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
   fi
 
   if [[ -n "$HOST_NAME" ]]; then
-    wrapper_args+=(-e "host_name=$HOST_NAME")
+    bootstrap_args+=(-e "host_name=$HOST_NAME")
   fi
   if [[ -n "$METAL_BOX_SKIP_TAGS" ]]; then
-    wrapper_args+=(--skip-tags "$METAL_BOX_SKIP_TAGS")
+    bootstrap_args+=(--skip-tags "$METAL_BOX_SKIP_TAGS")
   fi
 
   echo "[latitude-role-canary] Running users -> metal-box..." >&2
   if [[ "$allow_unconventional_testnet_two_disk_layout" == "true" ]]; then
     echo "[latitude-role-canary] Enabling special two-disk testnet layout for this disposable Latitude host." >&2
   fi
-  ansible-playbook "${wrapper_args[@]}" | tee "$WORK_DIR/users-metal-box.log"
+  if is_validator_mode; then
+    validator_bootstrap_args=(
+      -i "$BOOTSTRAP_INVENTORY"
+      --limit "$TARGET_HOST"
+      "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}"
+      -e "target_host=$TARGET_HOST"
+      -e "bootstrap_user=$BOOTSTRAP_USER"
+      -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
+      -e "validator_operator_user=$VALIDATOR_OPERATOR_USER"
+      -e "validator_name=$VALIDATOR_NAME"
+      -e "validator_type=$VALIDATOR_TYPE"
+      -e "password_handoff_mode=assume_ready"
+      -e "solana_cluster=$SOLANA_CLUSTER"
+      -e "use_official_repo=$USE_OFFICIAL_REPO"
+      -e "build_from_source=$BUILD_FROM_SOURCE"
+      -e "force_host_cleanup=$FORCE_HOST_CLEANUP"
+      -e "xdp_enabled=$XDP_ENABLED"
+      -e "post_metal_ssh_port=$POST_METAL_SSH_PORT"
+      -e "users_csv_file=$(basename "$IAM_CSV")"
+      -e "users_base_dir=$(dirname "$IAM_CSV")"
+      -e "authorized_ips_csv_file=$(basename "$AUTHORIZED_IPS_CSV")"
+      -e "authorized_access_csv=$AUTHORIZED_IPS_CSV"
+      -e "skip_confirmation_pauses=$SKIP_CONFIRMATION_PAUSES"
+    )
+    if [[ "$allow_unconventional_testnet_two_disk_layout" == "true" ]]; then
+      validator_bootstrap_args+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+    fi
+    if [[ -n "$HOST_NAME" ]]; then
+      validator_bootstrap_args+=(-e "host_name=$HOST_NAME")
+    fi
+    if [[ -n "$METAL_BOX_SKIP_TAGS" ]]; then
+      validator_bootstrap_args+=(--skip-tags "$METAL_BOX_SKIP_TAGS")
+    fi
+    case "$MODE" in
+      agave-validator)
+        ansible-playbook \
+          "${validator_bootstrap_args[@]}" \
+          -e "validator_flavor=agave" \
+          -e "agave_version=$AGAVE_VERSION" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml" | tee "$MODE_LOG"
+        VALIDATOR_MODE_COMPLETED_DURING_BOOTSTRAP=true
+        ;;
+      jito-validator)
+        ansible-playbook \
+          "${validator_bootstrap_args[@]}" \
+          -e "validator_flavor=jito-bam" \
+          -e "jito_version=$JITO_VERSION" \
+          -e "jito_version_patch=$JITO_VERSION_PATCH" \
+          "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml" | tee "$MODE_LOG"
+        VALIDATOR_MODE_COMPLETED_DURING_BOOTSTRAP=true
+        ;;
+      *)
+        echo "Unsupported validator mode: $MODE" >&2
+        exit 2
+        ;;
+    esac
+  else
+    ansible-playbook \
+      -i "$BOOTSTRAP_INVENTORY" \
+      "${bootstrap_args[@]}" \
+      "$REPO_ROOT/test-harness/ansible/pb_disposable_users_then_metal_box.yml" | tee "$WORK_DIR/users-metal-box.log"
+  fi
 fi
 
 if [[ "$POST_METAL_ONLY" == "true" ]] && is_validator_mode; then
@@ -550,8 +629,10 @@ fi
 echo "[latitude-role-canary] Waiting for SSH on post-metal port ${POST_METAL_SSH_PORT}..." >&2
 th_wait_for_ssh "$VALIDATOR_OPERATOR_USER" "$TARGET_IP" "$POST_METAL_SSH_PORT" "$SSH_PRIVATE_KEY_FILE" "$WAIT_TIMEOUT_SECONDS" "$WAIT_POLL_INTERVAL_SECONDS"
 
-echo "[latitude-role-canary] Running mode: $MODE" >&2
-run_mode_canary
+if [[ "$VALIDATOR_MODE_COMPLETED_DURING_BOOTSTRAP" != "true" ]]; then
+  echo "[latitude-role-canary] Running mode: $MODE" >&2
+  run_mode_canary
+fi
 
 echo "[latitude-role-canary] Mode ${MODE} completed successfully." >&2
 echo "[latitude-role-canary] Artifacts written under: $WORK_DIR" >&2
