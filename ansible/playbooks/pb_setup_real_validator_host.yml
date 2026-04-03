@@ -29,14 +29,4 @@
           pb_setup_real_validator_host.yml does not support solana_cluster=localnet.
           Use the harness/localnet workflows instead.
 
-    - name: Resolve real-host bootstrap defaults
-      ansible.builtin.set_fact:
-        real_host_password_handoff_mode_resolved: "{{ password_handoff_mode | default('manual_reset') }}"
-        real_host_build_from_source_resolved: "{{ build_from_source | default(true) }}"
-        real_host_solana_validator_ha_install_enabled_resolved: "{{ solana_validator_ha_install_enabled | default(true) }}"
-
 - import_playbook: pb_setup_validator_host_common.yml
-  vars:
-    password_handoff_mode: "{{ hostvars['localhost'].real_host_password_handoff_mode_resolved }}"
-    build_from_source: "{{ hostvars['localhost'].real_host_build_from_source_resolved }}"
-    solana_validator_ha_install_enabled: "{{ hostvars['localhost'].real_host_solana_validator_ha_install_enabled_resolved }}"

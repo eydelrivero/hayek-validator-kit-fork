@@ -4,13 +4,22 @@
 #   1) pb_setup_users_validator
 #   2) pb_setup_metal_box
 
+- name: Resolve disposable wrapper defaults
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Resolve skip confirmation pauses default
+      ansible.builtin.set_fact:
+        disposable_wrapper_skip_confirmation_pauses_resolved: "{{ skip_confirmation_pauses | default(true) }}"
+
 - import_playbook: ../../ansible/playbooks/pb_setup_users_validator.yml
   vars:
     target_host: "{{ target_host }}"
     ansible_user: "{{ bootstrap_user }}"
     csv_file: "{{ users_csv_file }}"
     users_base_dir: "{{ users_base_dir }}"
-    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+    skip_confirmation_pauses: "{{ hostvars['localhost'].disposable_wrapper_skip_confirmation_pauses_resolved }}"
 
 - import_playbook: ../../ansible/playbooks/pb_setup_metal_box.yml
   vars:
@@ -18,4 +27,4 @@
     ansible_user: "{{ metal_box_user | default(bootstrap_user) }}"
     csv_file: "{{ authorized_ips_csv_file }}"
     authorized_access_csv: "{{ authorized_access_csv }}"
-    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+    skip_confirmation_pauses: "{{ hostvars['localhost'].disposable_wrapper_skip_confirmation_pauses_resolved }}"
