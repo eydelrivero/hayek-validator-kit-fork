@@ -16,6 +16,10 @@
   gather_facts: false
 
   tasks:
+    - name: Resolve shared bootstrap defaults
+      ansible.builtin.set_fact:
+        shared_skip_confirmation_pauses_resolved: "{{ skip_confirmation_pauses | default(true) }}"
+
     - name: Assert required shared bootstrap parameters are provided
       ansible.builtin.assert:
         that:
@@ -61,13 +65,22 @@
           password_handoff_mode={{ password_handoff_mode | default('manual_reset') }}
           is unsupported. Supported values: manual_reset, assume_ready.
 
+    - name: Assert shared bootstrap start stage is supported
+      ansible.builtin.assert:
+        that:
+          - (validator_host_bootstrap_start_at | default('users')) in ['users', 'metal_box', 'validator']
+        fail_msg: >-
+          validator_host_bootstrap_start_at={{ validator_host_bootstrap_start_at | default('users') }}
+          is unsupported. Supported values: users, metal_box, validator.
+
 - import_playbook: pb_setup_users_validator.yml
   vars:
     target_host: "{{ target_host }}"
     ansible_user: "{{ bootstrap_user }}"
     csv_file: "{{ users_csv_file }}"
     users_base_dir: "{{ users_base_dir }}"
-    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+    skip_confirmation_pauses: "{{ hostvars['localhost'].shared_skip_confirmation_pauses_resolved }}"
+  when: (validator_host_bootstrap_start_at | default('users')) == 'users'
 
 - name: Manual password handoff before metal-box hardening
   hosts: localhost
@@ -86,7 +99,25 @@
           4. Confirm sudo works with: sudo -v
 
           Press Enter here only after the sysadmin password handoff is complete.
-      when: (password_handoff_mode | default('manual_reset')) == 'manual_reset'
+      when:
+        - (password_handoff_mode | default('manual_reset')) == 'manual_reset'
+        - (validator_host_bootstrap_start_at | default('users')) == 'users'
+
+    - name: Explain manual handoff resume flow
+      ansible.builtin.debug:
+        msg: |
+          Manual sysadmin password handoff completed for {{ target_host }}.
+
+          This run stops here before metal-box hardening because Ansible cannot
+          acquire the new sudo password mid-run, and validator setup may need a
+          different sudo password for {{ validator_operator_user }}.
+
+          Resume with either:
+            1. ansible/scripts/run_setup_real_validator_host.sh --resume-from-metal-box ...
+            2. ansible-playbook ... -K -e "validator_host_bootstrap_start_at=metal_box" -e "password_handoff_mode=assume_ready"
+      when:
+        - (password_handoff_mode | default('manual_reset')) == 'manual_reset'
+        - (validator_host_bootstrap_start_at | default('users')) == 'users'
 
 - import_playbook: pb_setup_metal_box.yml
   vars:
@@ -94,7 +125,9 @@
     ansible_user: "{{ metal_box_user }}"
     csv_file: "{{ authorized_ips_csv_file }}"
     authorized_access_csv: "{{ authorized_access_csv }}"
-    skip_confirmation_pauses: "{{ skip_confirmation_pauses | default(true) }}"
+    skip_confirmation_pauses: "{{ hostvars['localhost'].shared_skip_confirmation_pauses_resolved }}"
+  when:
+    - (validator_host_bootstrap_start_at | default('users')) == 'metal_box'
 
 - import_playbook: pb_setup_validator_agave.yml
   vars:
@@ -103,7 +136,9 @@
     ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
     ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
     solana_validator_ha_install_enabled: false
-  when: validator_flavor == 'agave'
+  when:
+    - validator_flavor == 'agave'
+    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
 
 - import_playbook: pb_setup_validator_jito_v2.yml
   vars:
@@ -112,7 +147,9 @@
     ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
     ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
     solana_validator_ha_install_enabled: false
-  when: validator_flavor == 'jito-bam'
+  when:
+    - validator_flavor == 'jito-bam'
+    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
 
 - import_playbook: pb_setup_validator_ha.yml
   vars:
@@ -121,3 +158,5 @@
     ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
     ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
     validator_name: "{{ validator_name }}"
+  when:
+    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
