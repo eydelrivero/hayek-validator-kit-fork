@@ -1,4 +1,4 @@
-ARG SOLANA_RELEASE=2.2.20
+ARG SOLANA_RELEASE=3.1.10
 
 # Base Ubuntu with common tooling
 FROM ubuntu:24.04 AS ubuntu-base
