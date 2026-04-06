@@ -277,6 +277,57 @@ run_identity_model_checks() {
   esac
 }
 
+run_hot_swap_contract_checks() {
+  log_step "Hot-swap role and caller contract checks"
+
+  local ufw_gate_present
+  local vm_caller_enables_ufw_gate
+  local compose_caller_disables_ufw_gate
+  local debug_hold_removed
+  local verify_localhost_delegate_removed
+
+  ufw_gate_present="$(yes_no_from_rg 'manage_destination_ufw_peer_ssh_rule' \
+    "$REPO_ROOT/ansible/roles/solana_swap_validator_hosts_v2/meta/argument_specs.yml" \
+    "$REPO_ROOT/ansible/roles/solana_swap_validator_hosts_v2/tasks/prepare.yml")"
+  vm_caller_enables_ufw_gate="$(yes_no_from_rg 'manage_destination_ufw_peer_ssh_rule=true' \
+    "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh")"
+  compose_caller_disables_ufw_gate="$(yes_no_from_rg 'manage_destination_ufw_peer_ssh_rule=false' \
+    "$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh")"
+  debug_hold_removed="$(yes_no_from_rg 'hot_swap_debug_hold_before_interhost_ssh_probe_sec|VM_HOT_SWAP_DEBUG_HOLD_BEFORE_INTERHOST_SSH_PROBE_SEC' \
+    "$REPO_ROOT/ansible/roles/solana_swap_validator_hosts_v2" \
+    "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh" \
+    "$REPO_ROOT/test-harness/scripts/verify-compose-hot-swap.sh" \
+    "$REPO_ROOT/test-harness/scripts/run-vm-hot-swap-l3-e2e.sh")"
+  verify_localhost_delegate_removed="$(yes_no_from_rg 'delegate_to:\\s*localhost' \
+    "$REPO_ROOT/ansible/roles/solana_swap_validator_hosts_v2/tasks/verify.yml")"
+
+  note "Hot-swap UFW gate present: $ufw_gate_present"
+  note "VM caller enables UFW gate: $vm_caller_enables_ufw_gate"
+  note "Compose caller disables UFW gate: $compose_caller_disables_ufw_gate"
+  note "Debug hold references present: $debug_hold_removed"
+  note "verify.yml still delegates to localhost: $verify_localhost_delegate_removed"
+
+  if [[ "$ufw_gate_present" != "yes" ]]; then
+    fail "solana_swap_validator_hosts_v2 no longer exposes manage_destination_ufw_peer_ssh_rule in the role/task contract."
+  fi
+
+  if [[ "$vm_caller_enables_ufw_gate" != "yes" ]]; then
+    fail "verify-vm-hot-swap.sh no longer opts into manage_destination_ufw_peer_ssh_rule=true."
+  fi
+
+  if [[ "$compose_caller_disables_ufw_gate" != "yes" ]]; then
+    fail "verify-compose-hot-swap.sh no longer opts out with manage_destination_ufw_peer_ssh_rule=false."
+  fi
+
+  if [[ "$debug_hold_removed" != "no" ]]; then
+    fail "Debug hold references still exist after the PR 230 rebase cleanup."
+  fi
+
+  if [[ "$verify_localhost_delegate_removed" != "no" ]]; then
+    fail "solana_swap_validator_hosts_v2 verify.yml still delegates destination-side verification to localhost."
+  fi
+}
+
 run_compose_hot_swap_matrix() {
   log_step "Compose hot-swap matrix"
   require_cmd "$COMPOSE_ENGINE"
@@ -314,6 +365,7 @@ main() {
 
   if [[ "$SKIP_IDENTITY_MODEL" != true ]]; then
     run_identity_model_checks
+    run_hot_swap_contract_checks
   fi
 
   if [[ "$WITH_COMPOSE_HOT_SWAP_MATRIX" == true ]]; then

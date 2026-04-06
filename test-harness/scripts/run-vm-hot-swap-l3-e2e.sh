@@ -174,6 +174,11 @@ while (($# > 0)); do
   esac
 done
 
+if [[ "$VM_LOCALNET_ENTRYPOINT_MODE" != "vm" ]]; then
+  echo "run-vm-hot-swap-l3-e2e.sh requires VM_LOCALNET_ENTRYPOINT_MODE=vm. Compose/container entrypoints are not supported for L3 because compose-to-QEMU connectivity is currently broken." >&2
+  exit 2
+fi
+
 format_duration() {
   local total="${1:-0}"
   local d h m s
