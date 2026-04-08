@@ -60,6 +60,7 @@ ENABLE_VM_TEST_SYSADMIN_NOPASSWD="${ENABLE_VM_TEST_SYSADMIN_NOPASSWD:-true}"
 AUTO_KILL_CONFLICTING_QEMU="${AUTO_KILL_CONFLICTING_QEMU:-true}"
 VM_METAL_BOX_SKIP_TAGS="${VM_METAL_BOX_SKIP_TAGS:-restart,cpu-isolation}"
 VM_DISABLE_CPU_GOVERNOR_SERVICE="${VM_DISABLE_CPU_GOVERNOR_SERVICE:-true}"
+AUTO_SETUP_SHARED_BRIDGE="${AUTO_SETUP_SHARED_BRIDGE:-true}"
 VM_LOCALNET_ENTRYPOINT_MODE="${VM_LOCALNET_ENTRYPOINT_MODE:-auto}"
 VM_LOCALNET_ENTRYPOINT_RPC_HOST="${VM_LOCALNET_ENTRYPOINT_RPC_HOST:-127.0.0.1}"
 VM_LOCALNET_ENTRYPOINT_RPC_PORT="${VM_LOCALNET_ENTRYPOINT_RPC_PORT:-8899}"
@@ -567,19 +568,10 @@ vm_uses_shared_bridge() {
   [[ "${VM_NETWORK_MODE}" == "shared-bridge" ]]
 }
 
-assert_shared_bridge_network_ready() {
+shared_bridge_network_missing() {
   local missing=false
   local iface
   local required_ifaces=("$VM_SOURCE_TAP_IFACE" "$VM_DESTINATION_TAP_IFACE")
-
-  if ! vm_uses_shared_bridge; then
-    return 0
-  fi
-
-  if ! command -v ip >/dev/null 2>&1; then
-    echo "VM_NETWORK_MODE=shared-bridge requires the 'ip' command (iproute2)." >&2
-    exit 3
-  fi
 
   if ! ip link show "$VM_BRIDGE_NAME" >/dev/null 2>&1; then
     echo "[vm-hot-swap] Missing shared bridge interface: ${VM_BRIDGE_NAME}" >&2
@@ -600,17 +592,52 @@ assert_shared_bridge_network_ready() {
     fi
   done
 
-  if [[ "$missing" == "true" ]]; then
-    EARLY_FAILURE_REASON="Shared bridge/tap networking is not ready"
-    ENTRYPOINT_BOOTSTRAP_OUTPUT="Missing bridge/tap interfaces for VM_NETWORK_MODE=shared-bridge"
-    cat >&2 <<EOF
-[vm-hot-swap] Shared bridge/tap networking is not ready.
-[vm-hot-swap] Recreate it with:
-  ./scripts/vm-test/setup-shared-bridge.sh
-[vm-hot-swap] If that asks for privileges, run it with sudo.
-EOF
+  [[ "$missing" == "true" ]]
+}
+
+ensure_shared_bridge_network_ready() {
+  local setup_script="$REPO_ROOT/scripts/vm-test/setup-shared-bridge.sh"
+
+  if ! vm_uses_shared_bridge; then
+    return 0
+  fi
+
+  if ! command -v ip >/dev/null 2>&1; then
+    echo "VM_NETWORK_MODE=shared-bridge requires the 'ip' command (iproute2)." >&2
     exit 3
   fi
+
+  if ! shared_bridge_network_missing; then
+    return 0
+  fi
+
+  if [[ "$AUTO_SETUP_SHARED_BRIDGE" == "true" ]]; then
+    if [[ ! -x "$setup_script" ]]; then
+      echo "[vm-hot-swap] Shared bridge/tap networking is missing and setup helper is not executable: $setup_script" >&2
+      exit 3
+    fi
+    echo "[vm-hot-swap] Shared bridge/tap networking is missing. Attempting automatic setup..." >&2
+    if ! "$setup_script"; then
+      echo "[vm-hot-swap] Automatic shared-bridge setup failed." >&2
+      echo "[vm-hot-swap] Re-run manually with:" >&2
+      echo "  $setup_script" >&2
+      echo "[vm-hot-swap] If that asks for privileges, run it with sudo." >&2
+      exit 3
+    fi
+    if ! shared_bridge_network_missing; then
+      return 0
+    fi
+  fi
+
+  EARLY_FAILURE_REASON="Shared bridge/tap networking is not ready"
+  ENTRYPOINT_BOOTSTRAP_OUTPUT="Missing bridge/tap interfaces for VM_NETWORK_MODE=shared-bridge"
+  cat >&2 <<EOF
+[vm-hot-swap] Shared bridge/tap networking is not ready.
+[vm-hot-swap] Recreate it with:
+  $setup_script
+[vm-hot-swap] If that asks for privileges, run it with sudo.
+EOF
+  exit 3
 }
 
 vm_bootstrap_host_for() {
@@ -2167,7 +2194,7 @@ if [[ "$AUTO_KILL_CONFLICTING_QEMU" == "true" ]]; then
   fi
 fi
 
-assert_shared_bridge_network_ready
+ensure_shared_bridge_network_ready
 
 cat >"$ENTRYPOINT_VM_BOOTSTRAP_INVENTORY" <<EOF
 all:
@@ -3347,13 +3374,25 @@ if [[ "$PREPARED_VM_REUSE_MODE" == "true" ]]; then
   if [[ "$SOLANA_CLUSTER_NORMALIZED" == "localnet" ]]; then
     echo "[vm-hot-swap] Prepared VM reuse: aligning validator expected genesis hash to ${LOCALNET_ENTRYPOINT_GENESIS_HASH}..." >&2
     sync_host_expected_genesis_hash "vm-source"
+    echo "[vm-hot-swap] Prepared VM reuse: waiting for source validator RPC warmup..." >&2
+    wait_for_host_validator_runtime_ready "vm-source" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+    echo "[vm-hot-swap] Prepared VM reuse: promoting source runtime identity to primary..." >&2
+    promote_host_runtime_identity_to_primary "vm-source"
+    echo "[vm-hot-swap] Prepared VM reuse: waiting for source validator catchup..." >&2
+    wait_for_host_validator_catchup "vm-source"
     sync_host_expected_genesis_hash "vm-destination"
+    echo "[vm-hot-swap] Prepared VM reuse: restarting destination after source promotion..." >&2
+    ansible "vm-destination" -i "$OPERATOR_INVENTORY" -u "$VALIDATOR_OPERATOR_USER" -b \
+      -m shell -a "set -eu; systemctl restart sol" -o >/dev/null || true
+    echo "[vm-hot-swap] Prepared VM reuse: waiting for destination validator RPC warmup..." >&2
+    wait_for_host_validator_runtime_ready "vm-destination" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+  else
+    echo "[vm-hot-swap] Prepared VM reuse: waiting for validator RPC warmup..." >&2
+    wait_for_host_validator_runtime_ready "vm-source" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+    wait_for_host_validator_runtime_ready "vm-destination" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
+    echo "[vm-hot-swap] Prepared VM reuse: promoting source runtime identity to primary..." >&2
+    promote_host_runtime_identity_to_primary "vm-source"
   fi
-  echo "[vm-hot-swap] Prepared VM reuse: waiting for validator RPC warmup..." >&2
-  wait_for_host_validator_runtime_ready "vm-source" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
-  wait_for_host_validator_runtime_ready "vm-destination" "$REUSE_RUNTIME_READY_TIMEOUT_SEC"
-  echo "[vm-hot-swap] Prepared VM reuse: promoting source runtime identity to primary..." >&2
-  promote_host_runtime_identity_to_primary "vm-source"
   SOURCE_SETUP_DURATION_SEC=0
   DESTINATION_SETUP_DURATION_SEC=0
 else

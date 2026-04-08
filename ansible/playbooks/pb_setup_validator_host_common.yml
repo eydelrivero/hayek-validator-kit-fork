@@ -19,6 +19,19 @@
     - name: Resolve shared bootstrap defaults
       ansible.builtin.set_fact:
         shared_skip_confirmation_pauses_resolved: "{{ skip_confirmation_pauses | default(true) }}"
+        shared_validator_host_bootstrap_start_at_resolved: "{{ validator_host_bootstrap_start_at | default('users') }}"
+        shared_validator_host_bootstrap_end_at_resolved: >-
+          {{
+            validator_host_bootstrap_end_at
+            | default(
+                'validator'
+                if (
+                  (validator_host_bootstrap_start_at | default('users')) == 'users'
+                  and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+                )
+                else (validator_host_bootstrap_start_at | default('users'))
+              )
+          }}
 
     - name: Assert required shared bootstrap parameters are provided
       ansible.builtin.assert:
@@ -68,10 +81,30 @@
     - name: Assert shared bootstrap start stage is supported
       ansible.builtin.assert:
         that:
-          - (validator_host_bootstrap_start_at | default('users')) in ['users', 'metal_box', 'validator']
+          - hostvars['localhost'].shared_validator_host_bootstrap_start_at_resolved in ['users', 'metal_box', 'validator']
         fail_msg: >-
-          validator_host_bootstrap_start_at={{ validator_host_bootstrap_start_at | default('users') }}
+          validator_host_bootstrap_start_at={{ hostvars['localhost'].shared_validator_host_bootstrap_start_at_resolved }}
           is unsupported. Supported values: users, metal_box, validator.
+
+    - name: Assert shared bootstrap end stage is supported
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].shared_validator_host_bootstrap_end_at_resolved in ['users', 'metal_box', 'validator']
+        fail_msg: >-
+          validator_host_bootstrap_end_at={{ hostvars['localhost'].shared_validator_host_bootstrap_end_at_resolved }}
+          is unsupported. Supported values: users, metal_box, validator.
+
+    - name: Assert shared bootstrap stage range is ordered
+      ansible.builtin.assert:
+        that:
+          - >
+            ({'users': 1, 'metal_box': 2, 'validator': 3}[hostvars['localhost'].shared_validator_host_bootstrap_start_at_resolved])
+            <=
+            ({'users': 1, 'metal_box': 2, 'validator': 3}[hostvars['localhost'].shared_validator_host_bootstrap_end_at_resolved])
+        fail_msg: >-
+          validator_host_bootstrap_start_at={{ hostvars['localhost'].shared_validator_host_bootstrap_start_at_resolved }}
+          must be earlier than or equal to
+          validator_host_bootstrap_end_at={{ hostvars['localhost'].shared_validator_host_bootstrap_end_at_resolved }}.
 
 - import_playbook: pb_setup_users_validator.yml
   vars:
@@ -80,7 +113,20 @@
     csv_file: "{{ users_csv_file }}"
     users_base_dir: "{{ users_base_dir }}"
     skip_confirmation_pauses: "{{ hostvars['localhost'].shared_skip_confirmation_pauses_resolved }}"
-  when: (validator_host_bootstrap_start_at | default('users')) == 'users'
+  when:
+    - (validator_host_bootstrap_start_at | default('users')) == 'users'
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) in ['users', 'metal_box', 'validator']
 
 - name: Manual password handoff before metal-box hardening
   hosts: localhost
@@ -127,7 +173,19 @@
     authorized_access_csv: "{{ authorized_access_csv }}"
     skip_confirmation_pauses: "{{ hostvars['localhost'].shared_skip_confirmation_pauses_resolved }}"
   when:
-    - (validator_host_bootstrap_start_at | default('users')) == 'metal_box'
+    - (validator_host_bootstrap_start_at | default('users')) in ['users', 'metal_box']
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) in ['metal_box', 'validator']
 
 - import_playbook: pb_setup_validator_agave.yml
   vars:
@@ -138,7 +196,18 @@
     solana_validator_ha_install_enabled: false
   when:
     - validator_flavor == 'agave'
-    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) == 'validator'
 
 - import_playbook: pb_setup_validator_jito_v2.yml
   vars:
@@ -149,7 +218,18 @@
     solana_validator_ha_install_enabled: false
   when:
     - validator_flavor == 'jito-bam'
-    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) == 'validator'
 
 - import_playbook: pb_setup_validator_ha.yml
   vars:
@@ -159,4 +239,15 @@
     ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
     validator_name: "{{ validator_name }}"
   when:
-    - (validator_host_bootstrap_start_at | default('users')) == 'validator'
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) == 'validator'

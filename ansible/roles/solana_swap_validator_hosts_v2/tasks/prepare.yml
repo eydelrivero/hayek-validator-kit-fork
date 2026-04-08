@@ -482,9 +482,8 @@
             'No route to host' in ssh_test_result.stderr)))
   when:
     - inventory_hostname == source_host
-    - ssh_key_exists is defined
-    - ssh_key_exists.stat is defined
-    - ssh_key_exists.stat.exists | default(false)
+    - source_host_ssh_key_path is defined
+    - source_host_ssh_key_path | length > 0
 
 - name: prepare - Verify Destination Validator Health
   block:
