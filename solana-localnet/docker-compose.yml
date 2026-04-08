@@ -67,6 +67,11 @@ services:
     hostname: "gossip-entrypoint"
     environment:
       - FOO="bar"
+    # Agave 3.x uses io_uring during test-validator startup on Linux.
+    # Docker's default seccomp profile blocks io_uring_setup, so match the
+    # VM harness control-plane container and allow the syscall explicitly.
+    security_opt:
+      - seccomp:unconfined
     networks:
       solana_network:
         ipv4_address: 172.25.0.10

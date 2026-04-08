@@ -48,6 +48,12 @@ services:
     tty: true
     networks:
       - molecule_net
+    # The runner image carries Agave 3.x CLI binaries, and ad hoc localnet
+    # commands may invoke solana-test-validator inside this container.
+    # Docker's default seccomp profile blocks io_uring_setup, which causes
+    # Agave 3.x startup to abort on Linux.
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - ..:/hayek-validator-kit
       - ${HOME}/test-reports/:/test-reports/
@@ -62,4 +68,3 @@ services:
       /hayek-validator-kit/ansible-tests/scripts/generate-test-csv.sh
       exec bash -li
       "
-
