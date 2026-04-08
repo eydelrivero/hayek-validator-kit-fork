@@ -1,0 +1,4 @@
+# Tokyo-specific, non-secret (rare) variables
+jito_mainnet_bam_region: "tokyo"
+jito_testnet_bam_region: "newyork"
+jito_localnet_bam_region: "dallas"
