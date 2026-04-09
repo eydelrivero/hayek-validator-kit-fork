@@ -423,9 +423,10 @@
     destination_host_address: "{{ hostvars[destination_host]['ansible_host'] | default(hostvars[destination_host]['inventory_hostname'] | default(destination_host)) }}"
   run_once: true
 
-# Optionally guarantee SSH access by adding a destination-side UFW rule for the
-# source host before the inter-host SSH probe. VM shared-bridge runs need this,
-# while compose/localnet flows can leave it disabled.
+# By default, guarantee SSH access by adding a destination-side UFW rule for
+# the source host before the inter-host SSH probe. Compose/localnet flows can
+# disable this explicitly, while VM runs may keep the explicit override for
+# readability.
 - name: Ensure SSH access to destination_host by adding ufw rule on destination_host
   block:
     - name: prepare - Allow source_host SSH access to destination_host
@@ -447,7 +448,7 @@
   become: true
   when:
     - not ansible_check_mode
-    - manage_destination_ufw_peer_ssh_rule | default(false) | bool
+    - manage_destination_ufw_peer_ssh_rule | default(true) | bool
     - inventory_hostname == destination_host
     - ansible_facts['os_family'] == 'Debian'
 
