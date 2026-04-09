@@ -90,13 +90,5 @@
           This playbook is intended for existing Hayek validator hosts.
       when: not validator_keyset_dir_stat.stat.isdir | default(false)
 
-    - name: Fail if single-host HA playbook is asked to enable runtime
-      ansible.builtin.assert:
-        that:
-          - not (solana_validator_ha_runtime_enabled | default(false) | bool)
-        fail_msg: >-
-          pb_setup_validator_ha.yml is install-only. Use pb_reconcile_validator_ha_cluster.yml
-          to stage and enable solana-validator-ha runtime across the full HA group.
-
   roles:
     - role: solana_validator_ha
