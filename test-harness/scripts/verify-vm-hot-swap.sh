@@ -2412,6 +2412,7 @@ bootstrap_host_with_shared_flow() {
     -e "metal_box_user=$METAL_BOX_SYSADMIN_USER"
     -e "validator_operator_user=$VALIDATOR_OPERATOR_USER"
     -e "validator_name=$VALIDATOR_NAME"
+    -e "validator_keyset_name=$(validator_keyset_name_for_host "$host")"
     -e "validator_type=$validator_type"
     -e "password_handoff_mode=assume_ready"
     -e "xdp_enabled=true"
@@ -2467,6 +2468,23 @@ bootstrap_host_with_shared_flow() {
       ;;
     *)
       echo "Unsupported flavor: $flavor" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validator_keyset_name_for_host() {
+  local host="$1"
+
+  case "$host" in
+    vm-source)
+      printf '%s\n' "$SOURCE_VALIDATOR_KEYSET_NAME"
+      ;;
+    vm-destination)
+      printf '%s\n' "$DESTINATION_VALIDATOR_KEYSET_NAME"
+      ;;
+    *)
+      echo "Unsupported host for validator keyset selection: $host" >&2
       exit 2
       ;;
   esac
