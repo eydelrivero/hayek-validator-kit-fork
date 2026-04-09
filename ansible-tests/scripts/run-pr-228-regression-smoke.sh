@@ -179,9 +179,9 @@ run_syntax_checks() {
 
     ansible-playbook --syntax-check \
       -i "$inventory" \
-      -e "target_ha_group=ha_pair" \
+      -e "ha_reconcile_retained_peers_group=ha_reconcile_retained_peers" \
       -e "operator_user=$operator_user" \
-      -e "ha_reconcile_inventory_group_all=validator_hosts" \
+      -e "ha_reconcile_peers_group=ha_reconcile_peers" \
       playbooks/pb_reconcile_validator_ha_cluster.yml
   )
 

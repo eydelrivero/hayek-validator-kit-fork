@@ -227,7 +227,7 @@ else:
             name
             for name in groups
             if name.startswith("ha_")
-            and name != "ha_reconcile_inventory_group_all"
+            and name != "ha_reconcile_peers"
             and group_hosts(name)
         )
 
