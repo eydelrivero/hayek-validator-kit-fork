@@ -156,6 +156,40 @@ ansible_in_control() {
   control_exec "cd $CONTAINER_REPO_ROOT/ansible && $cmd"
 }
 
+assert_host_validator_runtime() {
+  local host="$1"
+  local service_cmd
+
+  service_cmd="set -eu; systemctl is-active --quiet sol"
+
+  ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$service_cmd\" -o" >/dev/null
+  ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m wait_for -a 'host=127.0.0.1 port=8899 timeout=30 state=started' -o" >/dev/null
+}
+
+promote_host_runtime_identity_to_primary() {
+  local host="$1"
+  local promote_cmd
+  local attempt
+  local output=""
+  local rc=0
+  promote_cmd="set -eu; remaining=180; while [ \"\\\$remaining\" -gt 0 ]; do if /opt/solana/active_release/bin/agave-validator -l /mnt/ledger set-identity /opt/validator/keys/$VALIDATOR_NAME/primary-target-identity.json >/dev/null 2>&1; then exit 0; fi; sleep 2; remaining=\\\$((remaining - 2)); done; echo 'Timed out promoting runtime identity to primary-target-identity.json' >&2; exit 1"
+
+  for attempt in 1 2 3; do
+    rc=0
+    output="$(
+      ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$host' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$promote_cmd\" -o" 2>&1
+    )" || rc=$?
+    if (( rc == 0 )); then
+      return 0
+    fi
+    sleep 5
+  done
+
+  echo "Failed to promote runtime identity to primary on $host after multiple attempts." >&2
+  echo "$output" >&2
+  return 1
+}
+
 setup_host_flavor() {
   local host="$1"
   local flavor="$2"
@@ -293,6 +327,9 @@ ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAI
 
 echo "[ha-reconcile] Configuring source host $SOURCE_HOST ($SOURCE_FLAVOR)..." >&2
 setup_host_flavor "$SOURCE_HOST" "$SOURCE_FLAVOR" "primary"
+assert_host_validator_runtime "$SOURCE_HOST"
+echo "[ha-reconcile] Promoting source host $SOURCE_HOST to primary runtime identity..." >&2
+promote_host_runtime_identity_to_primary "$SOURCE_HOST"
 
 echo "[ha-reconcile] Configuring destination host $DESTINATION_HOST ($DESTINATION_FLAVOR)..." >&2
 setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare"
