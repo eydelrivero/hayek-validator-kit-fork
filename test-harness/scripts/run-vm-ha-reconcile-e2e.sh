@@ -109,6 +109,6 @@ export VM_BRIDGE_GATEWAY_IP="${VM_BRIDGE_GATEWAY_IP:-192.168.100.1}"
 export VM_SOURCE_TAP_IFACE="${VM_SOURCE_TAP_IFACE:-tap-hvk-ha-src}"
 export VM_DESTINATION_TAP_IFACE="${VM_DESTINATION_TAP_IFACE:-tap-hvk-ha-dst}"
 export ENTRYPOINT_VM_TAP_IFACE="${ENTRYPOINT_VM_TAP_IFACE:-tap-hvk-ha-ent}"
-export SOLANA_VALIDATOR_HA_RUNTIME_ENABLED=true
+export VERIFY_HA_RECONCILE=true
 
 exec "$REPO_ROOT/test-harness/scripts/verify-vm-hot-swap.sh" "${verify_args[@]}"

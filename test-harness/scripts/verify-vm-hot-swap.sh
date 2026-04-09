@@ -106,13 +106,13 @@ BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
 SKIP_CONFIRMATION_PAUSES="${SKIP_CONFIRMATION_PAUSES:-true}"
-SOLANA_VALIDATOR_HA_RUNTIME_ENABLED="${SOLANA_VALIDATOR_HA_RUNTIME_ENABLED:-false}"
+VERIFY_HA_RECONCILE="${VERIFY_HA_RECONCILE:-false}"
 SOLANA_VALIDATOR_HA_RECONCILE_GROUP="${SOLANA_VALIDATOR_HA_RECONCILE_GROUP:-ha_vm_hot_swap}"
 SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
 SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
 SOLANA_VALIDATOR_HA_SOURCE_PRIORITY="${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY:-10}"
 SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY="${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY:-20}"
-HA_RECONCILE_INVENTORY_GROUP_ALL="${HA_RECONCILE_INVENTORY_GROUP_ALL:-}"
+HA_RECONCILE_PEERS_GROUP="${HA_RECONCILE_PEERS_GROUP:-}"
 HA_RECONCILE_ALLOW_DECOMMISSION="${HA_RECONCILE_ALLOW_DECOMMISSION:-false}"
 
 if [[ -z "$VM_LOCALNET_ENTRYPOINT_CONTAINER_IMAGE" ]]; then
@@ -226,7 +226,7 @@ Environment:
   VM_PREPARE_ONLY=true with VM_PREPARE_EXPORT_DIR=<dir> (prepare source/destination VM disks and exit before swap)
   VM_ENTRYPOINT_PREPARE_ONLY=true (prepare shared entrypoint VM cache [CLI + launcher], do not start localnet runtime)
   VM_MANUAL_TEST_ONLY=true (boot a full pre-swap cluster for manual testing, emit report, retain VMs if requested, and skip the swap)
-  HA_RECONCILE_INVENTORY_GROUP_ALL=<group> (optional HA universe override for pb_reconcile_validator_ha_cluster.yml)
+  HA_RECONCILE_PEERS_GROUP=<group> (optional HA peers override for pb_reconcile_validator_ha_cluster.yml)
   HA_RECONCILE_ALLOW_DECOMMISSION=true|false (default: false; required when target HA group omits managed peers)
 EOF
 }
@@ -2343,7 +2343,7 @@ all:
       hosts:
         vm-source:
         vm-destination:
-    ha_reconcile_inventory_group_all:
+    ha_reconcile_peers:
       hosts:
         vm-source:
         vm-destination:
@@ -2558,8 +2558,8 @@ setup_host_flavor() {
 reconcile_validator_ha_cluster() {
   local extra_args=()
 
-  if [[ -n "$HA_RECONCILE_INVENTORY_GROUP_ALL" ]]; then
-    extra_args+=(-e "ha_reconcile_inventory_group_all=$HA_RECONCILE_INVENTORY_GROUP_ALL")
+  if [[ -n "$HA_RECONCILE_PEERS_GROUP" ]]; then
+    extra_args+=(-e "ha_reconcile_peers_group=$HA_RECONCILE_PEERS_GROUP")
   fi
 
   if [[ "$HA_RECONCILE_ALLOW_DECOMMISSION" == "true" ]]; then
@@ -2571,7 +2571,7 @@ reconcile_validator_ha_cluster() {
     "$REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml" \
     "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
     "${extra_args[@]}" \
-    -e "target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP" \
+    -e "ha_reconcile_retained_peers_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP" \
     -e "operator_user=$VALIDATOR_OPERATOR_USER" \
     -e "validator_name=$VALIDATOR_NAME" \
     -e "solana_cluster=$SOLANA_CLUSTER" \
@@ -3442,7 +3442,7 @@ else
   DESTINATION_SETUP_DURATION_SEC=$(( $(date +%s) - phase_start_ts ))
 fi
 
-if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
+if [[ "$VERIFY_HA_RECONCILE" == "true" ]]; then
   CURRENT_PHASE="ha cluster reconcile"
   echo "[vm-hot-swap] Reconciling HA runtime across ${SOLANA_VALIDATOR_HA_RECONCILE_GROUP}..." >&2
   reconcile_validator_ha_cluster

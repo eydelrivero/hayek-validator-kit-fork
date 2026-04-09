@@ -24,7 +24,7 @@ BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
 SWAP_EPOCH_END_THRESHOLD_SEC="${SWAP_EPOCH_END_THRESHOLD_SEC:-0}"
-SOLANA_VALIDATOR_HA_RUNTIME_ENABLED="${SOLANA_VALIDATOR_HA_RUNTIME_ENABLED:-false}"
+VERIFY_HA_RECONCILE="${VERIFY_HA_RECONCILE:-false}"
 SOLANA_VALIDATOR_HA_RECONCILE_GROUP="${SOLANA_VALIDATOR_HA_RECONCILE_GROUP:-ha_compose_hot_swap}"
 SOLANA_VALIDATOR_HA_SOURCE_NODE_ID="${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID:-ark}"
 SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID="${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID:-fog}"
@@ -277,7 +277,7 @@ EOF
 }
 
 reconcile_validator_ha_cluster() {
-  ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml' -e target_ha_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP -e operator_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e solana_cluster=$SOLANA_CLUSTER -e ha_enforce_hostname_prefix=false"
+  ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/ansible/playbooks/pb_reconcile_validator_ha_cluster.yml' -e ha_reconcile_retained_peers_group=$SOLANA_VALIDATOR_HA_RECONCILE_GROUP -e operator_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e solana_cluster=$SOLANA_CLUSTER -e ha_enforce_hostname_prefix=false"
 }
 
 ensure_localnet_demo_validator_accounts() {
@@ -591,7 +591,7 @@ promote_host_runtime_identity_to_primary "$SOURCE_HOST"
 echo "[hot-swap] Configuring destination host $DESTINATION_HOST ($DESTINATION_FLAVOR)..." >&2
 setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare"
 
-if [[ "$SOLANA_VALIDATOR_HA_RUNTIME_ENABLED" == "true" ]]; then
+if [[ "$VERIFY_HA_RECONCILE" == "true" ]]; then
   echo "[hot-swap] Reconciling HA runtime across $SOLANA_VALIDATOR_HA_RECONCILE_GROUP..." >&2
   reconcile_validator_ha_cluster
   assert_host_ha_runtime_config "$SOURCE_HOST" "$SOLANA_VALIDATOR_HA_SOURCE_NODE_ID" "$SOLANA_VALIDATOR_HA_SOURCE_PRIORITY" "$SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID" "$(jq -r '.ansible_host' < <(ansible_in_control "ansible-inventory -i '$CONTAINER_HA_INVENTORY' --host '$DESTINATION_HOST'"))" "$SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY"
