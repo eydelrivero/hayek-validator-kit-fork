@@ -8,9 +8,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_ENGINE="${COMPOSE_ENGINE:-docker}"
 SCENARIO="${SCENARIO:-hot_swap_matrix}"
 WORKDIR="${WORKDIR:-$REPO_ROOT/test-harness/work}"
-SOURCE_HOST="${SOURCE_HOST:-host-alpha}"
-DESTINATION_HOST="${DESTINATION_HOST:-host-bravo}"
-VALIDATOR_NAME="${VALIDATOR_NAME:-demo1}"
+SOURCE_HOST="${SOURCE_HOST:-host-bravo}"
+DESTINATION_HOST="${DESTINATION_HOST:-host-charlie}"
+VALIDATOR_NAME="${VALIDATOR_NAME:-demo2}"
 OPERATOR_USER="${OPERATOR_USER:-ubuntu}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 CONTINUE_ON_ERROR=false
@@ -25,9 +25,9 @@ Options:
   --compose-engine <docker|podman>   (default: docker)
   --scenario <name>                  (default: hot_swap_matrix)
   --workdir <path>                   (default: ./test-harness/work)
-  --source-host <name>               (default: host-alpha)
-  --destination-host <name>          (default: host-bravo)
-  --validator-name <name>            (default: demo1)
+  --source-host <name>               (default: host-bravo)
+  --destination-host <name>          (default: host-charlie)
+  --validator-name <name>            (default: demo2)
   --operator-user <name>             (default: ubuntu)
   --timeout-seconds <int>            (default: 1800)
   --continue-on-error

@@ -7,13 +7,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 COMPOSE_ENGINE="${COMPOSE_ENGINE:-docker}"
 INVENTORY_PATH=""
-SOURCE_HOST="${SOURCE_HOST:-host-alpha}"
-DESTINATION_HOST="${DESTINATION_HOST:-host-bravo}"
+SOURCE_HOST="${SOURCE_HOST:-host-bravo}"
+DESTINATION_HOST="${DESTINATION_HOST:-host-charlie}"
 SOURCE_FLAVOR=""
 DESTINATION_FLAVOR=""
-VALIDATOR_NAME="${VALIDATOR_NAME:-demo1}"
+VALIDATOR_NAME="${VALIDATOR_NAME:-demo2}"
 OPERATOR_USER="${OPERATOR_USER:-ubuntu}"
 SOLANA_CLUSTER="${SOLANA_CLUSTER:-localnet}"
+SOURCE_HOT_SPARE_KEYSET_NAME="${SOURCE_HOT_SPARE_KEYSET_NAME:-demo1}"
 
 AGAVE_VERSION="${AGAVE_VERSION:-3.1.10}"
 JITO_VERSION="${JITO_VERSION:-2.3.6}"
@@ -51,9 +52,9 @@ Required:
 
 Optional:
   --compose-engine <docker|podman>      (default: docker)
-  --source-host <name>                  (default: host-alpha)
-  --destination-host <name>             (default: host-bravo)
-  --validator-name <name>               (default: demo1)
+  --source-host <name>                  (default: host-bravo)
+  --destination-host <name>             (default: host-charlie)
+  --validator-name <name>               (default: demo2)
   --operator-user <name>                (default: ubuntu)
 EOF
 }
@@ -169,6 +170,8 @@ container_path() {
 CONTAINER_INVENTORY="$(container_path "$INVENTORY_PATH")"
 HA_INVENTORY_PATH=""
 CONTAINER_HA_INVENTORY=""
+SOURCE_VALIDATOR_KEYSET_NAME=""
+DESTINATION_VALIDATOR_KEYSET_NAME=""
 
 ansible_in_control() {
   local cmd="$1"
@@ -191,10 +194,11 @@ setup_host_flavor() {
   local host="$1"
   local flavor="$2"
   local validator_type="$3"
+  local validator_keyset_name="$4"
   local base_extra
   local playbook=""
 
-  base_extra="-e target_host=$host -e ansible_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e validator_type=$validator_type -e xdp_enabled=true -e solana_cluster=$SOLANA_CLUSTER -e build_from_source=$BUILD_FROM_SOURCE -e force_host_cleanup=$FORCE_HOST_CLEANUP"
+  base_extra="-e target_host=$host -e ansible_user=$OPERATOR_USER -e validator_name=$VALIDATOR_NAME -e validator_keyset_name=$validator_keyset_name -e validator_type=$validator_type -e xdp_enabled=true -e solana_cluster=$SOLANA_CLUSTER -e build_from_source=$BUILD_FROM_SOURCE -e force_host_cleanup=$FORCE_HOST_CLEANUP"
 
   case "$flavor" in
     agave)
@@ -289,6 +293,53 @@ ensure_localnet_demo_validator_accounts() {
 
   init_cmd="set -eu; payer_key=\"\$HOME/.config/solana/id.json\"; keys_dir='$CONTAINER_REPO_ROOT/solana-localnet/validator-keys/$VALIDATOR_NAME'; primary_key=\"\$keys_dir/primary-target-identity.json\"; vote_key=\"\$keys_dir/vote-account.json\"; withdrawer_key=\"\$keys_dir/authorized-withdrawer.json\"; stake_key=\"\$keys_dir/stake-account.json\"; vote_pubkey=\$(solana-keygen pubkey \"\$vote_key\"); if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$vote_pubkey\" >/dev/null 2>&1; then exit 0; fi; echo '[hot-swap] Initializing localnet vote/stake accounts for $VALIDATOR_NAME...' >&2; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" airdrop 500000 >/dev/null || true; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$primary_key\" airdrop 42 >/dev/null || true; solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" create-vote-account \"\$vote_key\" \"\$primary_key\" \"\$withdrawer_key\" >/dev/null; if [ -f \"\$stake_key\" ]; then stake_pubkey=\$(solana-keygen pubkey \"\$stake_key\"); if ! solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$stake_pubkey\" >/dev/null 2>&1; then solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" create-stake-account \"\$stake_key\" 200000 >/dev/null || true; fi; if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$stake_pubkey\" >/dev/null 2>&1; then solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' --keypair \"\$payer_key\" delegate-stake \"\$stake_key\" \"\$vote_key\" --force >/dev/null || true; fi; fi; for _ in \$(seq 1 30); do if solana -u '$LOCALNET_ENTRYPOINT_RPC_URL' account \"\$vote_pubkey\" >/dev/null 2>&1; then exit 0; fi; sleep 1; done; echo \"Localnet vote account \$vote_pubkey was not visible on $LOCALNET_ENTRYPOINT_RPC_URL after initialization.\" >&2; exit 1"
   control_exec "$init_cmd"
+}
+
+stage_compose_hybrid_keysets() {
+  local keyset_suffix
+  keyset_suffix="$(date +%Y%m%d-%H%M%S)-$$"
+  SOURCE_VALIDATOR_KEYSET_NAME="compose-${VALIDATOR_NAME}-${SOURCE_HOST}-${keyset_suffix}"
+  DESTINATION_VALIDATOR_KEYSET_NAME="compose-${VALIDATOR_NAME}-${DESTINATION_HOST}-${keyset_suffix}"
+
+  control_exec "set -eu; keys_root=\"\$HOME/.validator-keys\"; shared=\"$VALIDATOR_NAME\"; source_hot=\"$SOURCE_HOT_SPARE_KEYSET_NAME\"; source_keyset=\"$SOURCE_VALIDATOR_KEYSET_NAME\"; destination_keyset=\"$DESTINATION_VALIDATOR_KEYSET_NAME\"; test -d \"\$keys_root/\$shared\"; test -d \"\$keys_root/\$source_hot\"; rm -rf \"\$keys_root/\$source_keyset\" \"\$keys_root/\$destination_keyset\"; cp -a \"\$keys_root/\$shared\" \"\$keys_root/\$source_keyset\"; cp -a \"\$keys_root/\$shared\" \"\$keys_root/\$destination_keyset\"; cp \"\$keys_root/\$source_hot/hot-spare-identity.json\" \"\$keys_root/\$source_keyset/hot-spare-identity.json\""
+}
+
+cleanup_staged_compose_hybrid_keysets() {
+  if [[ -z "$SOURCE_VALIDATOR_KEYSET_NAME" && -z "$DESTINATION_VALIDATOR_KEYSET_NAME" ]]; then
+    return 0
+  fi
+
+  control_exec "set -eu; keys_root=\"\$HOME/.validator-keys\"; rm -rf \"\$keys_root/$SOURCE_VALIDATOR_KEYSET_NAME\" \"\$keys_root/$DESTINATION_VALIDATOR_KEYSET_NAME\"" >/dev/null 2>&1 || true
+}
+
+assert_staged_compose_hybrid_keysets() {
+  local shared_primary shared_vote shared_hot
+  local source_hot_expected
+  local source_primary source_vote source_hot
+  local destination_primary destination_vote destination_hot
+
+  shared_primary="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$VALIDATOR_NAME/primary-target-identity.json\"" | tail -n 1 | tr -d '\r')"
+  shared_vote="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$VALIDATOR_NAME/vote-account.json\"" | tail -n 1 | tr -d '\r')"
+  shared_hot="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$VALIDATOR_NAME/hot-spare-identity.json\"" | tail -n 1 | tr -d '\r')"
+  source_hot_expected="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$SOURCE_HOT_SPARE_KEYSET_NAME/hot-spare-identity.json\"" | tail -n 1 | tr -d '\r')"
+  source_primary="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$SOURCE_VALIDATOR_KEYSET_NAME/primary-target-identity.json\"" | tail -n 1 | tr -d '\r')"
+  source_vote="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$SOURCE_VALIDATOR_KEYSET_NAME/vote-account.json\"" | tail -n 1 | tr -d '\r')"
+  source_hot="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$SOURCE_VALIDATOR_KEYSET_NAME/hot-spare-identity.json\"" | tail -n 1 | tr -d '\r')"
+  destination_primary="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$DESTINATION_VALIDATOR_KEYSET_NAME/primary-target-identity.json\"" | tail -n 1 | tr -d '\r')"
+  destination_vote="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$DESTINATION_VALIDATOR_KEYSET_NAME/vote-account.json\"" | tail -n 1 | tr -d '\r')"
+  destination_hot="$(control_exec "solana-keygen pubkey \"\$HOME/.validator-keys/$DESTINATION_VALIDATOR_KEYSET_NAME/hot-spare-identity.json\"" | tail -n 1 | tr -d '\r')"
+
+  assert_same_value "source hybrid primary key" "$shared_primary" "$source_primary"
+  assert_same_value "source hybrid vote key" "$shared_vote" "$source_vote"
+  assert_same_value "source hybrid hot-spare key" "$source_hot_expected" "$source_hot"
+  assert_same_value "destination hybrid primary key" "$shared_primary" "$destination_primary"
+  assert_same_value "destination hybrid vote key" "$shared_vote" "$destination_vote"
+  assert_same_value "destination hybrid hot-spare key" "$shared_hot" "$destination_hot"
+
+  if [[ "$source_hot" == "$destination_hot" ]]; then
+    echo "Compose hybrid keysets reused the same hot-spare identity for $SOURCE_HOST and $DESTINATION_HOST: $source_hot" >&2
+    exit 1
+  fi
 }
 
 host_systemd_main_pid() {
@@ -575,21 +626,46 @@ assert_swap_identity_state() {
   ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible '$DESTINATION_HOST' -i '$CONTAINER_HA_INVENTORY' -u '$OPERATOR_USER' -b -m shell -a \"$destination_cmd\" -o"
 }
 
-trap '[[ -n "$HA_INVENTORY_PATH" ]] && rm -f "$HA_INVENTORY_PATH"' EXIT
+host_hot_spare_pubkey() {
+  local host="$1"
+  host_exec_as_solana "$host" "/opt/solana/active_release/bin/solana-keygen pubkey '/opt/validator/keys/$VALIDATOR_NAME/hot-spare-identity.json'" | tail -n 1 | tr -d '\r'
+}
+
+assert_distinct_host_hot_spare_pubkeys() {
+  local stage="$1"
+  local source_hot destination_hot
+
+  source_hot="$(host_hot_spare_pubkey "$SOURCE_HOST")"
+  destination_hot="$(host_hot_spare_pubkey "$DESTINATION_HOST")"
+  if [[ "$source_hot" == "$destination_hot" ]]; then
+    echo "[$stage] $SOURCE_HOST and $DESTINATION_HOST share the same hot-spare identity: $source_hot" >&2
+    exit 1
+  fi
+}
+
+cleanup() {
+  [[ -n "$HA_INVENTORY_PATH" ]] && rm -f "$HA_INVENTORY_PATH"
+  cleanup_staged_compose_hybrid_keysets
+}
+
+trap cleanup EXIT
 build_ha_inventory
 ensure_localnet_demo_validator_accounts
+stage_compose_hybrid_keysets
+assert_staged_compose_hybrid_keysets
 
 echo "[hot-swap] Preparing host prerequisites..." >&2
 ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAINER_HA_INVENTORY' '$CONTAINER_REPO_ROOT/test-harness/ansible/pb_prepare_hot_swap_test_hosts.yml' --limit '$SOURCE_HOST,$DESTINATION_HOST' -e target_hosts='$SOURCE_HOST,$DESTINATION_HOST' -e operator_user=$OPERATOR_USER"
 
 echo "[hot-swap] Configuring source host $SOURCE_HOST ($SOURCE_FLAVOR)..." >&2
-setup_host_flavor "$SOURCE_HOST" "$SOURCE_FLAVOR" "primary"
+setup_host_flavor "$SOURCE_HOST" "$SOURCE_FLAVOR" "primary" "$SOURCE_VALIDATOR_KEYSET_NAME"
 assert_host_validator_runtime "$SOURCE_HOST"
 echo "[hot-swap] Promoting source host $SOURCE_HOST to primary runtime identity..." >&2
 promote_host_runtime_identity_to_primary "$SOURCE_HOST"
 
 echo "[hot-swap] Configuring destination host $DESTINATION_HOST ($DESTINATION_FLAVOR)..." >&2
-setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare"
+setup_host_flavor "$DESTINATION_HOST" "$DESTINATION_FLAVOR" "hot-spare" "$DESTINATION_VALIDATOR_KEYSET_NAME"
+assert_distinct_host_hot_spare_pubkeys "post-setup"
 
 if [[ "$VERIFY_HA_RECONCILE" == "true" ]]; then
   echo "[hot-swap] Reconciling HA runtime across $SOLANA_VALIDATOR_HA_RECONCILE_GROUP..." >&2
@@ -645,6 +721,7 @@ ansible_in_control "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i '$CONTAI
 
 echo "[hot-swap] Verifying post-swap identity state..." >&2
 assert_swap_identity_state
+assert_distinct_host_hot_spare_pubkeys "post-swap"
 echo "[hot-swap] Reporting post-swap identity and catchup status..." >&2
 report_host_status "post-swap" "$SOURCE_HOST"
 report_host_status "post-swap" "$DESTINATION_HOST"

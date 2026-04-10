@@ -545,6 +545,9 @@ Run full identity transfer tests for:
 - `jito-bam -> agave`
 - `jito-bam -> jito-bam`
 
+The automated compose pair uses `host-bravo -> host-charlie` with logical validator `demo2`.
+Both hosts share the `demo2` primary and vote identities, but the harness stages distinct hot-spare identities per host to avoid gossip collisions during passive runtime overlap.
+
 ```bash
 ./test-harness/scripts/run-compose-hot-swap-matrix.sh \
   --compose-engine docker \
