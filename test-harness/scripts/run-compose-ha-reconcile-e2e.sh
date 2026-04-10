@@ -148,7 +148,8 @@ fi
 
 "$REPO_ROOT/test-harness/targets/compose.sh" wait "${target_args[@]}" --timeout-seconds "$TIMEOUT_SECONDS"
 
-exec "$REPO_ROOT/test-harness/scripts/verify-compose-ha-reconcile.sh" \
+rc=0
+"$REPO_ROOT/test-harness/scripts/verify-compose-ha-reconcile.sh" \
   --compose-engine "$COMPOSE_ENGINE" \
   --inventory "$INVENTORY_PATH" \
   --source-host "$SOURCE_HOST" \
@@ -156,4 +157,6 @@ exec "$REPO_ROOT/test-harness/scripts/verify-compose-ha-reconcile.sh" \
   --source-flavor "$SOURCE_FLAVOR" \
   --destination-flavor "$DESTINATION_FLAVOR" \
   --validator-name "$VALIDATOR_NAME" \
-  --operator-user "$OPERATOR_USER"
+  --operator-user "$OPERATOR_USER" || rc=$?
+
+exit "$rc"

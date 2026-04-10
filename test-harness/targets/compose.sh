@@ -65,6 +65,8 @@ INVENTORY_PATH="$STATE_DIR/inventory.yml"
 COMPOSE_BASE="$REPO_ROOT/solana-localnet/docker-compose.yml"
 COMPOSE_OVERRIDE_DOCKER="$REPO_ROOT/solana-localnet/docker-compose.docker.yml"
 COMPOSE_OVERRIDE_PODMAN="$REPO_ROOT/solana-localnet/docker-compose.podman.yml"
+CLEANUP_SCRIPT="$REPO_ROOT/solana-localnet/cleanup-generated-localnet-dirs.sh"
+LOCALNET_TEST_SCRIPT="$REPO_ROOT/solana-localnet/tests/test-localnet.sh"
 
 hvk_mkdir "$STATE_DIR"
 hvk_mkdir "$ARTIFACT_DIR"
@@ -79,11 +81,7 @@ compose_exec() {
   "$bin" compose -f "$COMPOSE_BASE" -f "$override" --profile "$PROFILE" "$@"
 }
 
-validate() {
-  if [[ -z "$SCENARIO" ]]; then
-    hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
-  fi
-
+validate_shared() {
   hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
 
   case "$COMPOSE_ENGINE" in
@@ -99,7 +97,19 @@ validate() {
   esac
 
   [[ -f "$COMPOSE_BASE" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing compose file: $COMPOSE_BASE" 3
-  [[ -x "$REPO_ROOT/solana-localnet/tests/test-localnet.sh" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: solana-localnet/tests/test-localnet.sh" 3
+}
+
+validate_scenario_required() {
+  if [[ -z "$SCENARIO" ]]; then
+    hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
+  fi
+
+  [[ -x "$LOCALNET_TEST_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: solana-localnet/tests/test-localnet.sh" 3
+}
+
+validate() {
+  validate_shared
+  validate_scenario_required
 
   hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "Compose adapter validation passed" \
     "$(jq -cn --arg engine "$COMPOSE_ENGINE" --arg profile "$PROFILE" --arg state_dir "$STATE_DIR" '{engine: $engine, profile: $profile, state_dir: $state_dir}')"
@@ -108,7 +118,7 @@ validate() {
 up() {
   validate >/dev/null
   echo "[$ADAPTER] Bringing up stack via existing localnet test harness ($COMPOSE_ENGINE)..." >&2
-  "$REPO_ROOT/solana-localnet/tests/test-localnet.sh" "$COMPOSE_ENGINE"
+  "$LOCALNET_TEST_SCRIPT" "$COMPOSE_ENGINE"
 
   jq -cn \
     --arg scenario "$SCENARIO" \
@@ -179,15 +189,16 @@ wait_ready() {
 }
 
 down() {
-  validate >/dev/null
+  validate_shared
+  [[ -x "$CLEANUP_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: solana-localnet/cleanup-generated-localnet-dirs.sh" 3
   echo "[$ADAPTER] tearing down compose stack..." >&2
   compose_exec down --remove-orphans --volumes || true
-  "$REPO_ROOT/solana-localnet/cleanup-generated-localnet-dirs.sh" "$COMPOSE_ENGINE" || true
+  "$CLEANUP_SCRIPT" "$COMPOSE_ENGINE" || true
   hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "Compose stack torn down"
 }
 
 artifacts() {
-  validate >/dev/null
+  validate_shared
 
   {
     echo "adapter=$ADAPTER"
