@@ -263,11 +263,17 @@ all:
       solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID}
       solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY}
   children:
+    city_dal:
+      hosts:
+        ${SOURCE_HOST}:
+        ${DESTINATION_HOST}:
     solana:
       hosts:
         ${SOURCE_HOST}:
         ${DESTINATION_HOST}:
     solana_localnet:
+      vars:
+        iam_set_immutable: false
       hosts:
         ${SOURCE_HOST}:
         ${DESTINATION_HOST}:

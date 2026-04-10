@@ -151,7 +151,19 @@ all:
       ansible_port: 22
       ansible_user: ubuntu
   children:
+    city_dal:
+      hosts:
+        host-alpha:
+        host-bravo:
+        host-charlie:
+    solana:
+      hosts:
+        host-alpha:
+        host-bravo:
+        host-charlie:
     solana_localnet:
+      vars:
+        iam_set_immutable: false
       hosts:
         host-alpha:
         host-bravo:
