@@ -263,6 +263,14 @@ print_adapter_output() {
   fi
 }
 
+emit_adapter_error_output() {
+  if [[ -z "${ADAPTER_OUTPUT:-}" ]]; then
+    return 0
+  fi
+
+  print_adapter_output
+}
+
 scenario_list_json() {
   local scenarios_json
   scenarios_json="$(
@@ -329,6 +337,7 @@ dispatch_command() {
     return 0
   else
     local status=$?
+    emit_adapter_error_output
     return "$status"
   fi
 }
@@ -424,7 +433,7 @@ run_command() {
   local failure_code=1
 
   RUN_CLEANUP_ACTIVE=true
-  RUN_CLEANUP_SHOULD_DOWN=true
+  RUN_CLEANUP_SHOULD_DOWN=false
   RUN_CLEANUP_RUN_OK=false
   trap run_cleanup EXIT
 
@@ -433,14 +442,16 @@ run_command() {
     :
   else
     failure_code=$?
+    emit_adapter_error_output
     return "$failure_code"
   fi
 
   log "[hvk-test] up"
   if adapter_call up; then
-    :
+    RUN_CLEANUP_SHOULD_DOWN=true
   else
     failure_code=$?
+    emit_adapter_error_output
     return "$failure_code"
   fi
 
@@ -449,6 +460,7 @@ run_command() {
     :
   else
     failure_code=$?
+    emit_adapter_error_output
     return "$failure_code"
   fi
   inventory_path="$(jq -r '.inventory_path // empty' <<<"$ADAPTER_OUTPUT")"
@@ -458,6 +470,7 @@ run_command() {
     :
   else
     failure_code=$?
+    emit_adapter_error_output
     return "$failure_code"
   fi
 
@@ -485,6 +498,7 @@ run_command() {
       :
     else
       failure_code=$?
+      emit_adapter_error_output
       return "$failure_code"
     fi
     artifacts_path="$(jq -r '.artifacts_path // empty' <<<"$ADAPTER_OUTPUT")"

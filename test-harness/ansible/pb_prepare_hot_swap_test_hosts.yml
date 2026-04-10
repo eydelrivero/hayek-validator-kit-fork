@@ -5,6 +5,7 @@
   gather_facts: false
   vars:
     hot_swap_operator_user: "{{ operator_user | default('ubuntu') }}"
+    hot_swap_solana_user: "{{ solana_user | default('sol') }}"
     hot_swap_validator_operators_group: "{{ validator_operators_group | default('validator_operators') }}"
     hot_swap_validator_service_name: "{{ validator_service_name | default('sol') }}"
 
@@ -14,9 +15,9 @@
         name: "{{ hot_swap_validator_operators_group }}"
         state: present
 
-    - name: Ensure sol user exists and is in validator operators group
+    - name: Ensure validator service user exists and is in validator operators group
       ansible.builtin.user:
-        name: sol
+        name: "{{ hot_swap_solana_user }}"
         create_home: true
         shell: /bin/bash
         groups: "{{ hot_swap_validator_operators_group }}"
@@ -30,14 +31,15 @@
         append: true
         state: present
 
-    - name: Ensure validator operators sudoers file exists
+    - name: Ensure harness hot-swap sudoers drop-in exists
       ansible.builtin.copy:
-        dest: /etc/sudoers.d/30-validator-operators
+        dest: /etc/sudoers.d/98-hvk-test-hot-swap
         mode: "0440"
         validate: "visudo -cf %s"
         content: |
           # Managed by test harness preflight for localnet swap tests.
-          %{{ hot_swap_validator_operators_group }} ALL=(sol) NOPASSWD: ALL
+          # This augments the repo-managed validator-operators contract without replacing it.
+          %{{ hot_swap_validator_operators_group }} ALL=({{ hot_swap_solana_user }}) NOPASSWD: ALL
           %{{ hot_swap_validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start {{ hot_swap_validator_service_name }}
           %{{ hot_swap_validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop {{ hot_swap_validator_service_name }}
           %{{ hot_swap_validator_operators_group }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart {{ hot_swap_validator_service_name }}
