@@ -128,16 +128,28 @@ hostname_for_run() {
   printf 'hvk-%s-%s-%s\n' "${base:0:12}" "${scenario:0:16}" "${RUN_ID:0:12}"
 }
 
-validate() {
+validate_shared() {
+  hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
+}
+
+validate_provisioning() {
   if [[ -z "$SCENARIO" ]]; then
     hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
   fi
   [[ -n "$OPERATOR_NAME" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --operator-name" 2
   [[ -n "$OPERATOR_SSH_PUBLIC_KEY" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing operator SSH public key (--operator-ssh-public-key or --operator-ssh-public-key-file)" 2
   [[ -x "$PROVISION_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: $PROVISION_SCRIPT" 3
-  [[ -x "$DESTROY_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: $DESTROY_SCRIPT" 3
-  hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
   hvk_require_cmd lsh || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "lsh not found" 3
+}
+
+validate_teardown() {
+  [[ -x "$DESTROY_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable: $DESTROY_SCRIPT" 3
+  hvk_require_cmd lsh || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "lsh not found" 3
+}
+
+validate() {
+  validate_shared
+  validate_provisioning
 
   hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "Latitude adapter validation passed" \
     "$(jq -cn --arg operator "$OPERATOR_NAME" --arg plan "$PLAN" --arg project "$PROJECT" '{operator: $operator, plan: $plan, project: $project}')"
@@ -228,7 +240,8 @@ wait_ready() {
 }
 
 down() {
-  validate >/dev/null
+  validate_shared
+  validate_teardown
   local args=()
   if [[ -r "$SERVER_ID_FILE" ]]; then
     args+=(--server-id "$(cat "$SERVER_ID_FILE")")
@@ -243,7 +256,7 @@ down() {
 }
 
 artifacts() {
-  validate >/dev/null
+  validate_shared
   [[ -r "$IP_FILE" ]] && cp "$IP_FILE" "$ARTIFACT_DIR/server_ip.txt" || true
   [[ -r "$SERVER_ID_FILE" ]] && cp "$SERVER_ID_FILE" "$ARTIFACT_DIR/server_id.txt" || true
   [[ -r "$HOSTNAME_FILE" ]] && cp "$HOSTNAME_FILE" "$ARTIFACT_DIR/hostname.txt" || true

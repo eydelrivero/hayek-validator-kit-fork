@@ -177,8 +177,6 @@ KEY_NAME="${OPERATOR_NAME}-key"
 
 require_cmd lsh
 require_cmd jq
-require_cmd ssh
-require_cmd scp
 
 log "Project: $PROJECT"
 if [[ "$PROJECT" =~ $DANGEROUS_PROJECT_NAMES_REGEX ]]; then
@@ -400,6 +398,9 @@ if [[ "$SKIP_POST_CHECKS" == true ]]; then
   log "Skipping post-provision checks (--skip-post-checks)."
   exit 0
 fi
+
+require_cmd ssh
+require_cmd scp
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)
 if [[ -n "$SSH_PRIVATE_KEY" ]]; then
