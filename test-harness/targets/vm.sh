@@ -178,12 +178,24 @@ PID_FILE="$STATE_DIR/qemu.pid"
 QEMU_LOG="$ARTIFACT_DIR/qemu.log"
 
 validate() {
+  validate_shared
+  validate_provisioning
+
+  hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "VM adapter validation passed" \
+    "$(jq -cn --arg arch "$VM_ARCH" --arg profile "$VM_PROFILE" --arg base_image "$VM_BASE_IMAGE" '{arch: $arch, profile: $profile, base_image: $base_image}')"
+}
+
+validate_shared() {
+  hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
+}
+
+validate_provisioning() {
   if [[ -z "$SCENARIO" ]]; then
     hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
   fi
-  hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
   hvk_require_cmd qemu-img || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "qemu-img not found" 3
   hvk_require_cmd ssh || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "ssh not found" 3
+  hvk_require_cmd ssh-keyscan || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "ssh-keyscan not found" 3
   [[ -x "$REPO_ROOT/scripts/vm-test/make-seed.sh" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable make-seed.sh" 3
   [[ -x "$REPO_ROOT/scripts/vm-test/create-disks.sh" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable create-disks.sh" 3
   [[ -x "$RUN_SCRIPT" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "Missing executable run script: $RUN_SCRIPT" 3
@@ -191,9 +203,6 @@ validate() {
   [[ -r "$VM_BASE_IMAGE" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "VM base image is not readable: $VM_BASE_IMAGE" 3
   [[ -r "$VM_SSH_PUBLIC_KEY_FILE" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "VM SSH public key file is not readable: $VM_SSH_PUBLIC_KEY_FILE" 3
   [[ -r "$VM_SSH_PRIVATE_KEY_FILE" ]] || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_file" "VM SSH private key file is not readable: $VM_SSH_PRIVATE_KEY_FILE" 3
-
-  hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "VM adapter validation passed" \
-    "$(jq -cn --arg arch "$VM_ARCH" --arg profile "$VM_PROFILE" --arg base_image "$VM_BASE_IMAGE" '{arch: $arch, profile: $profile, base_image: $base_image}')"
 }
 
 up() {
@@ -293,7 +302,7 @@ wait_ready() {
 }
 
 down() {
-  validate >/dev/null
+  validate_shared >/dev/null
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid="$(cat "$PID_FILE")"
@@ -309,7 +318,7 @@ down() {
 }
 
 artifacts() {
-  validate >/dev/null
+  validate_shared >/dev/null
   if [[ -f "$STATE_DIR/metadata.json" ]]; then
     cp "$STATE_DIR/metadata.json" "$ARTIFACT_DIR/metadata.json"
   fi
