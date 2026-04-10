@@ -52,4 +52,5 @@ services:
     tty: true
     volumes:
       - ..:/hayek-validator-kit
+      - ./localnet-ssh-keys:/localnet-ssh-keys
     command: ["/bin/bash", "-lc", "/hayek-validator-kit/solana-localnet/container-setup/scripts/start-ansible-ssh-agent.sh && exec sleep infinity"]
