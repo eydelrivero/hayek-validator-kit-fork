@@ -1,23 +1,16 @@
 name: test-harness
 
 on:
-  push:
-    paths:
-      - "test-harness/**"
-      - "docs/TEST_HARNESS_*.md"
-      - "scripts/vm-test/create-disks.sh"
-      - "scripts/vm-test/README.md"
-      - "ansible-tests/scripts/run-harness-contract-tests.sh"
-      - "bare-metal/latitudesh/*.sh"
-      - ".github/workflows/test-harness.yml"
   pull_request:
     paths:
       - "test-harness/**"
       - "docs/TEST_HARNESS_*.md"
-      - "scripts/vm-test/create-disks.sh"
-      - "scripts/vm-test/README.md"
+      - "scripts/vm-test/**"
+      - "solana-localnet/**"
+      - "ansible/**"
+      - "bare-metal/latitudesh/**"
       - "ansible-tests/scripts/run-harness-contract-tests.sh"
-      - "bare-metal/latitudesh/*.sh"
+      - "ansible-tests/scripts/run-pr-228-regression-smoke.sh"
       - ".github/workflows/test-harness.yml"
   workflow_dispatch:
     inputs:
@@ -38,11 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install workflow dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Ensure executables
         run: |
           chmod +x test-harness/bin/hvk-test
           chmod +x test-harness/targets/*.sh
           chmod +x ansible-tests/scripts/run-harness-contract-tests.sh
+          chmod +x ansible-tests/scripts/run-pr-228-regression-smoke.sh
           chmod +x bare-metal/latitudesh/*.sh || true
 
       - name: Harness list
@@ -56,6 +53,9 @@ jobs:
 
       - name: Ansible harness contract script
         run: ./ansible-tests/scripts/run-harness-contract-tests.sh
+
+      - name: Lightweight regression smoke
+        run: ./ansible-tests/scripts/run-pr-228-regression-smoke.sh --skip-syntax
 
   infra_matrix:
     if: github.event_name == 'workflow_dispatch' && inputs.run_infra
