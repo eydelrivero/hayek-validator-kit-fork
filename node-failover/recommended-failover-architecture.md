@@ -351,7 +351,7 @@ Repo sources:
 - `ansible/roles/solana_swap_validator_hosts_v2/tasks/swap.yml`
 - `ansible/roles/solana_swap_validator_hosts_v2/FAST_ROLLBACK.md`
 - `test-harness/README.md`
-- `node-failover/node-failover-instructions.md`
+- `/work/repos/hvk-external-docs/node-failover/node-failover-instructions.md`
 
 Upstream references:
 
