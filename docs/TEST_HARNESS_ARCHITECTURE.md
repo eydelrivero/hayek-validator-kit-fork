@@ -1,6 +1,4 @@
-# Test Harness Architecture (PR-1 Scaffold)
-
-Documentation and interface definitions only. No runtime behavior changes.
+# Test Harness Architecture
 
 ## Context
 
@@ -10,7 +8,9 @@ This repository currently has multiple test and provisioning entry points:
 - `bare-metal/latitudesh/` for short-lived bare-metal provisioning.
 - `ansible-tests/` for Molecule-based role and host tests.
 
-These are useful, but they are not yet unified under a single test orchestration interface.
+The test harness adds a shared orchestration layer on top of those existing
+substrates so the same scenario can be driven through `compose`, `vm`, or
+`latitude` with one entrypoint and one adapter contract.
 
 ## Goals
 
@@ -23,24 +23,18 @@ These are useful, but they are not yet unified under a single test orchestration
 - Add a target-agnostic integration harness for stack lifecycle + inventory generation.
 - Make manual runs and CI runs call the same command surface.
 
-## Non-Goals
-
-- No migration of existing scripts in this PR.
-- No refactor of Dockerfiles or compose files in this PR.
-- No new CI jobs in this PR.
-- No changes to current `ansible-tests` behavior.
-
 ## Layered Model
 
 ### 1) Scenario Layer (what to test)
 
-Scenarios describe intent and assertions, for example:
+Scenarios describe target-agnostic test intent. Current shared scenarios include:
 - `agave_only`
 - `agave_jito_shared_relayer`
 - `agave_jito_cohosted_relayer`
 - `agave_jito_bam`
+- `hot_swap_matrix`
 
-Scenario metadata is target-agnostic.
+Scenario definitions live under `test-harness/scenarios/`.
 
 ### 2) Target Adapter Layer (where to run)
 
@@ -49,18 +43,22 @@ Adapters manage lifecycle for one substrate:
 - `vm`: wraps existing `scripts/vm-test` lifecycle.
 - `latitude`: wraps existing Latitude provisioning lifecycle.
 
-All adapters expose the same contract (see `TEST_HARNESS_ADAPTER_CONTRACT.md`).
+Adapters are implemented under `test-harness/targets/` and expose the same
+contract (see `TEST_HARNESS_ADAPTER_CONTRACT.md`).
 
 ### 3) Execution Layer (how tests run)
 
-Execution is the common flow:
+The shared entrypoint is `test-harness/bin/hvk-test`. Its common orchestration
+flow is:
 1. `up`
 2. `inventory`
 3. `wait`
-4. `ansible-playbook` / verification suite
-5. `down` (or retain for debugging)
+4. verification command or default verifier
+5. `artifacts`
+6. `down` (unless retained)
 
-This layer calls adapters and consumes generated inventory.
+For VM scenarios with a known default mapping, `hvk-test run` can execute the
+default verifier automatically when `--verify-cmd` is omitted.
 
 ## Inventory Strategy
 
@@ -78,15 +76,18 @@ VM target must support configurable resources:
 
 Profiles should be supported (`small`, `medium`, `large`, `perf`) with per-run overrides.
 
-## Proposed Incremental Rollout
+## Current Implemented Surface
 
-1. PR-1 (this): docs/spec scaffold only.
-2. PR-2: VM resource profile and disk-size parameterization.
-3. PR-3: compose adapter wrapper around existing localnet test scripts.
-4. PR-4: lightweight unified command entrypoint.
-5. PR-5: Molecule bridge for selected integration scenarios.
-6. PR-6: latitude adapter integration with cleanup semantics.
-7. PR-7: CI matrix rollout by target and scenario.
+- `hvk-test list` exposes the supported targets, shared scenarios, and VM
+  profiles.
+- `hvk-test describe` returns static capability metadata for each adapter.
+- `hvk-test run`, `validate`, `up`, `inventory`, `wait`, `artifacts`, and
+  `down` dispatch through the adapter contract.
+- Higher-level suites continue to live under `test-harness/scripts/`, including
+  compose hot-swap, VM access-validation and hot-swap flows, and Latitude
+  access-validation and canary flows.
+- CI and regression coverage consume the same harness surface rather than
+  inventing a separate orchestration layer.
 
 ## Ownership Boundaries
 
@@ -94,6 +95,6 @@ Profiles should be supported (`small`, `medium`, `large`, `perf`) with per-run o
 - `scripts/vm-test/`: VM substrate lifecycle primitives.
 - `bare-metal/latitudesh/`: bare-metal lifecycle primitives.
 - `ansible-tests/`: role-level Molecule tests.
-- `test-harness` (future): orchestration API and target adapters.
+- `test-harness/`: orchestration API, target adapters, and shared verification entrypoints.
 
 This keeps existing code authoritative in-place and avoids high-conflict moves.

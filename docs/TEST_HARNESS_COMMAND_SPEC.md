@@ -1,11 +1,10 @@
-# Test Harness Command Spec (PR-1 Scaffold)
-Command specification only. No new executable behavior in this PR.
+# Test Harness Command Spec
 
 ## Objective
 
 Define a single command surface for manual and CI flows while preserving existing underlying scripts.
 
-Proposed entrypoint:
+Entrypoint:
 - `hvk-test`
 
 ## Command Groups
@@ -36,7 +35,8 @@ Calls adapter `down` only.
 
 ### `hvk-test inventory`
 
-Calls adapter `inventory` and prints inventory path.
+Calls adapter `inventory` and emits the standard adapter JSON/object output,
+including `inventory_path` and host metadata.
 
 ### `hvk-test wait`
 
@@ -62,10 +62,14 @@ Lists:
 For higher-level scenario matrices that compose multiple `hvk-test run` executions,
 helper scripts may live under `test-harness/scripts/`.
 
-Current helper:
+Current helper suites include:
 - `run-compose-hot-swap-matrix.sh`
   - Executes full validator identity transfer matrix for compose target.
   - Uses `hvk-test run --target compose ...` per case.
+- `run-compose-ha-reconcile-e2e.sh`
+  - Executes compose-backed HA reconcile verification flows.
+- `run-vm-access-validation.sh`
+  - Executes the focused VM access-validation wrapper and teardown flow.
 - `run-vm-hot-swap-matrix.sh`
   - Executes full validator identity transfer matrix for two QEMU VMs.
   - Runs ordered host bootstrap:
@@ -73,6 +77,14 @@ Current helper:
     2. `pb_setup_metal_box`
     3. flavor setup
     4. `pb_hot_swap_validator_hosts_v2`
+- `run-vm-ha-reconcile-e2e.sh`
+  - Exercises VM HA reconcile coverage.
+- `run-latitude-access-validation.sh`
+  - Exercises disposable-host Latitude access-validation coverage.
+- `run-latitude-role-canary.sh`
+  - Exercises disposable-host Latitude role canaries.
+- `run-latitude-combined-canary.sh`
+  - Reuses one disposable host for combined L2 and L3 Latitude checks.
 
 ## Global Flags
 
@@ -121,7 +133,8 @@ Current helper:
 
 ### JSON Mode (`--json`)
 
-One JSON summary object, for CI parsing:
+Commands emit one JSON object for CI parsing. For `run`, the summary object has
+the form:
 
 ```json
 {
@@ -143,8 +156,3 @@ One JSON summary object, for CI parsing:
   - `bare-metal/latitudesh/provision_latitude_server.sh ...`
   - existing `ansible-tests` Molecule commands
 - `hvk-test` should initially orchestrate those commands rather than replacing them.
-
-## Phased Adoption
-
-1. PR-1: this spec (docs only).
-2. PR-2+: adapter wrappers and command implementation with no breaking workflow changes.

@@ -1,5 +1,4 @@
-# Test Harness Adapter Contract (PR-1 Scaffold)
-Contract definition only. No adapter implementation changes.
+# Test Harness Adapter Contract
 
 ## Purpose
 
@@ -27,11 +26,12 @@ Where `<action>` is:
 - `artifacts`
 - `describe`
 
-## Common Required Options
+## Common Options
 
-- `--scenario <name>`
 - `--run-id <id>`
 - `--workdir <abs-path>`
+- `--timeout-seconds <int>`
+- `--poll-interval-seconds <int>`
 
 ## Action Semantics
 
@@ -41,21 +41,29 @@ Checks prerequisites only (tools, credentials, required files, environment).
 
 Must not mutate infrastructure.
 
+Required inputs:
+- `--scenario`
+
 ### `up`
 
 Creates or starts target resources for the scenario.
 
-Idempotency:
-- If resources already exist for `run-id`, return success and report them.
+Required inputs:
+- `--scenario`
 
 ### `inventory`
 
-Generates an Ansible inventory artifact and prints machine-readable metadata.
+Generates an Ansible inventory artifact and returns machine-readable metadata.
+
+Required inputs:
+- `--scenario`
 
 Required output keys:
 - `ok` (boolean)
 - `adapter` (string)
+- `action` (string)
 - `run_id` (string)
+- `message` (string)
 - `inventory_path` (absolute path)
 - `hosts` (array of host summary objects)
 
@@ -63,19 +71,36 @@ Required output keys:
 
 Blocks until target hosts are reachable and base readiness conditions pass.
 
+Required inputs:
+- `--scenario`
+
 ### `down`
 
 Destroys target resources created by `up` for this run.
 
 Must be safe to call repeatedly.
 
+`down` should work from run-scoped adapter state and does not need the same
+scenario-specific validation contract as `up` or `inventory`.
+
 ### `artifacts`
 
 Collects logs and diagnostics into a deterministic artifact directory.
 
+Required output keys:
+- `ok`
+- `adapter`
+- `action`
+- `run_id`
+- `message`
+- `artifacts_path`
+
 ### `describe`
 
 Returns static capability metadata for the adapter.
+
+`describe` requires `--target` through the shared `hvk-test` entrypoint, but it
+does not require `--scenario`.
 
 ## Output Contract
 
@@ -125,14 +150,14 @@ Override behavior:
 
 ## Timeout Controls
 
-Adapters should support:
+Adapters should accept:
 - `--timeout-seconds <int>`
 - `--poll-interval-seconds <int>`
 
 ## State and Artifacts
 
-- Adapter state path (proposed): `<workdir>/state/<adapter>/<run-id>/`
-- Artifact path (proposed): `<workdir>/artifacts/<adapter>/<run-id>/`
+- Adapter state path: `<workdir>/state/<adapter>/<run-id>/`
+- Artifact path: `<workdir>/artifacts/<adapter>/<run-id>/`
 
 No state should be written outside workspace and configured user paths.
 
@@ -145,9 +170,9 @@ No state should be written outside workspace and configured user paths.
 
 ## Compatibility Mapping (Current Code)
 
-This contract is intended to wrap existing behavior:
-- `compose`: `solana-localnet/tests/test-localnet.sh` flow.
-- `vm`: `scripts/vm-test/*` flow.
-- `latitude`: `bare-metal/latitudesh/provision_latitude_server.sh` flow.
+This contract currently wraps existing behavior:
+- `compose`: `solana-localnet/tests/test-localnet.sh` plus compose-backed helper flows.
+- `vm`: `scripts/vm-test/*` plus harness-side VM verification entrypoints.
+- `latitude`: `bare-metal/latitudesh/*` plus harness-side disposable-host verification entrypoints.
 
 Implementations should initially call existing scripts instead of replacing them.
