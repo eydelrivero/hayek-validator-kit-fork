@@ -340,7 +340,7 @@ detect_shared_bridge_dns_ipv4() {
   awk '/^nameserver[[:space:]]+[0-9.]+$/ { if ($2 !~ /^127\./) { print $2; exit } }' /etc/resolv.conf 2>/dev/null
 }
 
-for cmd in ansible-playbook ansible jq qemu-img ssh-keygen ssh-keyscan; do
+for cmd in ansible-playbook ansible jq lsof qemu-img ssh-keygen ssh-keyscan; do
   require_cmd "$cmd"
 done
 
@@ -1101,7 +1101,7 @@ ensure_container_localnet_entrypoint_service() {
   LOCALNET_ENTRYPOINT_COMPOSE_PROJECT="${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT:-hvk-vmctl-${RUN_ID}}"
   LOCALNET_ENTRYPOINT_CONTAINER_NAME="${LOCALNET_ENTRYPOINT_COMPOSE_PROJECT}/gossip-entrypoint-vm"
   compute_container_entrypoint_dynamic_port_range
-  rpc_url="http://${VM_LOCALNET_ENTRYPOINT_RPC_HOST}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
+  rpc_url="http://${VM_LOCALNET_ENTRYPOINT_GOSSIP_HOST_FOR_VMS}:${VM_LOCALNET_ENTRYPOINT_RPC_PORT}"
 
   remove_stale_harness_entrypoint_containers
   kill_conflicting_qemu_listener "$VM_LOCALNET_ENTRYPOINT_RPC_PORT"
