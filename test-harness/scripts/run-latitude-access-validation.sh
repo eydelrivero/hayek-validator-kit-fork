@@ -47,6 +47,37 @@ Options:
 EOF
 }
 
+print_retained_server_destroy_commands() {
+  local state_dir="$ADAPTER_WORKDIR/state/latitude/$RUN_ID"
+  local server_id_file="$state_dir/server_id.txt"
+  local server_id=""
+
+  if [[ ! -r "$server_id_file" ]]; then
+    return 0
+  fi
+
+  server_id="$(<"$server_id_file")"
+  if [[ -z "$server_id" ]]; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+[latitude-access-validation] Destroy retained server directly:
+./bare-metal/latitudesh/destroy_latitude_server.sh \\
+  --server-id $server_id \\
+  --project "$PROJECT"
+
+[latitude-access-validation] Or via the harness wrapper:
+./test-harness/targets/latitude.sh down \\
+  --scenario "access_validation" \\
+  --run-id "$RUN_ID" \\
+  --workdir "$ADAPTER_WORKDIR" \\
+  --operator-name "$OPERATOR_NAME" \\
+  --operator-ssh-public-key-file "$OPERATOR_SSH_PUBLIC_KEY_FILE" \\
+  --operator-ssh-private-key-file "$OPERATOR_SSH_PRIVATE_KEY_FILE"
+EOF
+}
+
 while (($# > 0)); do
   case "$1" in
     --workdir)
@@ -115,6 +146,7 @@ done
 
 cleanup() {
   local exit_code="$1"
+  local teardown_failed=false
 
   if [[ -n "${LATITUDE_RUN_ID:-}" ]]; then
     "$REPO_ROOT/test-harness/targets/latitude.sh" artifacts "${LATITUDE_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
@@ -123,17 +155,29 @@ cleanup() {
   if [[ -n "${LATITUDE_RUN_ID:-}" && "$RETAIN_ALWAYS" != "true" ]]; then
     if [[ "$exit_code" -eq 0 || "$RETAIN_ON_FAILURE" != "true" ]]; then
       echo "[latitude-access-validation] Tearing down disposable bare-metal host..." >&2
-      "$REPO_ROOT/test-harness/targets/latitude.sh" down "${LATITUDE_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
+      if ! "$REPO_ROOT/test-harness/targets/latitude.sh" down "${LATITUDE_TARGET_ARGS[@]}"; then
+        teardown_failed=true
+        if [[ "$exit_code" -eq 0 ]]; then
+          echo "[latitude-access-validation] ERROR: automatic teardown failed after a successful run." >&2
+          print_retained_server_destroy_commands
+          exit_code=1
+        else
+          echo "[latitude-access-validation] WARNING: teardown failed after the main run already failed." >&2
+          print_retained_server_destroy_commands
+        fi
+      fi
     fi
   fi
 
   if [[ -n "${CASE_DIR:-}" ]]; then
-    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) ]]; then
+    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) || "$teardown_failed" == "true" ]]; then
       echo "[latitude-access-validation] Retained artifacts under: $CASE_DIR" >&2
     else
       echo "[latitude-access-validation] Artifacts written under: $CASE_DIR" >&2
     fi
   fi
+
+  return "$exit_code"
 }
 
 trap 'cleanup $?' EXIT

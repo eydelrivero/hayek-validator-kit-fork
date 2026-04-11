@@ -201,6 +201,7 @@ done
 
 cleanup() {
   local exit_code="$1"
+  local teardown_failed=false
 
   if [[ -n "${LATITUDE_RUN_ID:-}" ]]; then
     "$REPO_ROOT/test-harness/targets/latitude.sh" artifacts "${LATITUDE_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
@@ -209,18 +210,30 @@ cleanup() {
   if [[ -n "${LATITUDE_RUN_ID:-}" && "$RETAIN_ALWAYS" != "true" ]]; then
     if [[ "$exit_code" -eq 0 || "$RETAIN_ON_FAILURE" != "true" ]]; then
       echo "[latitude-role-canary] Tearing down disposable bare-metal host..." >&2
-      "$REPO_ROOT/test-harness/targets/latitude.sh" down "${LATITUDE_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
+      if ! "$REPO_ROOT/test-harness/targets/latitude.sh" down "${LATITUDE_TARGET_ARGS[@]}"; then
+        teardown_failed=true
+        if [[ "$exit_code" -eq 0 ]]; then
+          echo "[latitude-role-canary] ERROR: automatic teardown failed after a successful run." >&2
+          print_retained_server_destroy_commands
+          exit_code=1
+        else
+          echo "[latitude-role-canary] WARNING: teardown failed after the main run already failed." >&2
+          print_retained_server_destroy_commands
+        fi
+      fi
     fi
   fi
 
   if [[ -n "${CASE_DIR:-}" ]]; then
-    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) ]]; then
+    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) || "$teardown_failed" == "true" ]]; then
       echo "[latitude-role-canary] Retained artifacts under: $CASE_DIR" >&2
       print_retained_server_destroy_commands
     else
       echo "[latitude-role-canary] Artifacts written under: $CASE_DIR" >&2
     fi
   fi
+
+  return "$exit_code"
 }
 
 trap 'cleanup $?' EXIT
