@@ -181,6 +181,17 @@ validate_common() {
   hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
 }
 
+qemu_pid_matches_run() {
+  local pid="$1"
+  local args=""
+  local expected_disk="${VM_WORK_DIR}/${VM_NAME}.qcow2"
+
+  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  [[ -n "$args" ]] || return 1
+  [[ "$args" == *qemu-system-* ]] || return 1
+  [[ "$args" == *"$expected_disk"* ]] || return 1
+}
+
 validate_provisioning() {
   if [[ -z "$SCENARIO" ]]; then
     hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
@@ -307,10 +318,15 @@ down() {
     local pid
     pid="$(cat "$PID_FILE")"
     if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
-      kill "$pid" >/dev/null 2>&1 || true
-      sleep 1
-      if kill -0 "$pid" >/dev/null 2>&1; then
-        kill -9 "$pid" >/dev/null 2>&1 || true
+      if qemu_pid_matches_run "$pid"; then
+        kill "$pid" >/dev/null 2>&1 || true
+        sleep 1
+        if kill -0 "$pid" >/dev/null 2>&1; then
+          kill -9 "$pid" >/dev/null 2>&1 || true
+        fi
+      else
+        echo "[$ADAPTER] warning: ignoring stale or reused qemu pid $pid from $PID_FILE" >&2
+        rm -f "$PID_FILE"
       fi
     fi
   fi

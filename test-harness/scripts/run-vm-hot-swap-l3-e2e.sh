@@ -179,6 +179,12 @@ if [[ "$VM_LOCALNET_ENTRYPOINT_MODE" != "vm" ]]; then
   exit 2
 fi
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "run-vm-hot-swap-l3-e2e.sh is currently Linux-only." >&2
+  echo "Reason: the L3 cache/prune path still depends on GNU-only tools such as sha256sum and cp --reflink." >&2
+  exit 2
+fi
+
 format_duration() {
   local total="${1:-0}"
   local d h m s

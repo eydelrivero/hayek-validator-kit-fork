@@ -348,7 +348,7 @@ These tests rely on `PRE_SWAP_INJECTION_MODE` hooks in `verify-vm-hot-swap.sh` a
 
 ### VM L3 End-to-End Suite
 
-For slow end-to-end regression runs:
+For slow end-to-end regression runs on Linux hosts:
 
 Canary single case:
 
@@ -371,6 +371,7 @@ Full flavor matrix:
 ```
 
 L3 uses the same shared-bridge + entrypoint-VM defaults as L2, including `SHARED_ENTRYPOINT_VM=false`.
+The current L3 cache/prune path is Linux-only because it still depends on GNU-only utilities such as `sha256sum` and `cp --reflink`.
 L3 now reuses prepared source/destination VM caches by default (per flavor-pair and image/arch key):
 - disable with `--no-vm-reuse`
 - force rebuild with `--refresh-vm-reuse`

@@ -40,8 +40,8 @@ CPU_MODEL="max"
 
 case "$HOST_OS" in
   Darwin)
-    MACHINE_ACCEL="hvf"
     if [[ "$HOST_ARCH" == "x86_64" || "$HOST_ARCH" == "amd64" ]]; then
+      MACHINE_ACCEL="hvf"
       CPU_MODEL="host"
     fi
     ;;
