@@ -504,11 +504,27 @@ fi
 SSH_PUBLIC_KEY="$(cat "${SSH_PRIVATE_KEY_FILE}.pub")"
 
 ensure_local_keyset() {
-  local target_dir="$1"
+  local keyset_name="$1"
   local hot_spare_source="$2"
+  local keyset_root="$HOME/.validator-keys"
+  local target_dir=""
+
+  if [[ -z "$keyset_name" || "$keyset_name" == "." || "$keyset_name" == ".." || "$keyset_name" == *"/"* || "$keyset_name" == *".."* ]]; then
+    echo "Unsafe validator keyset name: $keyset_name" >&2
+    exit 2
+  fi
+
+  target_dir="$keyset_root/$keyset_name"
+  case "$target_dir" in
+    "$keyset_root"/*) ;;
+    *)
+      echo "Resolved validator keyset path escapes keyset root: $target_dir" >&2
+      exit 2
+      ;;
+  esac
 
   mkdir -p "$(dirname "$target_dir")"
-  rm -rf "$target_dir"
+  rm -rf "${target_dir:?}"
   mkdir -p "$target_dir"
   cp -a "$VALIDATOR_KEYSET_SOURCE_DIR"/. "$target_dir"/
   cp -f "$hot_spare_source" "$target_dir/hot-spare-identity.json"
@@ -2239,8 +2255,8 @@ start_vm "vm-source" "$SRC_VM_NAME" "$SRC_VM_DIR" "$SOURCE_BOOTSTRAP_HOST" "$SOU
 echo "[vm-hot-swap] Starting destination VM..." >&2
 start_vm "vm-destination" "$DST_VM_NAME" "$DST_VM_DIR" "$DESTINATION_BOOTSTRAP_HOST" "$DESTINATION_BOOTSTRAP_PORT_EFFECTIVE" "$DESTINATION_OPERATOR_PORT_EFFECTIVE" "$DST_QEMU_LOG" "$DST_PID_FILE" "$(vm_tap_iface_for vm-destination)" "" "${VM_BASE_IMAGE}" "${VM_DESTINATION_DISK_PARENT_PREFIX}" "$DESTINATION_START_WAIT_PORT"
 
-ensure_local_keyset "$HOME/.validator-keys/$SOURCE_VALIDATOR_KEYSET_NAME" "$SOURCE_HOT_SPARE_IDENTITY_SOURCE"
-ensure_local_keyset "$HOME/.validator-keys/$DESTINATION_VALIDATOR_KEYSET_NAME" "$DESTINATION_HOT_SPARE_IDENTITY_SOURCE"
+ensure_local_keyset "$SOURCE_VALIDATOR_KEYSET_NAME" "$SOURCE_HOT_SPARE_IDENTITY_SOURCE"
+ensure_local_keyset "$DESTINATION_VALIDATOR_KEYSET_NAME" "$DESTINATION_HOT_SPARE_IDENTITY_SOURCE"
 
 IAM_CSV="$CASE_DIR/iam_setup_vm_validator.csv"
 AUTHORIZED_IPS_CSV="$CASE_DIR/authorized_ips_vm.csv"

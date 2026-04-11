@@ -152,10 +152,28 @@ discover_harness_pid_files() {
   )
 }
 
+process_matches_label() {
+  local label="$1"
+  local cmdline="$2"
+
+  case "$label" in
+    source-qemu*|destination-qemu*|entrypoint-qemu*|qemu*|access-validation-qemu*)
+      [[ "$cmdline" == *qemu-system-* ]]
+      ;;
+    localnet-entrypoint*)
+      [[ "$cmdline" == *solana-test-validator* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 cleanup_pid_file() {
   local pid_file="${1:-}"
   local label="${2:-process}"
   local pid=""
+  local cmdline=""
 
   if [[ -z "$pid_file" || ! -f "$pid_file" ]]; then
     echo "[harness-teardown] ${label}: pid file not present, skipping (${pid_file:-unset})" >&2
@@ -176,6 +194,17 @@ cleanup_pid_file() {
   if ! kill -0 "$pid" >/dev/null 2>&1; then
     echo "[harness-teardown] ${label}: pid ${pid} is already stopped" >&2
     STOPPED_PIDS["$pid"]="$label"
+    return 0
+  fi
+
+  cmdline="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  if [[ -z "$cmdline" ]]; then
+    echo "[harness-teardown] ${label}: unable to read command line for live pid ${pid}, skipping" >&2
+    return 0
+  fi
+  if ! process_matches_label "$label" "$cmdline"; then
+    echo "[harness-teardown] ${label}: pid ${pid} does not look harness-owned, skipping stale/reused pid file" >&2
+    echo "[harness-teardown] ${label}: live command: ${cmdline}" >&2
     return 0
   fi
 

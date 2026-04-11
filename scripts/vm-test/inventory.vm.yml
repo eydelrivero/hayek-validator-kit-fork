@@ -4,6 +4,6 @@ all:
       ansible_host: 127.0.0.1
       ansible_port: 2222
       ansible_user: ubuntu
-      ansible_ssh_private_key_file: ../scripts/vm-test/work/id_ed25519
+      ansible_ssh_private_key_file: scripts/vm-test/work/id_ed25519
       ansible_become: true
       ansible_become_password: resetmypassword
