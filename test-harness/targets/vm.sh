@@ -177,15 +177,7 @@ fi
 PID_FILE="$STATE_DIR/qemu.pid"
 QEMU_LOG="$ARTIFACT_DIR/qemu.log"
 
-validate() {
-  validate_shared
-  validate_provisioning
-
-  hvk_json_ok "$ADAPTER" "$ACTION" "$RUN_ID" "VM adapter validation passed" \
-    "$(jq -cn --arg arch "$VM_ARCH" --arg profile "$VM_PROFILE" --arg base_image "$VM_BASE_IMAGE" '{arch: $arch, profile: $profile, base_image: $base_image}')"
-}
-
-validate_shared() {
+validate_common() {
   hvk_require_cmd jq || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "jq not found" 3
 }
 
@@ -193,6 +185,7 @@ validate_provisioning() {
   if [[ -z "$SCENARIO" ]]; then
     hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "invalid_args" "Missing required --scenario" 2
   fi
+  validate_common
   hvk_require_cmd qemu-img || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "qemu-img not found" 3
   hvk_require_cmd ssh || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "ssh not found" 3
   hvk_require_cmd ssh-keyscan || hvk_emit_err_and_exit "$ADAPTER" "$ACTION" "$RUN_ID" "missing_dependency" "ssh-keyscan not found" 3
@@ -206,7 +199,7 @@ validate_provisioning() {
 }
 
 up() {
-  validate >/dev/null
+  validate_provisioning >/dev/null
   local ssh_key
   ssh_key="$(cat "$VM_SSH_PUBLIC_KEY_FILE")"
 
@@ -274,7 +267,7 @@ up() {
 }
 
 inventory() {
-  validate >/dev/null
+  validate_provisioning >/dev/null
 
   cat >"$INVENTORY_PATH" <<EOF
 all:
@@ -292,7 +285,7 @@ EOF
 }
 
 wait_ready() {
-  validate >/dev/null
+  validate_provisioning >/dev/null
 
   echo "[$ADAPTER] waiting for SSH with timeout=${TIMEOUT_SECONDS}s poll_interval=${POLL_INTERVAL_SECONDS}s..." >&2
   "$REPO_ROOT/scripts/vm-test/wait-for-ssh.sh" "127.0.0.1" "$VM_SSH_PORT" "$TIMEOUT_SECONDS" >/dev/null
@@ -302,7 +295,7 @@ wait_ready() {
 }
 
 down() {
-  validate_shared >/dev/null
+  validate_common >/dev/null
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid="$(cat "$PID_FILE")"
@@ -318,7 +311,7 @@ down() {
 }
 
 artifacts() {
-  validate_shared >/dev/null
+  validate_common >/dev/null
   if [[ -f "$STATE_DIR/metadata.json" ]]; then
     cp "$STATE_DIR/metadata.json" "$ARTIFACT_DIR/metadata.json"
   fi
@@ -343,7 +336,7 @@ describe() {
 }
 
 case "$ACTION" in
-  validate) validate ;;
+  validate) validate_provisioning ;;
   up) up ;;
   inventory) inventory ;;
   wait) wait_ready ;;

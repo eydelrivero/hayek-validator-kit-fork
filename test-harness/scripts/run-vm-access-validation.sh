@@ -212,6 +212,25 @@ qemu_pid_path() {
   printf '%s\n' "$ADAPTER_WORKDIR/state/vm/$RUN_ID/qemu.pid"
 }
 
+print_vm_cleanup_guidance() {
+  local pid_file
+  local qemu_log
+
+  pid_file="$(qemu_pid_path)"
+  qemu_log="$(qemu_log_path)"
+
+  cat >&2 <<EOF
+[vm-access-validation] Manual cleanup guidance:
+./test-harness/targets/vm.sh down \\
+  --run-id "$RUN_ID" \\
+  --workdir "$ADAPTER_WORKDIR"
+
+[vm-access-validation] QEMU artifacts:
+- pid file: $pid_file
+- qemu log: $qemu_log
+EOF
+}
+
 assert_vm_started() {
   local pid_file
   local qemu_log
@@ -237,6 +256,7 @@ assert_vm_started() {
 
 cleanup() {
   local exit_code="$1"
+  local teardown_failed=false
 
   if [[ -n "${VM_RUN_ID:-}" ]]; then
     "$REPO_ROOT/test-harness/targets/vm.sh" artifacts "${VM_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
@@ -245,17 +265,29 @@ cleanup() {
   if [[ -n "${VM_RUN_ID:-}" && "$RETAIN_ALWAYS" != "true" ]]; then
     if [[ "$exit_code" -eq 0 || "$RETAIN_ON_FAILURE" != "true" ]]; then
       echo "[vm-access-validation] Stopping disposable VM..." >&2
-      "$REPO_ROOT/test-harness/targets/vm.sh" down "${VM_TARGET_ARGS[@]}" >/dev/null 2>&1 || true
+      if ! "$REPO_ROOT/test-harness/targets/vm.sh" down "${VM_TARGET_ARGS[@]}"; then
+        teardown_failed=true
+        if [[ "$exit_code" -eq 0 ]]; then
+          echo "[vm-access-validation] ERROR: automatic VM teardown failed after a successful run." >&2
+          print_vm_cleanup_guidance
+          exit_code=1
+        else
+          echo "[vm-access-validation] WARNING: VM teardown failed after the main run already failed." >&2
+          print_vm_cleanup_guidance
+        fi
+      fi
     fi
   fi
 
   if [[ -n "${CASE_DIR:-}" ]]; then
-    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) ]]; then
+    if [[ "$RETAIN_ALWAYS" == "true" || ( "$exit_code" -ne 0 && "$RETAIN_ON_FAILURE" == "true" ) || "$teardown_failed" == "true" ]]; then
       echo "[vm-access-validation] Retained artifacts under: $CASE_DIR" >&2
     else
       echo "[vm-access-validation] Artifacts written under: $CASE_DIR" >&2
     fi
   fi
+
+  return "$exit_code"
 }
 
 trap 'cleanup $?' EXIT
