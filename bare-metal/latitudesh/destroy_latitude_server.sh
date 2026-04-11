@@ -44,6 +44,10 @@ normalize_to_list() {
   '
 }
 
+extract_first_item() {
+  normalize_to_list | jq '.[0]'
+}
+
 SERVER_ID=""
 HOSTNAME=""
 PROJECT="${PROJECT:-ZZZ HVK Test Harness}"
@@ -119,7 +123,7 @@ fi
 
 is_empty_or_null "$SERVER_ID" && fail "Could not resolve server ID to destroy"
 
-SERVER_JSON="$(lsh servers get --id "$SERVER_ID" --json | jq '.[0]')" || fail "Failed to fetch server '$SERVER_ID'"
+SERVER_JSON="$(lsh servers get --id "$SERVER_ID" --json | extract_first_item)" || fail "Failed to fetch server '$SERVER_ID'"
 SERVER_HOSTNAME="$(jq -r '.attributes.hostname // empty' <<<"$SERVER_JSON")"
 SERVER_PROJECT_NAME="$(jq -r '.attributes.project.name // empty' <<<"$SERVER_JSON")"
 SERVER_PROJECT_ENVIRONMENT="$(jq -r '.attributes.project.environment // empty' <<<"$SERVER_JSON")"

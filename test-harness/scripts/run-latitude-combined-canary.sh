@@ -292,6 +292,9 @@ for mode in "${MODES[@]}"; do
   if [[ -n "$HOST_NAME" ]]; then
     role_args+=(--host-name "$HOST_NAME")
   fi
+  if [[ -n "$AUTHORIZED_IPS_INPUT" ]]; then
+    role_args+=(--authorized-ips-csv "$AUTHORIZED_IPS_INPUT")
+  fi
   if [[ -n "$SOLANA_CLUSTER" ]]; then
     role_args+=(--solana-cluster "$SOLANA_CLUSTER")
   fi
