@@ -11,7 +11,7 @@ argument_specs:
       agave_version:
         type: str
         required: true
-        description: "Version of Agave/Solana CLI to install (e.g. '3.1.11' for mainnet, '4.0.0-beta.4' for testnet)"
+        description: "Version of Agave/Solana CLI to install (e.g. '3.1.11' for mainnet, '4.0.0-beta.4' or '4.0.0-rc.0' for testnet)"
       build_from_source:
         type: bool
         required: false

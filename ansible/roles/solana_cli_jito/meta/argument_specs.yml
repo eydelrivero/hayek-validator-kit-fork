@@ -12,7 +12,7 @@ argument_specs:
       jito_version:
         type: str
         required: true
-        description: "Version of Jito-Solana CLI to install (e.g. '3.1.10' for mainnet, '4.0.0-beta.2' for testnet)"
+        description: "Version of Jito-Solana CLI to install (e.g. '3.1.10' for mainnet, '4.0.0-beta.2' or '4.0.0-rc.0' for testnet)"
       jito_version_patch:
         type: str
         required: false

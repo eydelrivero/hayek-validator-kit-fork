@@ -15,11 +15,18 @@
 #   --limit host-charlie \
 #   -e "target_host=host-charlie" \
 #   -e "operator_user=bob" \
-#   -e "jito_version=3.1.10" \        # Use X.Y.Z-beta.N for testnet pre-releases (e.g. 4.0.0-beta.2)
-#   -e "solana_cluster=mainnet" \     # Optional: one of localnet | testnet | mainnet; omit for the CLI default config
-#   -e "jito_version_patch=1" \       # Optional: Patch version to append to jito tag (e.g. 3.1.10-jito.1)
-#   -e "build_from_source=true" \     # Optional: Build from source instead of using precompiled binaries
-#   -e "use_official_repo=true" \     # Optional: Use official repository instead of forked repository
+#   -e "jito_version=3.1.10" \
+#   -e "solana_cluster=mainnet" \
+#   -e "jito_version_patch=1" \
+#   -e "build_from_source=true" \
+#   -e "use_official_repo=true"
+#
+# Extended vars:
+# - jito_version (REQUIRED): Version of Jito-Solana CLI to install. Use X.Y.Z for stable releases, or X.Y.Z-beta.N / X.Y.Z-rc.N for pre-releases (e.g. 4.0.0-rc.0). Alpha and beta releases are limited to testnet; release candidates may be used on mainnet.
+# - solana_cluster (OPTIONAL): Target Solana cluster. Must be one of localnet, testnet, or mainnet. When omitted, the Solana CLI default RPC configuration is left unchanged.
+# - jito_version_patch (OPTIONAL): Patch version to append to the Jito tag. Defaults to an empty string; set jito_version_patch=1 for tags like 3.1.10-jito.1.
+# - build_from_source (OPTIONAL): Build from source instead of using precompiled binaries. Defaults to true; production clusters require build_from_source=true.
+# - use_official_repo (OPTIONAL): Use official repository instead of forked repository when building from source. Defaults to false.
 
 - name: Install Jito-Solana CLI
   hosts: "{{ target_host }}"

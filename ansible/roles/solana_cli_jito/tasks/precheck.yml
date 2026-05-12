@@ -3,16 +3,16 @@
   ansible.builtin.assert:
     that:
       - jito_version is defined
-      - jito_version is regex('^[0-9]+\.[0-9]+\.[0-9]+(-(?:alpha|beta)\.[0-9]+)?$')
+      - jito_version is regex('^[0-9]+\.[0-9]+\.[0-9]+(-(?:alpha|beta|rc)\.[0-9]+)?$')
     fail_msg: |
       Required variable is missing or invalid:
-      - jito_version must be defined and follow semantic versioning (e.g. 3.1.10 for mainnet, 4.0.0-beta.2 for testnet)
+      - jito_version must be defined and follow semantic versioning (e.g. 3.1.10 for mainnet, 4.0.0-beta.2 or 4.0.0-rc.0 for testnet)
 
-- name: Precheck - Block pre-release versions on mainnet clusters
+- name: Precheck - Block alpha/beta versions on mainnet clusters
   ansible.builtin.fail:
     msg: >-
-      Pre-release versions (alpha/beta) are only supported on testnet.
-      jito_version={{ jito_version }} is a pre-release and cannot be used
+      Alpha and beta versions are only supported on testnet.
+      jito_version={{ jito_version }} cannot be used
       with solana_cluster={{ solana_cluster }}.
   when:
     - solana_cluster is defined
@@ -63,7 +63,7 @@
     # - agave-validator 3.0.10 (src:90240211; feat:3073396398, client:Bam)
     - name: Precheck - Extract installed version number
       ansible.builtin.set_fact:
-        installed_jito_version: "{{ ((installed_version.stdout | regex_search('(?:solana-cli|agave-validator) ([0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta)\\.[0-9]+)?)', '\\1')) or []) | first | default('') }}"
+        installed_jito_version: "{{ ((installed_version.stdout | regex_search('(?:solana-cli|agave-validator) ([0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta|rc)\\.[0-9]+)?)', '\\1')) or []) | first | default('') }}"
       when: solana_binary.stat.exists and installed_version.stdout is defined
 
     - name: Precheck - Extract installed client identifier
