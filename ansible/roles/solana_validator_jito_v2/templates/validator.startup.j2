@@ -17,11 +17,11 @@ exec agave-validator \
 --ledger {{ ledger_path }} \
 --accounts {{ accounts_path }} \
 --snapshots {{ snapshots_path }} \
-{# TODO: Remove this conditional logic once all clusters/validators are running solana/jito >= 3.0.0 #}
-{% if jito_version is defined and jito_version is version('3.0.0', '>=') %}
---no-snapshots \
+{% if solana_cluster == "testnet" %}
+--maximum-incremental-snapshots-to-retain 1 \
+--maximum-full-snapshots-to-retain 1 \
 {% else %}
---snapshot-interval-slots 0 \
+--no-snapshots \
 {% endif %}
 --minimal-snapshot-download-speed {{ minimal_snapshot_download_speed }} \
 --private-rpc \

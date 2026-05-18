@@ -17,6 +17,12 @@ exec agave-validator \
 --ledger {{ ledger_path }} \
 --accounts {{ accounts_path }} \
 --snapshots {{ snapshots_path }} \
+{% if solana_cluster == "testnet" %}
+--maximum-incremental-snapshots-to-retain 1 \
+--maximum-full-snapshots-to-retain 1 \
+{% else %}
+--no-snapshots \
+{% endif %}
 --minimal-snapshot-download-speed {{ minimal_snapshot_download_speed }} \
 --private-rpc \
 --rpc-port {{ solana_rpc_port }} \
@@ -33,7 +39,6 @@ exec agave-validator \
 --experimental-poh-pinned-cpu-core {{ poh_pinned_cpu_core }} \
 {% endif %}
 {% if solana_cluster == "localnet" %}
---no-snapshots \
 --no-os-network-limits-test \
 --allow-private-addr \
 {% endif %}
