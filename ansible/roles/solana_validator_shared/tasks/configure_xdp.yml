@@ -277,34 +277,133 @@
       changed_when: false
       failed_when: false
 
-    - name: xdp - Detect primary network interface
+    - name: xdp - Resolve XDP attach interface
       ansible.builtin.shell: |
-        iface="$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
-        if [[ -z "${iface}" ]]; then
-          iface="$(ip route show default 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+        set -u
+
+        SYS_CLASS_NET="${XDP_SYS_CLASS_NET:-/sys/class/net}"
+        PROC_NET_BONDING="${XDP_PROC_NET_BONDING:-/proc/net/bonding}"
+        OVERRIDE_IFACE="{{ xdp_target_interface | default('') | trim }}"
+
+        get_route_iface() {
+          local iface
+          if [[ -n "${XDP_ROUTE_IFACE:-}" ]]; then
+            echo "${XDP_ROUTE_IFACE}"
+            return
+          fi
+          iface="$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+          if [[ -z "${iface}" ]]; then
+            iface="$(ip route show default 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+          fi
+          echo "${iface}"
+        }
+
+        is_physical_iface() {
+          local iface="$1"
+          [[ -n "${iface}" && -e "${SYS_CLASS_NET}/${iface}/device/driver" ]]
+        }
+
+        resolve_lower_iface() {
+          local iface="$1"
+          local lower_names=()
+          local lower_count=0
+          local path lower
+          shopt -s nullglob
+          for path in "${SYS_CLASS_NET}/${iface}"/lower_*; do
+            lower="$(basename "${path}" | sed 's/^lower_//')"
+            lower_names+=("${lower}")
+            lower_count=$((lower_count + 1))
+          done
+          shopt -u nullglob
+
+          if [[ "${lower_count}" == "1" ]]; then
+            echo "${lower_names[0]}"
+          fi
+        }
+
+        resolve_bond_slave() {
+          local bond="$1"
+          local bond_file="${PROC_NET_BONDING}/${bond}"
+          local active first_up first
+          [[ -r "${bond_file}" ]] || return 0
+
+          active="$(awk -F': ' '/^Currently Active Slave:/ {print $2; exit}' "${bond_file}")"
+          if [[ -n "${active}" ]]; then
+            echo "bond_active_slave:${active}"
+            return
+          fi
+
+          first_up="$(awk -F': ' '
+            /^Slave Interface:/ {iface=$2}
+            /^MII Status:/ && iface != "" && $2 == "up" {print iface; exit}
+          ' "${bond_file}")"
+          if [[ -n "${first_up}" ]]; then
+            echo "bond_first_up_slave:${first_up}"
+            return
+          fi
+
+          first="$(awk -F': ' '/^Slave Interface:/ {print $2; exit}' "${bond_file}")"
+          if [[ -n "${first}" ]]; then
+            echo "bond_first_up_slave:${first}"
+          fi
+        }
+
+        ROUTE_IFACE="$(get_route_iface)"
+        SELECTED_IFACE=""
+        SELECTION_SOURCE="ambiguous"
+        SELECTION_REASON="interface_unresolved"
+
+        if [[ -n "${OVERRIDE_IFACE}" ]]; then
+          SELECTED_IFACE="${OVERRIDE_IFACE}"
+          SELECTION_SOURCE="override"
+          SELECTION_REASON="operator_override"
+        elif [[ -z "${ROUTE_IFACE}" ]]; then
+          SELECTION_REASON="route_interface_unresolved"
+        elif [[ -r "${PROC_NET_BONDING}/${ROUTE_IFACE}" ]]; then
+          bond_result="$(resolve_bond_slave "${ROUTE_IFACE}")"
+          if [[ "${bond_result}" == bond_active_slave:* ]]; then
+            SELECTED_IFACE="$(printf '%s' "${bond_result}" | cut -d: -f2-)"
+            SELECTION_SOURCE="bond_active_slave"
+            SELECTION_REASON="bond_active_slave"
+          elif [[ "${bond_result}" == bond_first_up_slave:* ]]; then
+            SELECTED_IFACE="$(printf '%s' "${bond_result}" | cut -d: -f2-)"
+            SELECTION_SOURCE="bond_first_up_slave"
+            SELECTION_REASON="bond_first_up_slave"
+          else
+            SELECTION_REASON="bond_slave_unresolved"
+          fi
+        elif is_physical_iface "${ROUTE_IFACE}"; then
+          SELECTED_IFACE="${ROUTE_IFACE}"
+          SELECTION_SOURCE="route_physical"
+          SELECTION_REASON="route_interface_is_physical"
+        else
+          lower_iface="$(resolve_lower_iface "${ROUTE_IFACE}")"
+          if [[ -n "${lower_iface}" ]]; then
+            SELECTED_IFACE="${lower_iface}"
+            SELECTION_SOURCE="lower_device"
+            SELECTION_REASON="single_lower_device"
+          else
+            SELECTION_REASON="no_unambiguous_physical_interface"
+          fi
         fi
-        echo "${iface}"
-      register: xdp_primary_iface_cmd
+
+        echo "route_iface=${ROUTE_IFACE}"
+        echo "selected_iface=${SELECTED_IFACE}"
+        echo "selection_source=${SELECTION_SOURCE}"
+        echo "selection_reason=${SELECTION_REASON}"
+      register: xdp_interface_resolver_cmd
       changed_when: false
       failed_when: false
       args:
         executable: /bin/bash
-      when: (xdp_target_interface | default('') | trim | length) == 0
 
-    - name: xdp - Set detected interface fact
+    - name: xdp - Set resolved interface facts
       ansible.builtin.set_fact:
-        xdp_primary_iface: >-
-          {{
-            (xdp_target_interface | default('') | trim)
-            if ((xdp_target_interface | default('') | trim | length) > 0)
-            else (xdp_primary_iface_cmd.stdout | default('') | trim)
-          }}
-        xdp_interface_selection_source: >-
-          {{
-            'override'
-            if ((xdp_target_interface | default('') | trim | length) > 0)
-            else 'auto'
-          }}
+        xdp_route_iface: "{{ (xdp_interface_resolver_cmd.stdout | default('') | regex_findall('(?m)^route_iface=(.*)$') | first | default('')) | trim }}"
+        xdp_primary_iface: "{{ (xdp_interface_resolver_cmd.stdout | default('') | regex_findall('(?m)^selected_iface=(.*)$') | first | default('')) | trim }}"
+        xdp_attach_iface: "{{ (xdp_interface_resolver_cmd.stdout | default('') | regex_findall('(?m)^selected_iface=(.*)$') | first | default('')) | trim }}"
+        xdp_interface_selection_source: "{{ (xdp_interface_resolver_cmd.stdout | default('') | regex_findall('(?m)^selection_source=(.*)$') | first | default('ambiguous')) | trim }}"
+        xdp_interface_selection_reason: "{{ (xdp_interface_resolver_cmd.stdout | default('') | regex_findall('(?m)^selection_reason=(.*)$') | first | default('interface_unresolved')) | trim }}"
 
     - name: xdp - Check detected network interface path
       ansible.builtin.stat:
@@ -320,7 +419,7 @@
 
     - name: xdp - Detect network interface driver name
       ansible.builtin.shell: |
-        driver_link="$(readlink -f "/sys/class/net/{{ xdp_primary_iface }}/device/driver" 2>/dev/null || true)"
+        driver_link="$(readlink -f {{ ('/sys/class/net/' ~ xdp_primary_iface ~ '/device/driver') | quote }} 2>/dev/null || true)"
         if [[ -n "${driver_link}" ]]; then
           basename "${driver_link}"
         fi
@@ -341,6 +440,7 @@
         - { name: "xdp_enable", arg: "--enable-xdp" }
         - { name: "xdp_enabled", arg: "--xdp-enabled" }
         - { name: "exp_retransmit_cpu", arg: "--experimental-retransmit-xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }}" }
+        - { name: "exp_retransmit_interface", arg: "--experimental-retransmit-xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }} --experimental-retransmit-xdp-interface {{ (((xdp_primary_iface | default('') | length) > 0) | ternary(xdp_primary_iface, 'lo')) | quote }}" }
         - { name: "exp_retransmit_zero_copy", arg: "--experimental-retransmit-xdp-zero-copy" }
       register: xdp_flag_probe_results
       changed_when: false
@@ -433,6 +533,20 @@
               (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'exp_retransmit_cpu') | map(attribute='rc') | first | default(1)) == 0
             )
           }}
+        xdp_flag_support_exp_retransmit_interface: >-
+          {{
+            (
+              (
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'exp_retransmit_interface') | map(attribute='stdout') | first | default(''))
+                ~ ' ' ~
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'exp_retransmit_interface') | map(attribute='stderr') | first | default(''))
+              ) is not search('unexpected argument|found argument .*which wasn.t expected|unrecognized option|unknown argument')
+            )
+            and
+            (
+              (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'exp_retransmit_interface') | map(attribute='rc') | first | default(1)) == 0
+            )
+          }}
         xdp_flag_support_exp_retransmit_zero_copy: >-
           {{
             (
@@ -456,6 +570,65 @@
         xdp_iface_present: "{{ xdp_iface_stat.stat.exists | default(false) }}"
         xdp_iface_driver_link_present: "{{ xdp_iface_driver_stat.stat.exists | default(false) }}"
         xdp_iface_driver_name: "{{ xdp_iface_driver_name_cmd.stdout | default('') | trim }}"
+
+    - name: xdp - Compute interface flag eligibility
+      ansible.builtin.set_fact:
+        xdp_interface_flag_eligible: >-
+          {{
+            (xdp_primary_iface | default('') | length > 0)
+            and (xdp_iface_present | bool)
+            and (xdp_iface_driver_link_present | bool)
+            and (xdp_flag_support_exp_retransmit_interface | bool)
+          }}
+        xdp_zero_copy_requested: "{{ xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool }}"
+
+    - name: xdp - Compute zero-copy safety
+      ansible.builtin.set_fact:
+        xdp_zero_copy_interface_safe: >-
+          {{
+            (xdp_primary_iface | default('') | length > 0)
+            and (xdp_iface_present | bool)
+            and (xdp_iface_driver_link_present | bool)
+            and (
+              (xdp_primary_iface | default('')) == (xdp_route_iface | default(''))
+              or (xdp_interface_flag_eligible | bool)
+            )
+          }}
+
+    - name: xdp - Compute zero-copy effective state
+      ansible.builtin.set_fact:
+        xdp_zero_copy_block_reason: >-
+          {{
+            'not_requested'
+            if not (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool)
+            else (
+              'flag_unsupported'
+              if not (xdp_flag_support_exp_retransmit_zero_copy | bool)
+              else (
+                'physical_interface_unresolved'
+                if not ((xdp_primary_iface | default('') | length > 0) and (xdp_iface_present | bool) and (xdp_iface_driver_link_present | bool))
+                else (
+                  'interface_flag_unsupported'
+                  if not (
+                    (xdp_primary_iface | default('')) == (xdp_route_iface | default(''))
+                    or (xdp_interface_flag_eligible | bool)
+                  )
+                  else (
+                    'driver_unsupported_' ~ xdp_iface_driver_name
+                    if ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en'])) | map('lower') | list))
+                    else 'none'
+                  )
+                )
+              )
+            )
+          }}
+        xdp_zero_copy_effective: >-
+          {{
+            (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool)
+            and (xdp_flag_support_exp_retransmit_zero_copy | bool)
+            and (xdp_zero_copy_interface_safe | bool)
+            and not ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en'])) | map('lower') | list))
+          }}
 
     - name: xdp - Initialize NUMA placement assessment facts
       ansible.builtin.set_fact:
@@ -722,6 +895,7 @@
             or xdp_flag_support_enable
             or xdp_flag_support_enabled
             or xdp_flag_support_exp_retransmit_cpu
+            or xdp_flag_support_exp_retransmit_interface
             or xdp_flag_support_exp_retransmit_zero_copy
           }}
 
@@ -733,9 +907,8 @@
             + (['xdp_disabled'] if not (xdp_enabled | bool) else [])
             + (['validator_version_unsupported'] if not (xdp_validator_version is version(xdp_min_supported_version, '>=')) else [])
             + (['missing_caps_' ~ (xdp_missing_caps | join('_'))] if (xdp_missing_caps | length > 0) else [])
-            + (['xdp_interface_unresolved'] if (xdp_primary_iface | default('') | length == 0) else [])
-            + (['xdp_interface_missing_' ~ xdp_primary_iface] if ((xdp_primary_iface | default('') | length > 0) and not (xdp_iface_present | bool)) else [])
-            + (['xdp_interface_driver_unavailable_' ~ xdp_primary_iface] if ((xdp_primary_iface | default('') | length > 0) and (xdp_iface_present | bool) and not (xdp_iface_driver_link_present | bool)) else [])
+            + (['xdp_interface_missing_' ~ xdp_primary_iface] if ((xdp_interface_selection_source == 'override') and (xdp_primary_iface | default('') | length > 0) and not (xdp_iface_present | bool)) else [])
+            + (['xdp_interface_driver_unavailable_' ~ xdp_primary_iface] if ((xdp_interface_selection_source == 'override') and (xdp_primary_iface | default('') | length > 0) and (xdp_iface_present | bool) and not (xdp_iface_driver_link_present | bool)) else [])
             + (['xdp_driver_unsupported_' ~ xdp_iface_driver_name] if ((xdp_iface_driver_name | default('') | length > 0) and ((xdp_iface_driver_name | lower) in ((xdp_unsupported_iface_drivers | default(['virtio_net'])) | map('lower') | list))) else [])
             + (['xdp_flags_unavailable'] if not (xdp_any_flag_supported | bool) else [])
             + (['kernel_too_old'] if not (xdp_kernel_semver is version(xdp_min_kernel_version, '>=')) else [])
@@ -750,7 +923,9 @@
             (
               ['--experimental-retransmit-xdp-cpu-cores ' ~ ((xdp_experimental_retransmit_xdp_cpu_cores | default(1)) | string)]
               +
-              (['--experimental-retransmit-xdp-zero-copy'] if (xdp_experimental_retransmit_xdp_zero_copy | default(true) | bool) and (xdp_flag_support_exp_retransmit_zero_copy | bool) else [])
+              (['--experimental-retransmit-xdp-interface ' ~ (xdp_primary_iface | string | quote)] if (xdp_interface_flag_eligible | bool) else [])
+              +
+              (['--experimental-retransmit-xdp-zero-copy'] if (xdp_zero_copy_effective | bool) else [])
             ) if ((xdp_skip_reasons | length == 0) and (xdp_flag_support_exp_retransmit_cpu | bool))
             else (
               ['--xdp-mode ' ~ (xdp_mode | default('native'))] if ((xdp_skip_reasons | length == 0) and (xdp_flag_support_mode | bool))
@@ -781,6 +956,20 @@
       when:
         - xdp_enabled | bool
         - not (xdp_effective_enabled | bool)
+
+    - name: xdp - Warn when zero-copy was requested but blocked
+      ansible.builtin.debug:
+        msg: >-
+          XDP zero-copy was requested but not enabled for {{ validator_name }}.
+          reason={{ xdp_zero_copy_block_reason }},
+          route_interface={{ xdp_route_iface | default('') }},
+          selected_interface={{ xdp_primary_iface | default('') }},
+          selection_source={{ xdp_interface_selection_source | default('') }},
+          driver={{ xdp_iface_driver_name | default('') }}.
+      when:
+        - xdp_effective_enabled | bool
+        - xdp_zero_copy_requested | bool
+        - not (xdp_zero_copy_effective | bool)
 
     - name: xdp - Warn when XDP and PoH core placement is likely contended
       ansible.builtin.debug:

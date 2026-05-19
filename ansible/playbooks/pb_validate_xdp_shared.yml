@@ -93,7 +93,7 @@
 
     - name: validate_xdp - Set default xdp_experimental_retransmit_xdp_zero_copy when undefined
       ansible.builtin.set_fact:
-        xdp_experimental_retransmit_xdp_zero_copy: true
+        xdp_experimental_retransmit_xdp_zero_copy: false
       when: xdp_experimental_retransmit_xdp_zero_copy is not defined
       tags: [xdp, xdp_preflight, xdp_validate]
 
@@ -131,8 +131,15 @@
           - xdp_skip_reasons is defined
           - xdp_numa_check_status is defined
           - xdp_numa_check_reason is defined
+          - xdp_route_iface is defined
           - xdp_primary_iface is defined
           - xdp_interface_selection_source is defined
+          - xdp_interface_selection_reason is defined
+          - xdp_flag_support_exp_retransmit_interface is defined
+          - xdp_interface_flag_eligible is defined
+          - xdp_zero_copy_requested is defined
+          - xdp_zero_copy_effective is defined
+          - xdp_zero_copy_block_reason is defined
           - xdp_capability_source is defined
           - xdp_capability_confidence is defined
         fail_msg: "Shared XDP task did not produce the expected output facts."
@@ -184,10 +191,17 @@
           - NUMA check: {{ xdp_numa_check_status }} ({{ xdp_numa_check_reason }})
           - PoH core/node: {{ xdp_numa_poh_core | default('n/a') }}/{{ xdp_numa_poh_node | default('n/a') }}
           - XDP cores/nodes: {{ xdp_numa_xdp_cores | default('n/a') }}/{{ xdp_numa_xdp_nodes | default('n/a') }}
-          - Interface: {{ xdp_primary_iface | default('n/a') }}
+          - Route interface: {{ xdp_route_iface | default('n/a') }}
+          - Selected XDP interface: {{ xdp_primary_iface | default('n/a') }}
           - Interface source: {{ xdp_interface_selection_source | default('n/a') }}
+          - Interface reason: {{ xdp_interface_selection_reason | default('n/a') }}
           - Interface driver link present: {{ xdp_iface_driver_link_present | default(false) }}
           - Interface driver name: {{ xdp_iface_driver_name | default('n/a') }}
+          - Interface flag supported: {{ xdp_flag_support_exp_retransmit_interface | default(false) }}
+          - Interface flag eligible: {{ xdp_interface_flag_eligible | default(false) }}
+          - Zero-copy requested: {{ xdp_zero_copy_requested | default(false) }}
+          - Zero-copy effective: {{ xdp_zero_copy_effective | default(false) }}
+          - Zero-copy block reason: {{ xdp_zero_copy_block_reason | default('n/a') }}
           - Capability source: {{ xdp_capability_source | default('n/a') }}
           - Capability confidence: {{ xdp_capability_confidence | default('n/a') }}
       tags: [xdp, xdp_validate]

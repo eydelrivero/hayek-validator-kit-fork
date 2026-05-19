@@ -4,7 +4,7 @@ validator_type: "hot-spare"
 xdp_enabled: false
 xdp_mode: "native"
 xdp_experimental_retransmit_xdp_cpu_cores: 1
-xdp_experimental_retransmit_xdp_zero_copy: true
+xdp_experimental_retransmit_xdp_zero_copy: false
 xdp_target_interface: ""
 xdp_min_supported_version: "3.0.9"
 xdp_min_kernel_version: "5.10.0"
@@ -15,3 +15,6 @@ identity_duplicate_check_retry_attempts: 3
 identity_duplicate_check_retry_delay_seconds: 2
 xdp_unsupported_iface_drivers:
   - "virtio_net"
+xdp_zero_copy_unsupported_iface_drivers:
+  - "bnxt_en"
+  - "i40e"
