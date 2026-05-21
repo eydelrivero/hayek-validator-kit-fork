@@ -10,6 +10,10 @@ xdp_min_supported_version: "3.0.9"
 xdp_min_kernel_version: "5.10.0"
 xdp_numa_check_enabled: true
 xdp_runtime_state_file_path: "{{ validator_root_dir }}/xdp_status.env"
+xdp_ring_config_enabled: false
+xdp_ring_interface: ""
+xdp_ring_rx: 4096
+xdp_ring_tx: 4096
 identity_duplicate_check_timeout_seconds: 45
 identity_duplicate_check_retry_attempts: 3
 identity_duplicate_check_retry_delay_seconds: 2
@@ -17,4 +21,3 @@ xdp_unsupported_iface_drivers:
   - "virtio_net"
 xdp_zero_copy_unsupported_iface_drivers:
   - "bnxt_en"
-  - "i40e"

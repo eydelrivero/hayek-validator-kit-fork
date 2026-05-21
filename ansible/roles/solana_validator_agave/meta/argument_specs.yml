@@ -27,6 +27,15 @@ argument_specs:
         required: true
         choices: ["localnet", "testnet", "mainnet"]
         description: "Target Solana cluster"
+      expected_shred_version:
+        type: int
+        required: false
+        description: "Expected cluster shred version rendered as --expected-shred-version. Required when XDP zero-copy is effectively enabled unless expected_shred_version_auto_detect is true."
+      expected_shred_version_auto_detect:
+        type: bool
+        required: false
+        default: false
+        description: "When true and expected_shred_version is unset, query the configured RPC URL and use the majority non-zero cluster shredVersion."
       force_host_cleanup:
         type: bool
         required: false
@@ -62,6 +71,26 @@ argument_specs:
         required: false
         default: true
         description: "Run shared NUMA placement assessment between XDP retransmit cores and PoH pinned core"
+      xdp_ring_config_enabled:
+        type: bool
+        required: false
+        default: false
+        description: "Persist NIC RX/TX ring sizes with a systemd unit ordered before the validator service"
+      xdp_ring_interface:
+        type: str
+        required: false
+        default: ""
+        description: "Optional interface override for persistent XDP ring sizing; defaults to the selected XDP interface"
+      xdp_ring_rx:
+        type: int
+        required: false
+        default: 4096
+        description: "Requested RX ring size when xdp_ring_config_enabled is true"
+      xdp_ring_tx:
+        type: int
+        required: false
+        default: 4096
+        description: "Requested TX ring size when xdp_ring_config_enabled is true"
       solana_validator_ha_install_enabled:
         type: bool
         required: false

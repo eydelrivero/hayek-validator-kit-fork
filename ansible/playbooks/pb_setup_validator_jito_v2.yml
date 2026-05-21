@@ -57,6 +57,9 @@
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - run_poh_cpu_affinity_fix (OPTIONAL): Pin validator process to specific CPU core to improve PoH stability.
 # - xdp_enabled (OPTIONAL): Enable or disable XDP flag injection in validator startup script (default is disabled).
+# - xdp_ring_config_enabled (OPTIONAL): Persist XDP NIC ring sizing before validator startup (default is disabled).
+# - xdp_ring_rx / xdp_ring_tx (OPTIONAL): RX/TX ring sizes used when xdp_ring_config_enabled=true (default 4096/4096).
+# - xdp_ring_interface (OPTIONAL): Interface override for ring sizing; defaults to the resolved XDP interface.
 
 - name: Install Jito Client with BAM
   hosts: "{{ target_host }}"

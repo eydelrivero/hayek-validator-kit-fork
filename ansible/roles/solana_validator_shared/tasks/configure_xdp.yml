@@ -941,6 +941,10 @@
         xdp_effective_enabled: "{{ (xdp_skip_reasons | length == 0) and (xdp_params | length > 0) }}"
         xdp_skip_reason: "{{ (xdp_skip_reasons | first) if (xdp_skip_reasons | length > 0) else '' }}"
 
+    - name: xdp - Derive zero-copy startup status from params
+      ansible.builtin.set_fact:
+        xdp_zero_copy_startup_enabled: "{{ (xdp_effective_enabled | bool) and ('--experimental-retransmit-xdp-zero-copy' in (xdp_params | default([]))) }}"
+
     - name: xdp - Merge XDP params into extra_params
       ansible.builtin.set_fact:
         extra_params: "{{ (extra_params | default([])) + xdp_params }}"

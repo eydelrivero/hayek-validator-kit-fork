@@ -32,8 +32,11 @@ exec agave-validator \
 --entrypoint {{ entrypoint }} \
 {% endfor %}
 --expected-genesis-hash {{ expected_genesis_hash }} \
+{% if expected_shred_version is defined and (expected_shred_version | int) > 0 %}
+--expected-shred-version {{ expected_shred_version }} \
+{% endif %}
 --wal-recovery-mode skip_any_corrupted_record \
---limit-ledger-size {{ limit_ledger_size | default('') }} \
+--limit-ledger-size{% if limit_ledger_size is defined and (limit_ledger_size | string | trim | length) > 0 %} {{ limit_ledger_size }}{% endif %} \
 --block-verification-method unified-scheduler \
 {% if solana_cluster != "localnet" and poh_pinned_cpu_core_enabled is defined and poh_pinned_cpu_core_enabled and poh_pinned_cpu_core is defined %}
 --experimental-poh-pinned-cpu-core {{ poh_pinned_cpu_core }} \

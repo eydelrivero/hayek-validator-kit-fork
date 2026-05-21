@@ -20,7 +20,11 @@
 
 - name: configure - Compute XDP runtime flags
   ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/configure_xdp.yml
-  tags: [xdp, xdp_preflight, xdp_config]
+  tags: [xdp, xdp_ring, xdp_preflight, xdp_config]
+
+- name: configure - Configure persistent XDP NIC rings
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/configure_xdp_ring.yml
+  tags: [xdp, xdp_ring, xdp_config]
 
 - name: configure - Configure validator startup script
   block:
@@ -58,6 +62,70 @@
           ansible.builtin.set_fact:
             known_validators: "{{ known_validators + [entrypoint_identity_cmd.stdout] }}"
       when: solana_cluster == "localnet"
+
+    - name: configure - Auto-detect expected shred version
+      block:
+        - name: configure - Query cluster shred versions
+          ansible.builtin.shell: |
+            set -euo pipefail
+            python3 - <<'PY'
+            import json
+            import sys
+            import urllib.request
+
+            rpc_url = {{ (solana_rpc_url | default('')) | to_json }}
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getClusterNodes",
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                rpc_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                body = json.load(response)
+            nodes = body.get("result", [])
+            versions = {}
+            for node in nodes:
+                version = int(node.get("shredVersion") or 0)
+                if version > 0:
+                    versions[version] = versions.get(version, 0) + 1
+            if not versions:
+                print("No non-zero shredVersion values returned", file=sys.stderr)
+                sys.exit(1)
+            version, count = sorted(versions.items(), key=lambda item: (-item[1], item[0]))[0]
+            print(f"{version} {count}")
+            PY
+          args:
+            executable: /bin/bash
+          register: cluster_shred_version_cmd
+          delegate_to: localhost
+          changed_when: false
+
+        - name: configure - Set expected shred version
+          ansible.builtin.set_fact:
+            expected_shred_version: "{{ cluster_shred_version_cmd.stdout.split()[0] }}"
+            expected_shred_version_observed_count: "{{ cluster_shred_version_cmd.stdout.split()[1] }}"
+      when:
+        - expected_shred_version_auto_detect | default(false) | bool
+        - (expected_shred_version | default(0) | int) <= 0
+        - xdp_zero_copy_startup_enabled | default(false) | bool
+        - solana_cluster != "localnet"
+
+    - name: configure - Require expected shred version when XDP zero-copy is enabled
+      ansible.builtin.assert:
+        that:
+          - (expected_shred_version | default(0) | int) > 0
+        fail_msg: >-
+          xdp_experimental_retransmit_xdp_zero_copy resolved to an effective startup flag, but
+          expected_shred_version is not a positive integer. Set expected_shred_version explicitly
+          or enable expected_shred_version_auto_detect=true.
+      when:
+        - xdp_zero_copy_startup_enabled | default(false) | bool
+        - solana_cluster != "localnet"
 
     - name: configure - Create validator startup script
       ansible.builtin.template:
