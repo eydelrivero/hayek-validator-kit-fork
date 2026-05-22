@@ -19,6 +19,8 @@
 #   - monitor.sh.j2 (selected net) -> /etc/telegraf/scripts/monitor-<network>.sh
 #   - monitor.env.j2               -> /usr/local/etc/validator-metrics.env
 #   - validator-metrics.sh.j2      -> /usr/local/bin/validator-metrics.sh
+#   - hardware_metrics.json        -> Grafana dashboard import when JSON changes
+#   - validators_metrics.json.j2   -> Grafana dashboard import when rendered JSON changes
 
 - name: Deploy selected monitoring templates
   hosts: "{{ target_host }}"
@@ -41,6 +43,20 @@
     tmp_influxdb_default_bucket: "{{ deploy_tmp_influxdb_default_bucket | default('solana_metrics') }}"
     grafana_admin_password: "{{ deploy_grafana_admin_password | default('admin') }}"
     grafana_url: "{{ deploy_grafana_url | default('http://localhost:3000') }}"
+    grafana_import_api_base_url: >-
+      {{
+        deploy_grafana_api_base_url
+        | default(
+            'http://'
+            ~ (monitoring_network.bind_address | default('localhost'))
+            ~ ':'
+            ~ ((grafana_port | default(3000)) | string)
+          )
+      }}
+    hardware_dashboard_render_path: "/tmp/hayek-hardware-metrics-dashboard.json"
+    hardware_dashboard_staging_path: "/tmp/hayek-hardware-metrics-dashboard.next.json"
+    validator_dashboard_render_path: "/tmp/hayek-validator-metrics-dashboard.json"
+    validator_dashboard_staging_path: "/tmp/hayek-validator-metrics-dashboard.next.json"
     monitoring_hub_vars_main_file_path: "{{ playbook_dir }}/../roles/monitoring_hub/vars/main.yml"
     monitoring_hub_secrets_file_path: "{{ playbook_dir }}/../roles/monitoring_hub/vars/secrets.yml"
     monitoring_hub_secrets_example_file_path: "{{ playbook_dir }}/../roles/monitoring_hub/vars/secrets.yml.example"
@@ -153,8 +169,199 @@
         owner: telegraf
         group: telegraf
         mode: "0755"
+      register: deploy_monitor_script_result
       vars:
         item: "{{ selected_network_item }}"
+
+    - name: Render hardware dashboard JSON staging file
+      ansible.builtin.copy:
+        src: ../roles/monitoring_hub/templates/grafana/hardware_metrics.json
+        dest: "{{ hardware_dashboard_staging_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: deploy_hardware_dashboard | default(true) | bool
+
+    - name: Check hardware dashboard import marker
+      ansible.builtin.stat:
+        path: "{{ hardware_dashboard_render_path }}"
+      register: deploy_hardware_dashboard_marker_stat
+      when: deploy_hardware_dashboard | default(true) | bool
+
+    - name: Check hardware dashboard staging file
+      ansible.builtin.stat:
+        path: "{{ hardware_dashboard_staging_path }}"
+      register: deploy_hardware_dashboard_staging_stat
+      when: deploy_hardware_dashboard | default(true) | bool
+
+    - name: Determine whether Hardware Metrics dashboard import is needed
+      ansible.builtin.set_fact:
+        deploy_hardware_dashboard_import_needed: >-
+          {{
+            deploy_hardware_dashboard_force | default(false) | bool or
+            not (deploy_hardware_dashboard_marker_stat.stat.exists | default(false)) or
+            (
+              deploy_hardware_dashboard_marker_stat.stat.checksum | default('') !=
+              deploy_hardware_dashboard_staging_stat.stat.checksum | default('')
+            )
+          }}
+      when: deploy_hardware_dashboard | default(true) | bool
+
+    - block:
+        - name: Load Hardware Metrics dashboard JSON
+          ansible.builtin.set_fact:
+            hardware_dashboard_json: "{{ lookup('file', playbook_dir + '/../roles/monitoring_hub/templates/grafana/hardware_metrics.json') | from_json }}"
+      rescue:
+        - name: Fail with helpful error if hardware dashboard JSON is invalid
+          ansible.builtin.fail:
+            msg: >-
+              Unable to load or parse the Hardware Metrics dashboard JSON file at
+              '{{ playbook_dir }}/../roles/monitoring_hub/templates/grafana/hardware_metrics.json'.
+              Please check that the file exists and contains valid JSON.
+      when:
+        - deploy_hardware_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - deploy_hardware_dashboard_import_needed | default(false) | bool
+
+    - name: Import Hardware Metrics dashboard into Grafana when changed
+      ansible.builtin.uri:
+        url: "{{ grafana_import_api_base_url }}/api/dashboards/import"
+        method: POST
+        user: "{{ grafana_default_admin_user }}"
+        password: "{{ grafana_secrets.admin_password }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        validate_certs: "{{ deploy_grafana_validate_certs | default(false) | bool }}"
+        body:
+          dashboard: "{{ hardware_dashboard_json }}"
+          overwrite: true
+          folderUid: ""
+          inputs:
+            - name: "DS_INFLUXDB-1"
+              type: "datasource"
+              pluginId: "influxdb"
+              value: "{{ grafana_config.hardware_metrics_source_uid | default('hardware_metrics_uid') }}"
+        status_code: 200
+        timeout: 20
+      register: deploy_hardware_dashboard_import_result
+      when:
+        - deploy_hardware_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - hardware_dashboard_json is defined
+      no_log: "{{ deploy_hide_sensitive_logs | default(true) | bool }}"
+
+    - name: Update hardware dashboard import marker after successful import
+      ansible.builtin.copy:
+        src: "{{ hardware_dashboard_staging_path }}"
+        dest: "{{ hardware_dashboard_render_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - deploy_hardware_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - hardware_dashboard_json is defined
+        - deploy_hardware_dashboard_import_result.status | default(0) == 200
+
+    - name: Render validator dashboard JSON staging file
+      ansible.builtin.template:
+        src: ../roles/monitoring_hub/templates/grafana/validators_metrics.json.j2
+        dest: "{{ validator_dashboard_staging_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        selected_network: "{{ target_network }}"
+      when: deploy_validator_dashboard | default(true) | bool
+
+    - name: Check validator dashboard import marker
+      ansible.builtin.stat:
+        path: "{{ validator_dashboard_render_path }}"
+      register: deploy_validator_dashboard_marker_stat
+      when: deploy_validator_dashboard | default(true) | bool
+
+    - name: Check validator dashboard staging file
+      ansible.builtin.stat:
+        path: "{{ validator_dashboard_staging_path }}"
+      register: deploy_validator_dashboard_staging_stat
+      when: deploy_validator_dashboard | default(true) | bool
+
+    - name: Determine whether Validator Metrics dashboard import is needed
+      ansible.builtin.set_fact:
+        deploy_validator_dashboard_import_needed: >-
+          {{
+            deploy_validator_dashboard_force | default(false) | bool or
+            not (deploy_validator_dashboard_marker_stat.stat.exists | default(false)) or
+            (
+              deploy_validator_dashboard_marker_stat.stat.checksum | default('') !=
+              deploy_validator_dashboard_staging_stat.stat.checksum | default('')
+            )
+          }}
+      when: deploy_validator_dashboard | default(true) | bool
+
+    - block:
+        - name: Render and load Validator Metrics dashboard JSON
+          ansible.builtin.set_fact:
+            validator_dashboard_json: "{{ lookup('template', playbook_dir + '/../roles/monitoring_hub/templates/grafana/validators_metrics.json.j2') | from_json }}"
+          vars:
+            selected_network: "{{ target_network }}"
+      rescue:
+        - name: Fail with helpful error if dashboard JSON is invalid
+          ansible.builtin.fail:
+            msg: >-
+              Unable to render or parse the Validator Metrics dashboard JSON using template lookup
+              at '{{ playbook_dir }}/../roles/monitoring_hub/templates/grafana/validators_metrics.json.j2'.
+              Please check that the file exists and contains valid JSON after templating.
+      when:
+        - deploy_validator_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - deploy_validator_dashboard_import_needed | default(false) | bool
+
+    - name: Import Validator Metrics dashboard into Grafana when changed
+      ansible.builtin.uri:
+        url: "{{ grafana_import_api_base_url }}/api/dashboards/import"
+        method: POST
+        user: "{{ grafana_default_admin_user }}"
+        password: "{{ grafana_secrets.admin_password }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        validate_certs: "{{ deploy_grafana_validate_certs | default(false) | bool }}"
+        body:
+          dashboard: "{{ validator_dashboard_json }}"
+          overwrite: true
+          folderUid: ""
+          inputs:
+            - name: "DS_SOLANA_METRICS"
+              type: "datasource"
+              pluginId: "influxdb"
+              value: "{{ grafana_config.solana_metrics_source_uid | default('solana_metrics_uid') }}"
+        status_code: 200
+        timeout: 20
+      register: deploy_validator_dashboard_import_result
+      when:
+        - deploy_validator_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - validator_dashboard_json is defined
+      no_log: "{{ deploy_hide_sensitive_logs | default(true) | bool }}"
+
+    - name: Update validator dashboard import marker after successful import
+      ansible.builtin.copy:
+        src: "{{ validator_dashboard_staging_path }}"
+        dest: "{{ validator_dashboard_render_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - deploy_validator_dashboard | default(true) | bool
+        - not ansible_check_mode
+        - validator_dashboard_json is defined
+        - deploy_validator_dashboard_import_result.status | default(0) == 200
 
     - name: Restart alert formatter service when script changed
       ansible.builtin.systemd:
@@ -169,3 +376,20 @@
         state: restarted
         daemon_reload: true
       when: deploy_monitor_env_result.changed or deploy_validator_metrics_script_result.changed
+
+    - name: Check per-network Telegraf service unit exists
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/telegraf-{{ selected_network_item.value.network_name }}.service"
+      register: deploy_telegraf_service_unit_stat
+
+    - name: Restart per-network Telegraf service when monitor script changed
+      ansible.builtin.systemd:
+        name: "telegraf-{{ selected_network_item.value.network_name }}.service"
+        state: restarted
+        daemon_reload: true
+      when:
+        - deploy_telegraf_service_unit_stat.stat.exists
+        - >-
+          deploy_monitor_script_result.changed or
+          deploy_monitor_env_result.changed or
+          deploy_force_telegraf_restart | default(false) | bool

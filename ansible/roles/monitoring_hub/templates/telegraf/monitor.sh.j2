@@ -40,110 +40,124 @@ validatorBalance=$($cli balance $identityPubkey --url $rpcURL | grep -o '[0-9.]*
 validatorVoteBalance=$($cli balance $voteAccount --url $rpcURL | grep -o '[0-9.]*')
 solanaPrice=$(curl -s 'GET' 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd' -H 'accept: application/json' | jq -r .solana.usd)
 openfiles=$(cat /proc/sys/fs/file-nr | awk '{ print $1 }')
-validatorCheck=$($cli validators --url $rpcURL)
+validatorCheck=""
+validatorCheckRc=1
+if [ -z "$voteAccount" ]; then
+   validatorInSet=-1
+else
+   validatorCheck=$($cli validators --url $rpcURL 2>/dev/null)
+   validatorCheckRc=$?
+fi
+if [ -n "$voteAccount" ] && { [ "$validatorCheckRc" -ne 0 ] || [ -z "$validatorCheck" ]; }; then
+   validatorInSet=-1
+elif [ -n "$voteAccount" ]; then
+   validatorInSet=$(grep -c "$voteAccount" <<< "$validatorCheck")
+fi
 
-if [ $(grep -c $voteAccount <<< $validatorCheck) == 0  ]; then echo "validator not found in set"; exit 1; fi
-    blockProduction=$($cli block-production --url $rpcURL --output json-compact 2>&- | grep -v Note:)
-    validatorBlockProduction=$(jq -r '.leaders[] | select(.identityPubkey == '\"$identityPubkey\"')' <<<$blockProduction)
-    validators=$($cli validators --url $rpcURL --output json-compact 2>&-)
-    currentValidatorInfo=$(jq -r '.validators[] | select(.voteAccountPubkey == '\"$voteAccount\"')' <<<$validators)
-    delinquentValidatorInfo=$(jq -r '.validators[] | select(.voteAccountPubkey == '\"$voteAccount\"' and .delinquent == true)' <<<$validators)
-    if [[ ((-n "$currentValidatorInfo" || "$delinquentValidatorInfo" ))  ]] || [[ ("$validatorBlockTimeTest" -eq "1" ) ]]; then
-        status=1 #status 0=validating 1=up 2=error 3=delinquent 4=stopped
-        blockHeight=$(jq -r '.slot' <<<$validatorBlockTime)
-        blockHeightTime=$(jq -r '.timestamp' <<<$validatorBlockTime)
-        if [ -n "$blockHeightTime" ]; then blockHeightFromNow=$(expr $(date +%s) - $blockHeightTime); fi
-        if [ -n "$delinquentValidatorInfo" ]; then
-              status=3
-              activatedStake=$(jq -r '.activatedStake' <<<$delinquentValidatorInfo)
-        if [ "$format" == "SOL" ]; then activatedStake=$(echo "scale=2 ; $activatedStake / 1000000000.0" | bc); fi
-              credits=$(jq -r '.credits' <<<$delinquentValidatorInfo)
-              version=$(jq -r '.version' <<<$delinquentValidatorInfo | sed 's/ /-/g')
-              version2=${version//./}
-              commission=$(jq -r '.commission' <<<$delinquentValidatorInfo)
-              logentry="rootSlot=$(jq -r '.rootSlot' <<<$delinquentValidatorInfo),lastVote=$(jq -r '.lastVote' <<<$delinquentValidatorInfo),credits=$credits,activatedStake=$activatedStake,version=$version2,commission=$commission"
-        elif [ -n "$currentValidatorInfo" ]; then
-              status=0
-              activatedStake=$(jq -r '.activatedStake' <<<$currentValidatorInfo)
-              credits=$(jq -r '.credits' <<<$currentValidatorInfo)
-              version=$(jq -r '.version' <<<$currentValidatorInfo | sed 's/ /-/g')
-              version2=${version//./}
-              commission=$(jq -r '.commission' <<<$currentValidatorInfo)
-              logentry="rootSlot=$(jq -r '.rootSlot' <<<$currentValidatorInfo),lastVote=$(jq -r '.lastVote' <<<$currentValidatorInfo)"
-              leaderSlots=$(jq -r '.leaderSlots' <<<$validatorBlockProduction)
-              leaderSlots=$(jq -r '.leaderSlots' <<<$validatorBlockProduction)
-              skippedSlots=$(jq -r '.skippedSlots' <<<$validatorBlockProduction)
-              totalBlocksProduced=$(jq -r '.total_slots' <<<$blockProduction)
-              totalSlotsSkipped=$(jq -r '.total_slots_skipped' <<<$blockProduction)
-              if [ "$format" == "SOL" ]; then activatedStake=$(echo "scale=2 ; $activatedStake / 1000000000.0" | bc); fi
-              if [ -n "$leaderSlots" ]; then pctSkipped=$(echo "scale=2 ; 100 * $skippedSlots / $leaderSlots" | bc); fi
-              if [ -z "$leaderSlots" ]; then leaderSlots=0 skippedSlots=0 pctSkipped=0; fi
-              if [ -n "$totalBlocksProduced" ]; then
-                 pctTotSkipped=$(echo "scale=2 ; 100 * $totalSlotsSkipped / $totalBlocksProduced" | bc)
-                 if [ "$pctSkipped" = 0 ] || [ "$pctTotSkipped" = 0 ]; then pctSkippedDelta=0
-                 else pctSkippedDelta=$(echo "scale=2 ; 100 * ($pctSkipped - $pctTotSkipped) / $pctTotSkipped" | bc); fi
-              fi
-              if [ -z "$pctTotSkipped" ]; then pctTotSkipped=0 pctSkippedDelta=0; fi
-              totalActiveStake=$(jq -r '.totalActiveStake' <<<$validators)
-              totalDelinquentStake=$(jq -r '.totalDelinquentStake' <<<$validators)
-              pctTotDelinquent=$(echo "scale=2 ; 100 * $totalDelinquentStake / $totalActiveStake" | bc)
-              versionActiveStake=$(jq -r '.stakeByVersion.'\"$version\"'.currentActiveStake' <<<$validators)
-              stakeByVersion=$(jq -r '.stakeByVersion' <<<$validators)
-              stakeByVersion=$(jq -r 'to_entries | map_values(.value + { version: .key })' <<<$stakeByVersion)
-              nextVersionIndex=$(expr $(jq -r 'map(.version == '\"$version\"') | index(true)' <<<$stakeByVersion) + 1)
-              stakeByVersion=$(jq '.['$nextVersionIndex':]' <<<$stakeByVersion)
-              stakeNewerVersions=$(jq -s 'map(.[].currentActiveStake) | add' <<<$stakeByVersion)
-              totalCurrentStake=$(jq -r '.totalCurrentStake' <<<$validators)
-              pctVersionActive=$(echo "scale=2 ; 100 * $versionActiveStake / $totalCurrentStake" | bc)
-              pctNewerVersions=$(echo "scale=2 ; 100 * $stakeNewerVersions / $totalCurrentStake" | bc)
-              logentry="$logentry,leaderSlots=$leaderSlots,skippedSlots=$skippedSlots,pctSkipped=$pctSkipped,pctTotSkipped=$pctTotSkipped,pctSkippedDelta=$pctSkippedDelta,pctTotDelinquent=$pctTotDelinquent"
-              logentry="$logentry,version=$version2,pctNewerVersions=$pctNewerVersions,commission=$commission,activatedStake=$activatedStake,credits=$credits,solanaPrice=$solanaPrice"
-           else status=2; fi
-        if [ "$additionalInfo" == "on" ]; then
-           nodes=$($cli gossip --url $rpcURL | grep -Po "Nodes:\s+\K[0-9]+")
-           epochInfo=$($cli epoch-info --url $rpcURL --output json-compact)
-           epoch=$(jq -r '.epoch' <<<$epochInfo)
-           tps=$(jq -r '.transactionCount' <<<$epochInfo)
-           pctEpochElapsed=$(echo "scale=2 ; 100 * $(jq -r '.slotIndex' <<<$epochInfo) / $(jq -r '.slotsInEpoch' <<<$epochInfo)" | bc)
-           validatorCreditsCurrent=$($cli vote-account $voteAccount --url $rpcURL | grep credits/max | cut -d ":" -f 2 | cut -d "/" -f 1 | awk 'NR==1{print $1}')
-           TIME=$($cli epoch-info | grep "Epoch Completed Time" | cut -d "(" -f 2 | awk '{print $1,$2,$3,$4}')
-           VAR1=$(echo $TIME | grep -oE '[0-9]+day' | grep -o -E '[0-9]+')
-           VAR2=$(echo $TIME | grep -oE '[0-9]+h'   | grep -o -E '[0-9]+')
-           VAR3=$(echo $TIME | grep -oE '[0-9]+m'   | grep -o -E '[0-9]+')
-           VAR4=$(echo $TIME | grep -oE '[0-9]+s'   | grep -o -E '[0-9]+')
-           
-           if [ -z "$VAR1" ];
-           then
-           VAR1=0
-           fi
+blockProduction=$($cli block-production --url $rpcURL --output json-compact 2>&- | grep -v Note:)
+validatorBlockProduction=$(jq -r '.leaders[] | select(.identityPubkey == '\"$identityPubkey\"')' <<<$blockProduction 2>/dev/null)
+validators=$($cli validators --url $rpcURL --output json-compact 2>&-)
+currentValidatorInfo=$(jq -r '.validators[] | select(.voteAccountPubkey == '\"$voteAccount\"')' <<<$validators 2>/dev/null)
+delinquentValidatorInfo=$(jq -r '.validators[] | select(.voteAccountPubkey == '\"$voteAccount\"' and .delinquent == true)' <<<$validators 2>/dev/null)
 
-           if [ -z "$VAR2" ];
-           then
-           VAR2=0
-           fi
+# status 0=validating 1=up 2=error 3=delinquent 4=stopped 5=not active/activating
+status=2
+logentry="rootSlot=0,lastVote=0,credits=0,activatedStake=0,leaderSlots=0,skippedSlots=0,pctSkipped=0,pctTotSkipped=0,pctSkippedDelta=0,pctTotDelinquent=0,version=0,pctNewerVersions=0,commission=0,solanaPrice=$solanaPrice"
 
-           if [ -z "$VAR3" ];
-           then
-           VAR3=0
-           fi
+if [ "$validatorInSet" -lt 0 ]; then
+   echo "unable to retrieve validator set; emitting error metrics" >&2
+   status=2
+elif [ "$validatorInSet" -eq 0 ]; then
+   echo "validator not found in active set; emitting baseline metrics" >&2
+   status=5
+elif [ -n "$delinquentValidatorInfo" ]; then
+   status=3
+   activatedStake=$(jq -r '.activatedStake' <<<$delinquentValidatorInfo)
+   if [ "$format" == "SOL" ]; then activatedStake=$(echo "scale=2 ; $activatedStake / 1000000000.0" | bc); fi
+   credits=$(jq -r '.credits' <<<$delinquentValidatorInfo)
+   version=$(jq -r '.version' <<<$delinquentValidatorInfo | sed 's/ /-/g')
+   version2=${version//./}
+   commission=$(jq -r '.commission' <<<$delinquentValidatorInfo)
+   logentry="rootSlot=$(jq -r '.rootSlot' <<<$delinquentValidatorInfo),lastVote=$(jq -r '.lastVote' <<<$delinquentValidatorInfo),credits=$credits,activatedStake=$activatedStake,leaderSlots=0,skippedSlots=0,pctSkipped=0,pctTotSkipped=0,pctSkippedDelta=0,pctTotDelinquent=0,version=$version2,pctNewerVersions=0,commission=$commission,solanaPrice=$solanaPrice"
+elif [ -n "$currentValidatorInfo" ]; then
+   status=0
+   activatedStake=$(jq -r '.activatedStake' <<<$currentValidatorInfo)
+   credits=$(jq -r '.credits' <<<$currentValidatorInfo)
+   version=$(jq -r '.version' <<<$currentValidatorInfo | sed 's/ /-/g')
+   version2=${version//./}
+   commission=$(jq -r '.commission' <<<$currentValidatorInfo)
+   logentry="rootSlot=$(jq -r '.rootSlot' <<<$currentValidatorInfo),lastVote=$(jq -r '.lastVote' <<<$currentValidatorInfo)"
+   leaderSlots=$(jq -r '.leaderSlots // 0' <<<$validatorBlockProduction 2>/dev/null)
+   skippedSlots=$(jq -r '.skippedSlots // 0' <<<$validatorBlockProduction 2>/dev/null)
+   totalBlocksProduced=$(jq -r '.total_slots // 0' <<<$blockProduction 2>/dev/null)
+   totalSlotsSkipped=$(jq -r '.total_slots_skipped // 0' <<<$blockProduction 2>/dev/null)
+   if [ "$format" == "SOL" ]; then activatedStake=$(echo "scale=2 ; $activatedStake / 1000000000.0" | bc); fi
+   if [ "$leaderSlots" -gt 0 ] 2>/dev/null; then pctSkipped=$(echo "scale=2 ; 100 * $skippedSlots / $leaderSlots" | bc); else leaderSlots=0 skippedSlots=0 pctSkipped=0; fi
+   if [ "$totalBlocksProduced" -gt 0 ] 2>/dev/null; then
+      pctTotSkipped=$(echo "scale=2 ; 100 * $totalSlotsSkipped / $totalBlocksProduced" | bc)
+      if [ "$pctSkipped" = 0 ] || [ "$pctTotSkipped" = 0 ]; then pctSkippedDelta=0
+      else pctSkippedDelta=$(echo "scale=2 ; 100 * ($pctSkipped - $pctTotSkipped) / $pctTotSkipped" | bc); fi
+   fi
+   if [ -z "$pctTotSkipped" ]; then pctTotSkipped=0 pctSkippedDelta=0; fi
+   totalActiveStake=$(jq -r '.totalActiveStake // 0' <<<$validators)
+   totalDelinquentStake=$(jq -r '.totalDelinquentStake // 0' <<<$validators)
+   if [ "$totalActiveStake" -gt 0 ] 2>/dev/null; then pctTotDelinquent=$(echo "scale=2 ; 100 * $totalDelinquentStake / $totalActiveStake" | bc); else pctTotDelinquent=0; fi
+   versionActiveStake=$(jq -r '.stakeByVersion.'\"$version\"'.currentActiveStake // 0' <<<$validators)
+   stakeByVersion=$(jq -r '.stakeByVersion // {}' <<<$validators)
+   stakeByVersion=$(jq -r 'to_entries | map_values(.value + { version: .key })' <<<$stakeByVersion)
+   nextVersionIndex=$(expr $(jq -r 'map(.version == '\"$version\"') | index(true) // -1' <<<$stakeByVersion) + 1)
+   stakeByVersion=$(jq '.['$nextVersionIndex':]' <<<$stakeByVersion)
+   stakeNewerVersions=$(jq -s 'map(.[].currentActiveStake) | add // 0' <<<$stakeByVersion)
+   totalCurrentStake=$(jq -r '.totalCurrentStake // 0' <<<$validators)
+   if [ "$totalCurrentStake" -gt 0 ] 2>/dev/null; then pctVersionActive=$(echo "scale=2 ; 100 * $versionActiveStake / $totalCurrentStake" | bc); else pctVersionActive=0; fi
+   if [ "$totalCurrentStake" -gt 0 ] 2>/dev/null; then pctNewerVersions=$(echo "scale=2 ; 100 * $stakeNewerVersions / $totalCurrentStake" | bc); else pctNewerVersions=0; fi
+   logentry="$logentry,leaderSlots=$leaderSlots,skippedSlots=$skippedSlots,pctSkipped=$pctSkipped,pctTotSkipped=$pctTotSkipped,pctSkippedDelta=$pctSkippedDelta,pctTotDelinquent=$pctTotDelinquent"
+   logentry="$logentry,version=$version2,pctNewerVersions=$pctNewerVersions,commission=$commission,activatedStake=$activatedStake,credits=$credits,solanaPrice=$solanaPrice"
+fi
 
-           if [ -z "$VAR4" ];
-           then
-           VAR4=0
-           fi
-           
-           epochEnds=$(TZ=$timezone date -d "$VAR1 days $VAR2 hours $VAR3 minutes $VAR4 seconds" +"%m/%d/%Y %H:%M")
-           epochEnds=$(( $(TZ=$timezone date -d "$epochEnds" +%s) * 1000 ))
-           voteElapsed=$(echo "scale=4; $pctEpochElapsed / 100 * 432000" | bc)
-           if [ "$voteElapsed" = 0 ]; then pctVote=0
-           else pctVote=$(echo "scale=4; $validatorCreditsCurrent/$voteElapsed * 100" | bc); fi
-           logentry="$logentry,openFiles=$openfiles,validatorBalance=$validatorBalance,validatorVoteBalance=$validatorVoteBalance,nodes=$nodes,epoch=$epoch,pctEpochElapsed=$pctEpochElapsed,validatorCreditsCurrent=$validatorCreditsCurrent,epochEnds=$epochEnds,pctVote=$pctVote,tps=$tps"
-        fi
-        logentry="nodemonitor,pubkey=$identityPubkey status=$status,$logentry $now"
-    else
-        status=2
-        logentry="nodemonitor,pubkey=$identityPubkey status=$status $now"
-    fi
+if [ "$additionalInfo" == "on" ] && { [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; }; then
+   nodes=$($cli gossip --url $rpcURL | grep -Po "Nodes:\s+\K[0-9]+")
+   epochInfo=$($cli epoch-info --url $rpcURL --output json-compact)
+   epoch=$(jq -r '.epoch' <<<$epochInfo)
+   tps=$(jq -r '.transactionCount' <<<$epochInfo)
+   pctEpochElapsed=$(echo "scale=2 ; 100 * $(jq -r '.slotIndex' <<<$epochInfo) / $(jq -r '.slotsInEpoch' <<<$epochInfo)" | bc)
+   validatorCreditsCurrent=$($cli vote-account $voteAccount --url $rpcURL | grep credits/max | cut -d ":" -f 2 | cut -d "/" -f 1 | awk 'NR==1{print $1}')
+   validatorCreditsCurrent=${validatorCreditsCurrent:-0}
+   TIME=$($cli epoch-info --url $rpcURL | grep "Epoch Completed Time" | cut -d "(" -f 2 | awk '{print $1,$2,$3,$4}')
+   VAR1=$(echo $TIME | grep -oE '[0-9]+day' | grep -o -E '[0-9]+')
+   VAR2=$(echo $TIME | grep -oE '[0-9]+h'   | grep -o -E '[0-9]+')
+   VAR3=$(echo $TIME | grep -oE '[0-9]+m'   | grep -o -E '[0-9]+')
+   VAR4=$(echo $TIME | grep -oE '[0-9]+s'   | grep -o -E '[0-9]+')
+
+   if [ -z "$VAR1" ];
+   then
+   VAR1=0
+   fi
+
+   if [ -z "$VAR2" ];
+   then
+   VAR2=0
+   fi
+
+   if [ -z "$VAR3" ];
+   then
+   VAR3=0
+   fi
+
+   if [ -z "$VAR4" ];
+   then
+   VAR4=0
+   fi
+
+   epochEnds=$(TZ=$timezone date -d "$VAR1 days $VAR2 hours $VAR3 minutes $VAR4 seconds" +"%m/%d/%Y %H:%M")
+   epochEnds=$(( $(TZ=$timezone date -d "$epochEnds" +%s) * 1000 ))
+   voteElapsed=$(echo "scale=4; $pctEpochElapsed / 100 * 432000" | bc)
+   if [ "$voteElapsed" = 0 ]; then pctVote=0
+   else pctVote=$(echo "scale=4; $validatorCreditsCurrent/$voteElapsed * 100" | bc); fi
+   logentry="$logentry,openFiles=$openfiles,validatorBalance=$validatorBalance,validatorVoteBalance=$validatorVoteBalance,nodes=$nodes,epoch=$epoch,pctEpochElapsed=$pctEpochElapsed,validatorCreditsCurrent=$validatorCreditsCurrent,epochEnds=$epochEnds,pctVote=$pctVote,tps=$tps"
+fi
+
+logentry="nodemonitor,pubkey=$identityPubkey status=$status,$logentry $now"
 
 # Defensive cleanup: avoid invalid line protocol from empty/null numeric fields,
 # bare decimal values (e.g. .36 -> 0.36), negative bare decimals (e.g. -.92 -> -0.92),
