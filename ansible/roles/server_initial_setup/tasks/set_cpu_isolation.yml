@@ -29,6 +29,11 @@
     _cpu_total: "{{ _nproc.stdout | trim | int }}"
   when: ansible_facts['architecture'] == "x86_64"
 
+- name: Detect AMD CPU for p-state kernel parameters
+  ansible.builtin.set_fact:
+    _server_initial_setup_cpu_is_amd: "{{ (ansible_facts.processor | default([]) | join(' ')) is search('AMD|AuthenticAMD') }}"
+  when: ansible_facts['architecture'] == "x86_64"
+
 - name: Compute irq_cores string (all cores except PoH core and its HT sibling)
   ansible.builtin.shell: |
     python3 -c "
@@ -49,16 +54,89 @@
   check_mode: false
   when: ansible_facts['architecture'] == "x86_64"
 
-- name: Build rendered GRUB line for CPU isolation
-  ansible.builtin.set_fact:
-    _grub_cmdline_linux_default: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_pstate={{ cpu_config.pstate }} nohz_full={{ _cpu_poh }},{{ _cpu_sibling }} isolcpus=domain,managed_irq,{{ _cpu_poh }},{{ _cpu_sibling }} irqaffinity={{ _irq_cores.stdout | trim }}"'
+- name: Read effective existing GRUB default kernel parameters
+  ansible.builtin.shell: |
+    set -e
+    for grub_defaults_file in /etc/default/grub /etc/default/grub.d/*.cfg; do
+      [ -r "$grub_defaults_file" ] || continue
+      . "$grub_defaults_file"
+    done
+    printf '%s\n' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+  args:
+    executable: /bin/bash
+  register: _grub_cmdline_linux_default_existing
+  changed_when: false
+  check_mode: false
   when: ansible_facts['architecture'] == "x86_64"
 
-- name: Configure GRUB for CPU isolation
-  ansible.builtin.lineinfile:
-    path: /etc/default/grub
-    regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
-    line: "{{ _grub_cmdline_linux_default }}"
+- name: Build canonical validator kernel parameters
+  ansible.builtin.set_fact:
+    _server_initial_setup_grub_canonical_params: >-
+      {{
+        [
+          'quiet',
+          'audit=1',
+          'audit_backlog_limit=8192',
+          'intel_idle.max_cstate=0',
+          'processor.max_cstate=0'
+        ]
+        + (['amd_pstate=' ~ cpu_config.pstate] if (_server_initial_setup_cpu_is_amd | default(false) | bool) else [])
+        + [
+          'nohz_full=' ~ _cpu_poh ~ ',' ~ _cpu_sibling,
+          'isolcpus=domain,managed_irq,' ~ _cpu_poh ~ ',' ~ _cpu_sibling,
+          'irqaffinity=' ~ (_irq_cores.stdout | trim)
+        ]
+      }}
+  when: ansible_facts['architecture'] == "x86_64"
+
+- name: Merge provider GRUB defaults with validator kernel parameters
+  ansible.builtin.set_fact:
+    _server_initial_setup_grub_cmdline_params: >-
+      {{
+        (
+          (_grub_cmdline_linux_default_existing.stdout | default('') | split())
+          | reject('equalto', 'quiet')
+          | reject('equalto', 'audit=1')
+          | reject('equalto', 'audit_backlog_limit=8192')
+          | reject('equalto', 'intel_idle.max_cstate=0')
+          | reject('equalto', 'processor.max_cstate=0')
+          | reject('match', '^amd_pstate=')
+          | reject('match', '^nohz_full=')
+          | reject('match', '^isolcpus=')
+          | reject('match', '^irqaffinity=')
+          | list
+        )
+        + _server_initial_setup_grub_canonical_params
+      }}
+  when: ansible_facts['architecture'] == "x86_64"
+
+- name: Build rendered GRUB line for CPU isolation
+  ansible.builtin.set_fact:
+    _grub_cmdline_linux_default: >-
+      GRUB_CMDLINE_LINUX_DEFAULT="{{ _server_initial_setup_grub_cmdline_params | join(' ') }}"
+  when: ansible_facts['architecture'] == "x86_64"
+
+- name: Ensure GRUB defaults drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when:
+    - ansible_facts['architecture'] == "x86_64"
+    - not (cpu_isolation_validation_only | default(false) | bool)
+
+- name: Configure late GRUB defaults drop-in for validator kernel parameters
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/99-hayek-validator-kernel-params.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible server_initial_setup.
+      # Provider GRUB defaults are preserved before validator kernel parameters.
+      {{ _grub_cmdline_linux_default }}
   when:
     - ansible_facts['architecture'] == "x86_64"
     - not (cpu_isolation_validation_only | default(false) | bool)
@@ -68,6 +146,51 @@
   when:
     - ansible_facts['architecture'] == "x86_64"
     - not (cpu_isolation_validation_only | default(false) | bool)
+
+- name: Verify generated GRUB config includes validator kernel parameters
+  ansible.builtin.shell: |
+    set -eu
+    grub_config_files=()
+
+    if [ -f /boot/grub/grub.cfg ]; then
+      grub_config_files+=(/boot/grub/grub.cfg)
+    fi
+
+    if [ -d /boot/efi/EFI ]; then
+      while IFS= read -r -d '' grub_config_file; do
+        grub_config_files+=("$grub_config_file")
+      done < <(find /boot/efi/EFI -type f -name '*.cfg' -print0)
+    fi
+
+    if [ -z "${grub_config_files[*]:-}" ]; then
+      echo "No generated GRUB config files found."
+      exit 1
+    fi
+
+    missing=0
+    for required_param in \
+      audit=1 \
+      audit_backlog_limit=8192 \
+      intel_idle.max_cstate=0 \
+      processor.max_cstate=0 \
+      isolcpus= \
+      irqaffinity=; do
+      if grep -Fq -- "$required_param" "${grub_config_files[@]}"; then
+        echo "$required_param present"
+      else
+        echo "$required_param missing"
+        missing=1
+      fi
+    done
+
+    exit "$missing"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - ansible_facts['architecture'] == "x86_64"
+    - not (cpu_isolation_validation_only | default(false) | bool)
+    - not ansible_check_mode
 
 - name: Print CPU isolation validation summary
   ansible.builtin.debug:

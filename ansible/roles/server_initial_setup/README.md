@@ -432,7 +432,7 @@ Example expected output on the AMD EPYC 9374F case with `cpu_config.poh_core=2`:
 - Total logical CPUs: `64`
 - IRQ affinity: `0-1,3-33,35-63`
 - Final line:
-  `GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_pstate=active nohz_full=2,34 isolcpus=domain,managed_irq,2,34 irqaffinity=0-1,3-33,35-63"`
+  `GRUB_CMDLINE_LINUX_DEFAULT="quiet audit=1 audit_backlog_limit=8192 intel_idle.max_cstate=0 processor.max_cstate=0 amd_pstate=active nohz_full=2,34 isolcpus=domain,managed_irq,2,34 irqaffinity=0-1,3-33,35-63"`
 
 ## After Playbook Completion
 

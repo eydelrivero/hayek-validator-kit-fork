@@ -183,6 +183,43 @@
         msg: "{{ ip_fail2ban_check.results | map(attribute='stdout') | list }}"
       when: authorized_ips_csv is defined and authorized_ips_csv.dict | length > 0
 
+- name: Verify generated GRUB config includes validator kernel parameters
+  ansible.builtin.shell: |
+    set -eu
+    grub_config_files=()
+
+    if [ -f /boot/grub/grub.cfg ]; then
+      grub_config_files+=(/boot/grub/grub.cfg)
+    fi
+
+    if [ -d /boot/efi/EFI ]; then
+      while IFS= read -r -d '' grub_config_file; do
+        grub_config_files+=("$grub_config_file")
+      done < <(find /boot/efi/EFI -type f -name '*.cfg' -print0)
+    fi
+
+    if [ -z "${grub_config_files[*]:-}" ]; then
+      echo "No generated GRUB config files found."
+      exit 1
+    fi
+
+    missing=0
+    for param in audit=1 audit_backlog_limit=8192 intel_idle.max_cstate=0 processor.max_cstate=0 isolcpus= irqaffinity=; do
+      if grep -Fq -- "$param" "${grub_config_files[@]}"; then
+        echo "$param present"
+      else
+        echo "$param missing"
+        missing=1
+      fi
+    done
+
+    exit "$missing"
+  args:
+    executable: /bin/bash
+  register: server_initial_setup_grub_param_check
+  changed_when: false
+  when: not (server_initial_setup_hostname_only_checks | default(false) | bool)
+
 - name: Final configuration summary
   ansible.builtin.debug:
     msg: |
