@@ -1,0 +1,140 @@
+---
+# Applies the direct health-check remediation in two phases.
+#
+# No-reboot phase:
+#   ansible-playbook playbooks/pb_remediate_validator_health.yml \
+#     -i validator_health_remediation.yml \
+#     -e target_host=validator_health_remediation \
+#     -e ansible_user=alice \
+#     --tags no-reboot -K
+#
+# Reboot-required phase, without automatically rebooting:
+#   ansible-playbook playbooks/pb_remediate_validator_health.yml \
+#     -i validator_health_remediation.yml \
+#     -e target_host=validator_health_remediation \
+#     -e ansible_user=alice \
+#     --tags reboot-required -K
+#
+# Reboot-required phase, including reboot:
+#   ansible-playbook playbooks/pb_remediate_validator_health.yml \
+#     -i validator_health_remediation.yml \
+#     -e target_host=validator_health_remediation \
+#     -e ansible_user=alice \
+#     -e reboot_after_kernel_remediation=true \
+#     --tags reboot-required,reboot -K
+
+- name: Remediate validator health-check failures
+  hosts: "{{ target_host | default('validator_health_remediation') }}"
+  user: "{{ ansible_user }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    timezone: UTC
+
+  pre_tasks:
+    - name: Assert required parameters are defined
+      ansible.builtin.assert:
+        that:
+          - ansible_user is defined
+        fail_msg: >
+          Missing required playbook variables: ansible_user
+
+  tasks:
+    - name: Install latest health check from fork
+      ansible.builtin.include_role:
+        name: server_initial_setup
+        tasks_from: install_health_check
+        apply:
+          tags:
+            - no-reboot
+            - reboot-required
+      tags:
+        - no-reboot
+        - reboot-required
+
+    - name: Install no-reboot health remediation packages
+      ansible.builtin.apt:
+        name:
+          - ethtool
+          - nvme-cli
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      tags: no-reboot
+
+    - name: Disable package automation
+      ansible.builtin.include_role:
+        name: server_initial_setup
+        tasks_from: disable_package_automation
+        apply:
+          tags: no-reboot
+      tags: no-reboot
+
+    - name: Set timezone to UTC
+      community.general.timezone:
+        name: "{{ timezone }}"
+      tags: no-reboot
+
+    - name: Install NIC ring buffer tuning helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/server_initial_setup/files/set-ethtool-ring-buffers.sh"
+        dest: /usr/local/sbin/set-ethtool-ring-buffers.sh
+        owner: root
+        group: root
+        mode: '0755'
+      tags: no-reboot
+
+    - name: Install NIC ring buffer tuning service
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/server_initial_setup/files/ethtool-ring-buffers.service"
+        dest: /etc/systemd/system/ethtool-ring-buffers.service
+        owner: root
+        group: root
+        mode: '0644'
+      tags: no-reboot
+
+    - name: Enable and run NIC ring buffer tuning service
+      ansible.builtin.systemd:
+        name: ethtool-ring-buffers.service
+        state: started
+        enabled: true
+        daemon_reload: true
+      when: not ansible_check_mode
+      tags: no-reboot
+
+    - name: Apply NIC ring buffer tuning immediately
+      ansible.builtin.command: /usr/local/sbin/set-ethtool-ring-buffers.sh
+      changed_when: false
+      when: not ansible_check_mode
+      tags: no-reboot
+
+    - name: Explain skipped service activation in check mode
+      ansible.builtin.debug:
+        msg: "Check mode skips service activation and immediate ring tuning because copied files are not created during a dry run."
+      when: ansible_check_mode
+      tags: no-reboot
+
+    - name: Apply reboot-required GRUB/kernel remediation
+      ansible.builtin.include_role:
+        name: server_initial_setup
+        tasks_from: set_cpu_isolation
+        apply:
+          tags: reboot-required
+      tags: reboot-required
+
+    - name: Reboot after kernel remediation
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        connect_timeout: 10
+        post_reboot_delay: 10
+      when: reboot_after_kernel_remediation | default(false) | bool
+      tags:
+        - reboot-required
+        - reboot
+
+    - name: Report pending reboot for kernel remediation
+      ansible.builtin.debug:
+        msg: "GRUB/kernel remediation was applied. Reboot later or re-run with -e reboot_after_kernel_remediation=true --tags reboot-required,reboot."
+      when: not (reboot_after_kernel_remediation | default(false) | bool)
+      tags: reboot-required
