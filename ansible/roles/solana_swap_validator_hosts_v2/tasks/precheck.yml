@@ -122,6 +122,11 @@
       when: not solana_validator_ha_binary.stat.exists
   when: solana_validator_ha_install_enabled | default(true) | bool
 
+- name: precheck - Set current host client fact
+  ansible.builtin.set_fact:
+    current_host_client: >-
+      {{ source_client | default('agave') if inventory_hostname == source_host else destination_client | default('agave') }}
+
 - name: precheck - Validate destination host validator status
   block:
     - name: precheck - Check validator systemd service status
@@ -131,27 +136,20 @@
       changed_when: false
 
     - name: precheck - Check validator process status
-      ansible.builtin.pids:
-        pattern: agave-validator
+      ansible.builtin.shell: >
+        pgrep -f "{{ 'fdctl' if (destination_client | default('agave') == 'firedancer') else 'agave-validator' }}"
       register: validator_process
       changed_when: false
-      failed_when: validator_process.pids | length == 0
+      failed_when: validator_process.rc != 0
 
     - name: precheck - Assert validator systemd service is active
       ansible.builtin.assert:
         that:
           - validator_service.status.ActiveState == "active"
         fail_msg: "Validator systemd service is not active on destination host {{ destination_host }}. Current state: {{ validator_service.status.ActiveState }}"
-
-    - name: precheck - Assert validator process is running
-      ansible.builtin.assert:
-        that:
-          - validator_process.pids is defined
-          - validator_process.pids | length > 0
-        fail_msg: "Validator process is not running on destination host {{ destination_host }}"
   when: inventory_hostname == destination_host
 
-- name: precheck - Validate validator identity matches running process
+- name: precheck - Validate validator identity matches running process (agave/jito)
   block:
     - name: precheck - Get validator contact info and extract identity
       ansible.builtin.shell: "{{ system_solana_active_release_dir }}/agave-validator -l {{ ledger_path }} contact-info | head -1 | sed 's/Identity: //'"
@@ -213,6 +211,53 @@
         - (ledger_identity.stdout | default('')) != (running_pubkey.stdout | default(''))
         - (ledger_identity.stdout | default('')) != ''
         - (running_pubkey.stdout | default('')) != ''
+  when: current_host_client != 'firedancer'
+
+- name: precheck - Validate validator identity (firedancer)
+  block:
+    - name: precheck - Derive firedancer config path for this host
+      ansible.builtin.set_fact:
+        _precheck_firedancer_config_path: >-
+          {{ validator_root_dir }}/config/{{
+            hostvars[source_host]['source_validator_name']
+            if inventory_hostname == source_host
+            else hostvars[destination_host]['destination_validator_name']
+          }}/firedancer.toml
+
+    # Try the live getIdentity RPC first (quick, no retries). When the validator is
+    # fully running this returns the live identity — critical for detecting "already
+    # completed" on re-runs. During early startup the RPC returns an empty identity
+    # string or fails entirely; in that case fall back to reading identity_path from
+    # firedancer.toml and calling fdctl keys pubkey on the key file directly.
+    - name: precheck - Get firedancer live identity (RPC with config fallback)
+      ansible.builtin.shell: |
+        identity=$(curl -sf --max-time 2 -X POST -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' \
+          "http://127.0.0.1:{{ solana_rpc_port | default(8899) }}" 2>/dev/null \
+          | jq -r 'if (.result.identity // "") != "" then .result.identity else empty end' 2>/dev/null \
+          || true)
+        if [ -n "$identity" ] && [ "$identity" != "null" ]; then
+          printf '%s\n' "$identity"
+        else
+          identity_path=$(sed -n 's/.*identity_path\s*=\s*"\([^"]*\)".*/\1/p' \
+            "{{ _precheck_firedancer_config_path }}" | head -1)
+          fdctl --config "{{ _precheck_firedancer_config_path }}" keys pubkey "$identity_path" \
+            | grep -v '^Log at'
+        fi
+      register: firedancer_live_identity
+      changed_when: false
+      check_mode: false
+      become: true
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
+      failed_when: >-
+        firedancer_live_identity.rc != 0
+        or (firedancer_live_identity.stdout | default('') | trim) == ''
+
+    - name: precheck - Set ledger identity fact for firedancer host
+      ansible.builtin.set_fact:
+        ledger_identity_pubkey: "{{ firedancer_live_identity.stdout | trim }}"
+  when: current_host_client == 'firedancer'
 
 - name: precheck - Set global facts for running ledger identities
   ansible.builtin.set_fact:

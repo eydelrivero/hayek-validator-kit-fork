@@ -2,6 +2,24 @@
 - name: prepare - Determine Solana cluster parameter
   ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/determine_solana_cluster_param.yml
 
+- name: prepare - Derive firedancer config path for firedancer destination
+  ansible.builtin.set_fact:
+    firedancer_config_path: >-
+      {{ validator_root_dir }}/config/{{ hostvars[destination_host]['destination_validator_name'] }}/firedancer.toml
+  when:
+    - inventory_hostname == destination_host
+    - destination_client | default('agave') == 'firedancer'
+    - hostvars[destination_host]['destination_validator_name'] is defined
+
+- name: prepare - Derive firedancer config path for firedancer source
+  ansible.builtin.set_fact:
+    firedancer_config_path: >-
+      {{ validator_root_dir }}/config/{{ hostvars[source_host]['source_validator_name'] }}/firedancer.toml
+  when:
+    - inventory_hostname == source_host
+    - source_client | default('agave') == 'firedancer'
+    - hostvars[source_host]['source_validator_name'] is defined
+
 - name: prepare - Ensure enough time left in epoch before swap
   block:
     - name: prepare - Get current epoch info
@@ -176,9 +194,14 @@
         source_host_hot_spare_identity_path: "{{ source_host_keys_dir }}/hot-spare-identity.json"
 
     - name: prepare - Generate hot-spare identity if it doesn't exist
-      ansible.builtin.command: solana-keygen new --no-bip39-passphrase -o {{ source_host_hot_spare_identity_path }}
+      ansible.builtin.shell: |
+        {% if source_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ firedancer_config_path }} keys new {{ source_host_hot_spare_identity_path }}
+        {% else %}
+        solana-keygen new --no-bip39-passphrase -o {{ source_host_hot_spare_identity_path }}
+        {% endif %}
       environment:
-        PATH: "{{ system_solana_active_release_dir }}"
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       when:
         - not ansible_check_mode
         - not new_hot_spare_identity.stat.exists
@@ -242,20 +265,30 @@
   when: inventory_hostname == destination_host
 
 - name: prepare - Get source primary target identity pubkey
-  ansible.builtin.command: solana-keygen pubkey {{ source_host_primary_target_identity_path | trim }}
-  register: source_staked_pubkey
+  ansible.builtin.shell: |
+    {% if source_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ source_host_primary_target_identity_path | trim }} | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ source_host_primary_target_identity_path | trim }}
+    {% endif %}
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
+  register: source_staked_pubkey
   become: true
   when: inventory_hostname == source_host
   changed_when: false
   check_mode: false
 
 - name: prepare - Get destination primary target identity pubkey
-  ansible.builtin.command: solana-keygen pubkey {{ destination_host_primary_target_identity_path | trim }}
-  register: destination_staked_pubkey
+  ansible.builtin.shell: |
+    {% if destination_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ destination_host_primary_target_identity_path | trim }} | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ destination_host_primary_target_identity_path | trim }}
+    {% endif %}
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
+  register: destination_staked_pubkey
   become: true
   when:
     - inventory_hostname == destination_host
@@ -312,35 +345,33 @@
     - source_primary_pubkey != destination_primary_pubkey
   run_once: true
 
-- name: prepare - Assert swap is not already completed
-  ansible.builtin.fail:
-    msg: >-
-      Swap operation aborted: The desired final state is already achieved!
-
-      The source host ({{ source_host }}) is NOT running the primary identity ({{ source_primary_pubkey }}),
-      and the destination host ({{ destination_host }}) IS already running it.
-
-      Current state:
-      - Source host identity: {{ check_source_identity | default('NOT DETECTED') }}
-      - Destination host identity: {{ check_destination_identity | default('NOT DETECTED') }}
-      - Expected primary identity: {{ source_primary_pubkey }}
-
-      This indicates the swap has already been performed. No action is needed.
+- name: prepare - Detect if swap is already complete
+  ansible.builtin.set_fact:
+    _swap_already_complete: >-
+      {{
+        check_source_primary_pubkey != ''
+        and check_source_identity != ''
+        and check_source_identity != check_source_primary_pubkey
+        and check_destination_identity != ''
+        and check_destination_identity == check_source_primary_pubkey
+      }}
   vars:
-    # Use ledger_identity_pubkey as primary (from contact-info), fallback to running_identity_pubkey (from process)
     check_source_identity: "{{ hostvars[source_host]['ledger_identity_pubkey'] | default(hostvars[source_host]['running_identity_pubkey'] | default('')) }}"
     check_destination_identity: "{{ hostvars[destination_host]['ledger_identity_pubkey'] | default(hostvars[destination_host]['running_identity_pubkey'] | default('')) }}"
     check_source_primary_pubkey: "{{ source_primary_pubkey | default('') }}"
-  when:
-    - check_source_primary_pubkey != ''
-    - check_source_identity != ''
-    - check_source_identity != check_source_primary_pubkey
-    - check_destination_identity != ''
-    - check_destination_identity == check_source_primary_pubkey
-  delegate_to: localhost
+
+- name: prepare - Log idempotent exit when swap is already complete
+  ansible.builtin.debug:
+    msg: |
+      Idempotent exit: desired swap state is already achieved.
+      Source  ({{ source_host }}): running hot-spare — NOT primary ✓
+      Destination ({{ destination_host }}): running primary {{ source_primary_pubkey }} ✓
+      Skipping swap operations.
+  when: _swap_already_complete | default(false)
   run_once: true
 
 - name: prepare - Check cluster delinquency
+  when: not (_swap_already_complete | default(false))
   block:
     - name: prepare - Get cluster validators info
       ansible.builtin.shell: solana {{ solana_cluster_param }} validators --keep-unstaked-delinquents --output json
@@ -377,6 +408,7 @@
         - delinquency_pct | float >= restart_max_delinquent_stake
 
 - name: prepare - Check leader schedule
+  when: not (_swap_already_complete | default(false))
   block:
     - name: prepare - Get leader schedule
       ansible.builtin.shell: solana {{ solana_cluster_param }} leader-schedule --output json
@@ -422,6 +454,7 @@
   ansible.builtin.set_fact:
     destination_host_address: "{{ hostvars[destination_host]['ansible_host'] | default(hostvars[destination_host]['inventory_hostname'] | default(destination_host)) }}"
   run_once: true
+  when: not (_swap_already_complete | default(false))
 
 # By default, guarantee SSH access by adding a destination-side UFW rule for
 # the source host before the inter-host SSH probe. Compose/localnet flows can
@@ -447,6 +480,7 @@
         state: enabled
   become: true
   when:
+    - not (_swap_already_complete | default(false))
     - not ansible_check_mode
     - manage_destination_ufw_peer_ssh_rule | default(true) | bool
     - inventory_hostname == destination_host
@@ -482,23 +516,30 @@
             'timed out' in ssh_test_result.stderr or
             'No route to host' in ssh_test_result.stderr)))
   when:
+    - not (_swap_already_complete | default(false))
     - inventory_hostname == source_host
     - source_host_ssh_key_path is defined
     - source_host_ssh_key_path | length > 0
 
 - name: prepare - Verify Destination Validator Health
   block:
+    # solana catchup fails immediately (rc=1) while the validator RPC is still
+    # initializing (snapshot download, ledger load). Retry until caught up or
+    # 30 minutes have elapsed; each attempt gives solana catchup 5 minutes to
+    # observe sync progress before we try again.
     - name: prepare - Check if destination validator is caught up
       ansible.builtin.command: >
         solana catchup {{ solana_cluster_param }} --our-localhost {{ solana_rpc_port }}
       environment:
-        PATH: "{{ system_solana_active_release_dir }}"
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: catchup_result
       changed_when: false
       failed_when: catchup_result.rc != 0
       check_mode: false
-      # Set a reasonable timeout to fail fast if it hangs
-      async: 60
+      retries: 60
+      delay: 30
+      until: catchup_result.rc == 0
+      async: 300
       poll: 5
 
     - name: prepare - Verify destination validator RPC is ready
@@ -509,4 +550,6 @@
       check_mode: false
       when: inventory_hostname == destination_host
 
-  when: inventory_hostname == destination_host
+  when:
+    - not (_swap_already_complete | default(false))
+    - inventory_hostname == destination_host

@@ -8,9 +8,11 @@
 
 - name: Import confirmation tasks
   ansible.builtin.import_tasks: confirm_swap.yml
+  when: not (_swap_already_complete | default(false))
 
 - name: Import swap tasks
   ansible.builtin.import_tasks: swap.yml
+  when: not (_swap_already_complete | default(false))
 
 - name: Import verify tasks
   ansible.builtin.import_tasks: verify.yml
