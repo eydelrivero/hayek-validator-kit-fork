@@ -97,3 +97,27 @@ argument_specs:
         required: false
         default: 100
         description: "Slots between incremental snapshots"
+      firedancer_snapshots_enabled:
+        type: bool
+        required: false
+        default: true
+        description: "Enable snapshot generation (set false for mainnet, equivalent to agave --no-snapshots)"
+      firedancer_max_full_snapshots:
+        type: int
+        required: false
+        default: 2
+        description: "Maximum full snapshots to retain on disk (maps from agave --maximum-full-snapshots-to-retain)"
+      firedancer_max_incremental_snapshots:
+        type: int
+        required: false
+        default: 4
+        description: "Maximum incremental snapshots to retain on disk (maps from agave --maximum-incremental-snapshots-to-retain)"
+      firedancer_ledger_limit_size:
+        type: int
+        required: false
+        default: 200000000
+        description: "Maximum ledger size in shreds (maps from agave --limit-ledger-size; testnet uses 160000000)"
+      jito_merkle_root_upload_authority:
+        type: str
+        required: false
+        description: "Jito merkle root upload authority pubkey (maps from agave --merkle-root-upload-authority; required when frankendancer_jito_enabled=true)"

@@ -45,3 +45,10 @@ jito_tip_payment_program_pubkey: "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
 jito_tip_distribution_program_pubkey: "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
 jito_merkle_root_upload_authority: "7T4inmPmtNBX3MhLwJ9hFsSMnGJYYkKioVABSNTWVRuS"
 jito_commission_bps: 0
+
+# Firedancer-specific config (mirrors agave flags above)
+firedancer_private_rpc: true
+firedancer_ledger_limit_size: "{{ limit_ledger_size }}"
+firedancer_max_full_snapshots: 1
+firedancer_max_incremental_snapshots: 1
+firedancer_min_snapshot_download_speed: 31457280

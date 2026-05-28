@@ -13,6 +13,7 @@ user = "{{ solana_user }}"
 [ledger]
   path = "{{ ledger_path }}"
   accounts_path = "{{ accounts_path }}"
+  limit_size = {{ firedancer_ledger_limit_size | default(200000000) }}
 
 [gossip]
   port = {{ solana_gossip_port | default(8001) }}
@@ -30,13 +31,19 @@ user = "{{ solana_user }}"
 
 [snapshots]
   path = "{{ snapshots_path }}"
+  enabled = {{ firedancer_snapshots_enabled | default(true) | lower }}
   full_snapshot_interval_slots = {{ firedancer_full_snapshot_interval | default(25000) }}
   incremental_snapshot_interval_slots = {{ firedancer_incremental_snapshot_interval | default(100) }}
-  minimum_snapshot_download_speed = {{ firedancer_min_snapshot_download_speed | default(1048576) }}
+  minimum_snapshot_download_speed = {{ firedancer_min_snapshot_download_speed | default(31457280) }}
+  maximum_full_snapshots_to_retain = {{ firedancer_max_full_snapshots | default(2) }}
+  maximum_incremental_snapshots_to_retain = {{ firedancer_max_incremental_snapshots | default(4) }}
 
 [consensus]
   identity_path = "{{ validator_keyset_dir }}/hot-spare-identity.json"
   vote_account_path = "{{ validator_keyset_dir }}/vote-account.json"
+  authorized_voter_paths = [
+    "{{ validator_keyset_dir }}/primary-target-identity.json",
+  ]
   expected_genesis_hash = "{{ expected_genesis_hash }}"
   expected_shred_version = {{ expected_shred_version | default(0) }}
   known_validators = [
@@ -56,9 +63,11 @@ user = "{{ solana_user }}"
 
 {% if frankendancer_jito_enabled | default(false) | bool %}
 [tiles.bundle]
+  enabled = true
   url = "{{ block_engine_url }}"
   tip_payment_program_addr = "{{ jito_tip_payment_program_pubkey }}"
   tip_distribution_program_addr = "{{ jito_tip_distribution_program_pubkey }}"
+  tip_distribution_authority = "{{ jito_merkle_root_upload_authority }}"
   commission_bps = {{ jito_commission_bps | default(0) }}
 
 {% endif %}
