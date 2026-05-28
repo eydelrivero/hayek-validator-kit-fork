@@ -21,6 +21,26 @@
     }}
   when: ansible_facts.services[item].status | default('not-found') != 'not-found'
 
+- name: Force-disable apt daily automation units
+  ansible.builtin.command: >
+    systemctl disable --now
+    unattended-upgrades.service
+    apt-daily.service
+    apt-daily.timer
+    apt-daily-upgrade.service
+    apt-daily-upgrade.timer
+  register: server_initial_setup_disable_apt_daily_units
+  changed_when: "'Removed' in server_initial_setup_disable_apt_daily_units.stderr or 'Removed' in server_initial_setup_disable_apt_daily_units.stdout"
+  failed_when: server_initial_setup_disable_apt_daily_units.rc not in [0, 1]
+
+- name: Mask apt daily automation timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    masked: true
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+
 - name: Configure auto-upgrades
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/20auto-upgrades

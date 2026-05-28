@@ -11,8 +11,8 @@ fail2ban:
     ignoreip: "127.0.0.1"
 
 
-# Timezone configuration for the server
-timezone: "America/New_York"
+# Validator hosts use UTC to keep logs, metrics, and incident timelines consistent.
+timezone: "UTC"
 
 # User configuration for Solana validator
 sol_owner: "sol"

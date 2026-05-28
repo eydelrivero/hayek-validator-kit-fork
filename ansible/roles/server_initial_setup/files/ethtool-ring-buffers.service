@@ -1,0 +1,13 @@
+[Unit]
+Description=Set physical NIC ring buffers to maximum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root so ethtool has CAP_NET_ADMIN for NIC ring buffer changes.
+ExecStart=/usr/local/sbin/set-ethtool-ring-buffers.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

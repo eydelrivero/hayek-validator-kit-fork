@@ -26,6 +26,7 @@
       - htop
       - fail2ban
       - hwloc
+      - nvme-cli
       - xfsprogs  # For XFS filesystem operations
     state: present
 

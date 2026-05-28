@@ -130,3 +130,31 @@
     owner: root
     group: root
   when: check_westwood.rc != 0
+
+# Network interface ring buffers
+- name: Install NIC ring buffer tuning helper
+  ansible.builtin.copy:
+    src: set-ethtool-ring-buffers.sh
+    dest: /usr/local/sbin/set-ethtool-ring-buffers.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install NIC ring buffer tuning service
+  ansible.builtin.copy:
+    src: ethtool-ring-buffers.service
+    dest: /etc/systemd/system/ethtool-ring-buffers.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Apply systemd unit changes before enabling NIC ring buffer tuning
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and run NIC ring buffer tuning service
+  ansible.builtin.systemd:
+    name: ethtool-ring-buffers.service
+    state: started
+    enabled: true
+  when: not ansible_check_mode
