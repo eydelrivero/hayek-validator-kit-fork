@@ -1,0 +1,19 @@
+---
+argument_specs:
+  main:
+    short_description: "Install Firedancer (fdctl) CLI"
+    author: "Hayek Validator Team"
+    description:
+      - "Installs the Firedancer fdctl management binary on the target host"
+      - "Builds fdctl from source by cloning firedancer-io/firedancer at the requested tag"
+      - "Requires a host with sufficient CPU cores and RAM for the Firedancer build (>=32 GiB RAM recommended)"
+    options:
+      firedancer_version:
+        type: str
+        required: true
+        description: "Version of Firedancer to install (numeric, e.g. '0.910.40000')"
+      solana_cluster:
+        type: str
+        required: false
+        choices: ["localnet", "testnet", "mainnet"]
+        description: "Optional target Solana cluster. Informational only for this role."

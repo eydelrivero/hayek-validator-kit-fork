@@ -1,0 +1,154 @@
+---
+- name: configure - Set validator_keyset_name default if not defined
+  ansible.builtin.set_fact:
+    validator_keyset_name: "{{ validator_name }}"
+  when: validator_keyset_name is not defined
+
+- name: configure - Install validator keyset using shared task
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/install_validator_keyset.yml
+
+- name: configure - Set Firedancer config path
+  ansible.builtin.set_fact:
+    firedancer_config_dir: "{{ validator_root_dir }}/config/{{ validator_name }}"
+    firedancer_config_path: "{{ validator_root_dir }}/config/{{ validator_name }}/firedancer.toml"
+
+- name: configure - Ensure Firedancer config directory exists
+  ansible.builtin.file:
+    path: "{{ firedancer_config_dir }}"
+    owner: "{{ solana_user }}"
+    group: "{{ validator_operators_group }}"
+    mode: "2775"
+    state: directory
+  become: true
+
+- name: configure - Get vote account pubkey
+  block:
+    - name: configure - Get vote account public key
+      ansible.builtin.command: >-
+        solana-keygen pubkey
+        {{ ansible_home_dir }}/.validator-keys/{{ validator_keyset_name }}/vote-account.json
+      register: vote_account_cmd
+      delegate_to: localhost
+
+    - name: configure - Set vote account public key
+      ansible.builtin.set_fact:
+        vote_account_pubkey: "{{ vote_account_cmd.stdout }}"
+
+- name: configure - Get localnet genesis hash
+  block:
+    - name: configure - Get genesis hash
+      ansible.builtin.command: "solana -u {{ solana_rpc_url | default('http://localhost:8899') }} genesis-hash"
+      register: cluster_genesis_hash
+      delegate_to: localhost
+
+    - name: configure - Set expected genesis hash
+      ansible.builtin.set_fact:
+        expected_genesis_hash: "{{ cluster_genesis_hash.stdout }}"
+
+    - name: configure - Get entrypoint identity pubkey
+      ansible.builtin.shell: >-
+        solana -u {{ solana_rpc_url | default('http://localhost:8899') }} validators
+        --keep-unstaked-delinquents --output json |
+        jq -r '.validators | .[0].identityPubkey'
+      register: entrypoint_identity_cmd
+      delegate_to: localhost
+
+    - name: configure - Add entrypoint to known validators
+      ansible.builtin.set_fact:
+        known_validators: "{{ known_validators + [entrypoint_identity_cmd.stdout] }}"
+  when: solana_cluster == "localnet"
+
+- name: configure - Detect default network interface on remote host
+  ansible.builtin.shell: |
+    ip route show default | awk '/dev/{for(i=1;i<=NF;i++){if($i=="dev"){print $(i+1);exit}}}'
+  register: _firedancer_detected_iface
+  changed_when: false
+
+- name: configure - Render Firedancer TOML configuration
+  ansible.builtin.template:
+    src: firedancer.toml.j2
+    dest: "{{ firedancer_config_path }}"
+    owner: "{{ solana_user }}"
+    group: "{{ validator_operators_group }}"
+    mode: "0640"
+  become: true
+  notify:
+    - handlers - Reload systemd
+    - handlers - Restart validator service
+
+- name: configure - Remove deny rules inherited from agave private-RPC setup
+  community.general.ufw:
+    rule: deny
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    delete: true
+  loop:
+    - { port: "8899", proto: "udp" }
+    - { port: "8900", proto: "udp" }
+    - { port: "8900", proto: "tcp" }
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+  ignore_errors: true
+
+- name: configure - Allow TCP and UDP port range for firedancer network tiles (8900-8930)
+  community.general.ufw:
+    rule: allow
+    port: "8900:8930"
+    proto: "{{ item }}"
+  loop:
+    - udp
+    - tcp
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: configure - Run fdctl configure init (one-time system setup)
+  ansible.builtin.command: >-
+    fdctl configure init all --config {{ firedancer_config_path }}
+  become: true
+  changed_when: true
+
+- name: configure - Render validator systemd unit
+  ansible.builtin.template:
+    src: validator.service.j2
+    dest: "/etc/systemd/system/{{ validator_service_name }}.service"
+    mode: "0644"
+  become: true
+  notify:
+    - handlers - Reload systemd
+    - handlers - Restart validator service
+
+- name: configure - Configure validator log rotation
+  block:
+    - name: configure - Create logrotate configuration
+      ansible.builtin.template:
+        src: validator.logrotate.j2
+        dest: "/etc/logrotate.d/{{ validator_service_name }}"
+        mode: "0644"
+
+    - name: configure - Verify logrotate configuration
+      ansible.builtin.command: logrotate -d /etc/logrotate.d/{{ validator_service_name }}
+      register: logrotate_check
+      changed_when: false
+      failed_when: logrotate_check.rc != 0 or ('error' in logrotate_check.stderr | lower)
+  become: true
+
+- name: configure - Configure validator systemd service
+  block:
+    - name: configure - Reload systemd manager configuration
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: configure - Enable validator service
+      ansible.builtin.systemd:
+        name: "{{ validator_service_name }}"
+        enabled: true
+        state: started
+  become: true
+  rescue:
+    - name: configure - Fail with error message
+      ansible.builtin.fail:
+        msg: "Failed to configure Frankendancer validator service. Error: {{ ansible_failed_result }}"
+
+- name: configure - Configuration complete
+  ansible.builtin.debug:
+    msg: "Frankendancer validator configuration completed successfully"

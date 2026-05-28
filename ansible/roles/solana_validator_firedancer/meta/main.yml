@@ -1,0 +1,7 @@
+---
+dependencies:
+  - role: solana_cli_firedancer
+  - role: common
+  - role: solana_validator_shared
+    vars:
+      validator_name: "{{ validator_name }}"

@@ -21,7 +21,7 @@ log() {
 usage() {
   cat <<'EOF' >&2
 Usage:
-  ha-set-role.sh --role <active|passive> --client <agave|jito|jito-solana|bam-client> \
+  ha-set-role.sh --role <active|passive> --client <agave|jito|jito-solana|bam-client|firedancer> \
     --identity-keyfile <path> --rpc-url <url> --tower-file <path> [--user <user>]
 EOF
   exit "${1:-1}"
@@ -57,10 +57,12 @@ parse_args() {
   esac
 
   case "${CONFIG[client]}" in
-    agave|jito|jito-solana|bam-client) ;;
+    agave|jito|jito-solana|bam-client|firedancer) ;;
     *) log ERROR "unsupported client: ${CONFIG[client]}"; usage 1 ;;
   esac
 }
+
+FIREDANCER_CONFIG_PATH="{{ firedancer_config_path | default('') }}"
 
 rpc_identity() {
   curl -sSf -X POST -H "Content-Type: application/json" \
@@ -82,7 +84,22 @@ remove_tower_file() {
 }
 
 set_identity_command() {
-  printf '%q --ledger %q set-identity %q' "{{ system_solana_active_release_dir }}/agave-validator" "{{ ledger_path }}" "${CONFIG[identity-keyfile]}"
+  case "${CONFIG[client]}" in
+    firedancer)
+      if [[ -z "${FIREDANCER_CONFIG_PATH}" ]]; then
+        log ERROR "FIREDANCER_CONFIG_PATH is not set; cannot run fdctl set-identity"
+        return 1
+      fi
+      printf '%q set-identity --config %q %q' "/usr/local/bin/fdctl" "${FIREDANCER_CONFIG_PATH}" "${CONFIG[identity-keyfile]}"
+      ;;
+    *)
+      printf '%q --ledger %q set-identity %q' "{{ system_solana_active_release_dir }}/agave-validator" "{{ ledger_path }}" "${CONFIG[identity-keyfile]}"
+      ;;
+  esac
+}
+
+is_firedancer_client() {
+  [[ "${CONFIG[client]}" == "firedancer" ]]
 }
 
 ensure_passive_via_service_controls() {
@@ -107,6 +124,14 @@ ensure_passive_via_service_controls() {
   return 1
 }
 
+run_set_identity() {
+  if is_firedancer_client; then
+    eval "$(set_identity_command)"
+  else
+    run_as_validator_user "$(set_identity_command)"
+  fi
+}
+
 set_active() {
   local desired_pubkey
   desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
@@ -119,7 +144,7 @@ set_active() {
   fi
 
   remove_tower_file
-  run_as_validator_user "$(set_identity_command)"
+  run_set_identity
   log INFO "promoted validator to active identity ${desired_pubkey}; service startup remains passive via hot-spare-identity.json"
 }
 
@@ -140,7 +165,7 @@ set_passive() {
     return 0
   fi
 
-  if run_as_validator_user "$(set_identity_command)"; then
+  if run_set_identity; then
     remove_tower_file
     log INFO "demoted validator to passive identity ${desired_pubkey}"
     return 0

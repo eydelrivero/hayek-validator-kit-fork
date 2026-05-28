@@ -1,0 +1,86 @@
+---
+- name: Set value for validator_keyset_dir
+  ansible.builtin.set_fact:
+    validator_keyset_dir: "{{ validator_keys_dir + '/' + validator_name }}"
+  run_once: true
+
+- name: precheck - Ensure the validator_keyset_dir is defined and valid
+  ansible.builtin.assert:
+    that:
+      - validator_keyset_dir is defined
+      - validator_keyset_dir == validator_keys_dir + "/" + validator_name
+    fail_msg: "Variable 'validator_keyset_dir' must be defined."
+    success_msg: "validator_keyset_dir is set to {{ validator_keyset_dir }}"
+
+- name: precheck - Check if firedancer_version is defined
+  ansible.builtin.assert:
+    that:
+      - firedancer_version is defined
+      - firedancer_version | string | trim | length > 0
+    fail_msg: "firedancer_version must be defined"
+
+- name: precheck - Check if expected genesis hash is defined
+  ansible.builtin.assert:
+    that:
+      - expected_genesis_hash is defined
+    fail_msg: "expected_genesis_hash must be defined"
+
+- name: precheck - Gather facts for localhost
+  ansible.builtin.setup:
+  delegate_to: localhost
+  run_once: true
+
+- name: precheck - Set keys dir for local ansible control host and target host
+  ansible.builtin.set_fact:
+    ansible_keys_dir: "{{ ansible_home_dir }}/.validator-keys/{{ validator_keyset_name | default(validator_name) }}"
+    validator_keyset_dir: "{{ validator_keys_dir }}/{{ validator_name }}"
+
+- name: Check required validator keypairs
+  block:
+    - name: precheck - Check if primary-target-identity.json exists in ansible_keys_dir
+      ansible.builtin.stat:
+        path: "{{ ansible_keys_dir }}/primary-target-identity.json"
+      register: primary_target_identity_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: precheck - Fail if primary-target-identity.json is missing
+      ansible.builtin.fail:
+        msg: "primary-target-identity.json not found in {{ ansible_keys_dir }}"
+      when: not primary_target_identity_file.stat.exists
+
+    - name: precheck - Check if vote-account.json exists in ansible_keys_dir
+      ansible.builtin.stat:
+        path: "{{ ansible_keys_dir }}/vote-account.json"
+      register: vote_account_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: precheck - Fail if vote-account.json is missing
+      ansible.builtin.fail:
+        msg: "vote-account.json not found in {{ ansible_keys_dir }}"
+      when: not vote_account_file.stat.exists
+
+    - name: precheck - Check if hot-spare-identity.json exists in ansible_keys_dir
+      ansible.builtin.stat:
+        path: "{{ ansible_keys_dir }}/hot-spare-identity.json"
+      register: hot_spare_identity_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: precheck - Fail if hot-spare-identity.json is missing
+      ansible.builtin.fail:
+        msg: >-
+          hot-spare-identity.json not found in {{ ansible_keys_dir }}.
+          Download the host-matched hot-spare identity from 1Password, rename it to hot-spare-identity.json,
+          place it in {{ ansible_keys_dir }}, and rerun the setup playbook.
+      when: not hot_spare_identity_file.stat.exists
+
+- name: precheck - Duplicate identity usage
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/precheck_duplicate_identity.yml
+
+- name: precheck - Get host architecture
+  ansible.builtin.import_tasks: ../../common/tasks/set_host_architecture.yml
+
+- name: precheck - Check minimum disk space
+  ansible.builtin.import_tasks: ../../common/tasks/check_minimum_disk_space.yml

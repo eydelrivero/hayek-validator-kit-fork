@@ -1,0 +1,63 @@
+---
+- name: Precheck - Check if firedancer_version is defined
+  ansible.builtin.fail:
+    msg: "firedancer_version variable must be defined"
+  when: firedancer_version is not defined
+
+- name: Precheck - Validate firedancer_version format
+  ansible.builtin.fail:
+    msg: "firedancer_version must follow numeric versioning (e.g. 0.910.40000)"
+  when: not firedancer_version | regex_search('^[0-9]+\.[0-9]+\.[0-9]+$')
+
+- name: Precheck - Display version message
+  ansible.builtin.debug:
+    msg: "Start Firedancer CLI setup for version {{ firedancer_version }}"
+
+- name: Add hosts to known_hosts to comply with ansible config host_key_checking
+  ansible.builtin.known_hosts:
+    name: "{{ item }}"
+    key: "{{ hostvars[item].ansible_ssh_hostkey_rsa_public }}"
+  delegate_to: localhost
+  loop: "{{ ansible_play_hosts_all }}"
+  when: hostvars[item].ansible_ssh_hostkey_rsa_public is defined
+
+- name: Check if the desired version of fdctl is already installed
+  block:
+    - name: Precheck - Check if fdctl binary exists
+      ansible.builtin.stat:
+        path: "/usr/local/bin/fdctl"
+      register: fdctl_binary
+
+    - name: Precheck - Get installed fdctl version
+      ansible.builtin.command: "/usr/local/bin/fdctl version"
+      register: installed_fdctl_version
+      changed_when: false
+      failed_when: false
+      when: fdctl_binary.stat.exists
+
+    - name: Precheck - Extract installed fdctl version number
+      ansible.builtin.set_fact:
+        installed_firedancer_version: >-
+          {{
+            ((installed_fdctl_version.stdout | default('') ~ installed_fdctl_version.stderr | default(''))
+            | regex_search('([0-9]+\.[0-9]+\.[0-9]+)', '\1') or []) | first | default('')
+          }}
+      when: fdctl_binary.stat.exists
+
+    - name: Precheck - Set fact for fdctl installation needed
+      ansible.builtin.set_fact:
+        firedancer_cli_already_installed: >-
+          {{
+            fdctl_binary.stat.exists and
+            installed_firedancer_version is defined and
+            installed_firedancer_version == firedancer_version
+          }}
+
+- name: Debug installation status
+  ansible.builtin.debug:
+    msg: |
+      Firedancer CLI installation status:
+      - Binary exists: {{ fdctl_binary.stat.exists }}
+      - Installed version: {{ installed_firedancer_version | default('not found') }}
+      - Desired version: {{ firedancer_version }}
+      - Already installed: {{ firedancer_cli_already_installed }}

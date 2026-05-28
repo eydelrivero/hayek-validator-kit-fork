@@ -1,0 +1,46 @@
+---
+- name: prepare - Stop validator service
+  block:
+    - name: prepare - Check if validator service exists and is running
+      ansible.builtin.systemd:
+        name: "{{ validator_service_name }}"
+      register: service_status
+      changed_when: false
+      failed_when: false
+
+    - name: prepare - Stop validator service if running
+      ansible.builtin.systemd:
+        name: "{{ validator_service_name }}"
+        state: stopped
+        enabled: false
+      register: stop_result
+      retries: 3
+      delay: 10
+      until: stop_result is success
+      when: service_status.status.ActiveState == "active"
+      become: true
+
+- name: prepare - Remove parameterized validator logrotate config and systemd units
+  block:
+    - name: prepare - Remove parameterized validator logrotate config if it exists
+      ansible.builtin.file:
+        path: "/etc/logrotate.d/{{ validator_service_name }}"
+        state: absent
+
+    - name: prepare - Remove parameterized validator logrotate systemd service if it exists
+      ansible.builtin.file:
+        path: "/etc/systemd/system/validator-logrotate-{{ validator_service_name }}.service"
+        state: absent
+
+    - name: prepare - Remove parameterized validator logrotate systemd timer if it exists
+      ansible.builtin.file:
+        path: "/etc/systemd/system/validator-logrotate-{{ validator_service_name }}.timer"
+        state: absent
+  become: true
+
+- name: prepare - Clear validator logs
+  ansible.builtin.shell: |
+    #!/bin/bash
+    set -e
+    rm -rf "{{ validator_logs_dir }}"/*
+  become: true

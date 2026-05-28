@@ -1,0 +1,22 @@
+---
+- name: Verify Firedancer CLI - Check if fdctl is available
+  ansible.builtin.command: fdctl version
+  register: fdctl_version_output
+  changed_when: false
+  failed_when: fdctl_version_output.rc != 0
+
+- name: Verify Firedancer CLI - Print fdctl version
+  ansible.builtin.debug:
+    msg: "fdctl version output: {{ fdctl_version_output.stdout | default('') }}{{ fdctl_version_output.stderr | default('') }}"
+
+- name: Verify Firedancer CLI - Confirm expected version is present
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((fdctl_version_output.stdout | default('')) ~ (fdctl_version_output.stderr | default('')))
+        is search(firedancer_version)
+    fail_msg: >-
+      fdctl installed but version mismatch.
+      Expected: {{ firedancer_version }}
+      Got: {{ fdctl_version_output.stdout | default('') }}{{ fdctl_version_output.stderr | default('') }}
+    success_msg: "fdctl version {{ firedancer_version }} confirmed"

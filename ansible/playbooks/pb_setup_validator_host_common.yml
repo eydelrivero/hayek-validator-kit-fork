@@ -65,10 +65,10 @@
     - name: Assert shared bootstrap validator flavor is supported
       ansible.builtin.assert:
         that:
-          - validator_flavor in ['agave', 'jito-bam']
+          - validator_flavor in ['agave', 'jito-bam', 'frankendancer']
         fail_msg: >-
           validator_flavor={{ validator_flavor }} is unsupported. Supported
-          values: agave, jito-bam.
+          values: agave, jito-bam, frankendancer.
 
     - name: Assert password handoff mode is supported
       ansible.builtin.assert:
@@ -218,6 +218,28 @@
     solana_validator_ha_install_enabled: false
   when:
     - validator_flavor == 'jito-bam'
+    - >
+      (
+        validator_host_bootstrap_end_at
+        | default(
+            'validator'
+            if (
+              (validator_host_bootstrap_start_at | default('users')) == 'users'
+              and (password_handoff_mode | default('manual_reset')) == 'assume_ready'
+            )
+            else (validator_host_bootstrap_start_at | default('users'))
+          )
+      ) == 'validator'
+
+- import_playbook: pb_setup_validator_firedancer.yml
+  vars:
+    target_host: "{{ target_host }}"
+    ansible_user: "{{ validator_operator_user }}"
+    ansible_port: "{{ post_metal_ssh_port | default(2522) }}"
+    ansible_ssh_port: "{{ post_metal_ssh_port | default(2522) }}"
+    solana_validator_ha_install_enabled: false
+  when:
+    - validator_flavor == 'frankendancer'
     - >
       (
         validator_host_bootstrap_end_at

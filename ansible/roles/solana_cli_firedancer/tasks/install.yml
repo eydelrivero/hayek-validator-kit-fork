@@ -1,0 +1,116 @@
+---
+- name: Set Firedancer build and release paths
+  ansible.builtin.set_fact:
+    firedancer_release_dir: "{{ system_solana_installed_releases_dir }}/frankendancer-v{{ firedancer_version }}"
+    firedancer_build_dir: "{{ system_shared_build_dir }}/firedancer"
+
+- name: Print Firedancer build source info
+  ansible.builtin.debug:
+    msg: "fdctl will be built from source: tag v{{ firedancer_version }}"
+
+- name: Ensure shared build directory exists
+  ansible.builtin.file:
+    path: "{{ system_shared_build_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Ensure Firedancer release directory exists
+  ansible.builtin.file:
+    path: "{{ firedancer_release_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install base build prerequisites
+  ansible.builtin.apt:
+    name:
+      - git
+      - make
+      - pkg-config
+      - liblz4-dev
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Clone Firedancer repository with submodules
+  ansible.builtin.git:
+    repo: "https://github.com/firedancer-io/firedancer.git"
+    dest: "{{ firedancer_build_dir }}"
+    version: "v{{ firedancer_version }}"
+    recursive: true
+    update: true
+    force: true
+  become: true
+  environment:
+    GIT_TERMINAL_PROMPT: "0"
+
+- name: Install Firedancer build dependencies via deps.sh
+  ansible.builtin.shell:
+    # Explicit phases bypass the top-level TTY check in deps.sh (which exits
+    # non-zero when stdin is not a terminal). Let deps.sh use root's default
+    # cargo/rustup paths (~/.cargo, ~/.rustup) — it sources ~/.cargo/env
+    # directly and breaks if CARGO_HOME overrides that path.
+    cmd: "./deps.sh fetch check install"
+    chdir: "{{ firedancer_build_dir }}"
+    executable: /bin/bash
+  become: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    # Suppresses interactive prompts inside deps.sh (rustup install, apt confirms).
+    FD_AUTO_INSTALL_PACKAGES: "1"
+  changed_when: true
+
+- name: Build fdctl and solana from source
+  ansible.builtin.shell:
+    cmd: "make -j{{ ansible_processor_vcpus }} fdctl solana"
+    chdir: "{{ firedancer_build_dir }}"
+    executable: /bin/bash
+  become: true
+  environment:
+    PATH: "/root/.cargo/bin:{{ ansible_env.PATH }}"
+  changed_when: true
+
+- name: Copy fdctl binary to release directory
+  ansible.builtin.copy:
+    src: "{{ firedancer_build_dir }}/build/native/gcc/bin/fdctl"
+    dest: "{{ firedancer_release_dir }}/fdctl"
+    mode: "0755"
+    owner: root
+    group: root
+    remote_src: true
+  become: true
+
+- name: Copy solana binary to release directory
+  ansible.builtin.copy:
+    src: "{{ firedancer_build_dir }}/build/native/gcc/bin/solana"
+    dest: "{{ firedancer_release_dir }}/solana"
+    mode: "0755"
+    owner: root
+    group: root
+    remote_src: true
+  become: true
+
+- name: Install fdctl to /usr/local/bin
+  ansible.builtin.file:
+    src: "{{ firedancer_release_dir }}/fdctl"
+    dest: "/usr/local/bin/fdctl"
+    state: link
+    force: true
+    owner: root
+    group: root
+  become: true
+
+- name: Install solana to /usr/local/bin
+  ansible.builtin.file:
+    src: "{{ firedancer_release_dir }}/solana"
+    dest: "/usr/local/bin/solana"
+    state: link
+    force: true
+    owner: root
+    group: root
+  become: true

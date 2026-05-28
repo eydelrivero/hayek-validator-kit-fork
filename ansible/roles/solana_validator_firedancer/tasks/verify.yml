@@ -1,0 +1,73 @@
+---
+- name: verify - Check if fdctl binary exists
+  ansible.builtin.stat:
+    path: "/usr/local/bin/fdctl"
+  register: fdctl_binary
+
+- name: verify - Fail if fdctl binary is missing
+  ansible.builtin.fail:
+    msg: "fdctl binary not found at /usr/local/bin/fdctl"
+  when: not fdctl_binary.stat.exists
+
+- name: verify - Get validator systemd service status
+  ansible.builtin.systemd:
+    name: "{{ validator_service_name }}"
+  register: validator_service_status
+  changed_when: false
+
+- name: verify - Print validator service status
+  ansible.builtin.debug:
+    var: validator_service_status
+
+- name: verify - Get last 50 lines of validator logs
+  ansible.builtin.command: journalctl -u {{ validator_service_name }} -n 50 --no-pager --since "10 seconds ago"
+  register: validator_logs
+  changed_when: false
+
+- name: verify - Print last 50 lines of validator logs
+  ansible.builtin.debug:
+    var: validator_logs.stdout_lines
+
+- name: verify - Wait for fdctl process to appear (up to 30s)
+  ansible.builtin.shell: pgrep -f fdctl
+  register: validator_process
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 3
+  until: validator_process.rc == 0
+
+- name: verify - Fail if fdctl is not running
+  ansible.builtin.fail:
+    msg: |
+      The fdctl process is NOT running on {{ inventory_hostname }}.
+      The validator service failed to start, and no process was found.
+      Please check the validator logs for errors.
+  when: validator_process.rc != 0
+
+- name: verify - Print fdctl process PIDs
+  ansible.builtin.debug:
+    msg: "fdctl PIDs: {{ validator_process.stdout_lines }}"
+
+- name: verify - Check validator service file
+  ansible.builtin.slurp:
+    src: /etc/systemd/system/{{ validator_service_name }}.service
+  register: validator_service_file
+
+- name: verify - Print validator service file
+  ansible.builtin.debug:
+    msg: "{{ validator_service_file.content | b64decode }}"
+
+- name: verify - Check Firedancer config file
+  ansible.builtin.slurp:
+    src: "{{ firedancer_config_path }}"
+  register: firedancer_config_file
+
+- name: verify - Print Firedancer config
+  ansible.builtin.debug:
+    msg: "{{ firedancer_config_file.content | b64decode }}"
+
+- name: verify - Summary - Frankendancer validator verification complete
+  ansible.builtin.debug:
+    msg: |
+      Frankendancer validator verification complete. Check service status and logs above for troubleshooting.

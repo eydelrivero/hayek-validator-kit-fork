@@ -1,0 +1,99 @@
+---
+argument_specs:
+  main:
+    short_description: "Install Frankendancer (Firedancer + Jito) Solana validator"
+    author: "Hayek Validator Team"
+    description:
+      - "Installs and configures a Frankendancer validator (Firedancer networking + Agave consensus)"
+      - "Configuration uses a TOML file rendered by firedancer.toml.j2 instead of CLI flags"
+      - "Optionally enables Jito BAM integration via [tiles.bundle] config section"
+      - "fdctl run manages the validator process; fdctl set-identity handles live identity rotation"
+    options:
+      validator_name:
+        type: str
+        required: true
+        description: "Name of the validator instance"
+      validator_type:
+        type: str
+        required: false
+        default: "hot-spare"
+        choices: ["primary", "hot-spare"]
+        description: "Validator identity mode (primary or hot-spare, defaults to hot-spare)"
+      firedancer_version:
+        type: str
+        required: true
+        description: "Version of Firedancer to install (e.g. '0.910.40000')"
+      solana_cluster:
+        type: str
+        required: true
+        choices: ["localnet", "testnet", "mainnet"]
+        description: "Target Solana cluster"
+      expected_genesis_hash:
+        type: str
+        required: true
+        description: "Expected cluster genesis hash"
+      expected_shred_version:
+        type: int
+        required: false
+        default: 0
+        description: "Expected cluster shred version. Set to 0 to disable the check."
+      force_host_cleanup:
+        type: bool
+        required: false
+        default: false
+        description: "Force cleanup of existing validator data"
+      frankendancer_jito_enabled:
+        type: bool
+        required: false
+        default: false
+        description: >-
+          Enable Jito BAM integration via the [tiles.bundle] TOML section.
+          Requires block_engine_url, jito_tip_payment_program_pubkey,
+          jito_tip_distribution_program_pubkey to be defined.
+      block_engine_url:
+        type: str
+        required: false
+        description: "Jito block engine URL (required when frankendancer_jito_enabled=true)"
+      jito_tip_payment_program_pubkey:
+        type: str
+        required: false
+        description: "Jito tip payment program address (required when frankendancer_jito_enabled=true)"
+      jito_tip_distribution_program_pubkey:
+        type: str
+        required: false
+        description: "Jito tip distribution program address (required when frankendancer_jito_enabled=true)"
+      jito_commission_bps:
+        type: int
+        required: false
+        default: 0
+        description: "Jito validator commission in basis points (default 0)"
+      firedancer_tile_affinity:
+        type: str
+        required: false
+        default: "auto"
+        description: "CPU affinity for Firedancer tiles (e.g. 'auto', '1-15', '1,2,3-8')"
+      firedancer_net_interface:
+        type: str
+        required: false
+        default: "auto"
+        description: "Network interface for Firedancer (e.g. 'auto', 'eth0', 'ens3')"
+      firedancer_gossip_host:
+        type: str
+        required: false
+        default: "auto"
+        description: "Public IP or hostname for gossip (auto = detect from network)"
+      firedancer_private_rpc:
+        type: bool
+        required: false
+        default: false
+        description: "Restrict RPC to localhost only"
+      firedancer_full_snapshot_interval:
+        type: int
+        required: false
+        default: 25000
+        description: "Slots between full snapshots"
+      firedancer_incremental_snapshot_interval:
+        type: int
+        required: false
+        default: 100
+        description: "Slots between incremental snapshots"

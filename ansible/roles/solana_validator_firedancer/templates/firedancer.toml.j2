@@ -1,0 +1,64 @@
+name = "{{ validator_name }}"
+user = "{{ solana_user }}"
+
+[log]
+  path = "{{ validator_logs_dir }}/firedancer.log"
+  level_logfile = "INFO"
+  level_stderr = "NOTICE"
+  colorize = "auto"
+
+[reporting]
+  solana_metrics_config = "{{ solana_metrics_config | default('') }}"
+
+[ledger]
+  path = "{{ ledger_path }}"
+  accounts_path = "{{ accounts_path }}"
+
+[gossip]
+  port = {{ solana_gossip_port | default(8001) }}
+  port_check = {{ firedancer_gossip_port_check | default(false) | lower }}
+  entrypoints = [
+{% for ep in solana_gossip_entrypoints | default([]) %}
+    "{{ ep }}",
+{% endfor %}
+  ]
+
+[rpc]
+  port = {{ solana_rpc_port | default(8899) }}
+  private = {{ firedancer_private_rpc | default(false) | lower }}
+  extended_tx_metadata_storage = false
+
+[snapshots]
+  path = "{{ snapshots_path }}"
+  full_snapshot_interval_slots = {{ firedancer_full_snapshot_interval | default(25000) }}
+  incremental_snapshot_interval_slots = {{ firedancer_incremental_snapshot_interval | default(100) }}
+  minimum_snapshot_download_speed = {{ firedancer_min_snapshot_download_speed | default(1048576) }}
+
+[consensus]
+  identity_path = "{{ validator_keyset_dir }}/hot-spare-identity.json"
+  vote_account_path = "{{ validator_keyset_dir }}/vote-account.json"
+  expected_genesis_hash = "{{ expected_genesis_hash }}"
+  expected_shred_version = {{ expected_shred_version | default(0) }}
+  known_validators = [
+{% for v in known_validators | default([]) %}
+    "{{ v }}",
+{% endfor %}
+  ]
+
+[layout]
+  affinity = "{{ firedancer_tile_affinity | default('auto') }}"
+
+[hugetlbfs]
+  mount_path = "/mnt/.fd"
+
+[net]
+  interface = "{{ firedancer_net_interface | default(_firedancer_detected_iface.stdout | trim) }}"
+
+{% if frankendancer_jito_enabled | default(false) | bool %}
+[tiles.bundle]
+  url = "{{ block_engine_url }}"
+  tip_payment_program_addr = "{{ jito_tip_payment_program_pubkey }}"
+  tip_distribution_program_addr = "{{ jito_tip_distribution_program_pubkey }}"
+  commission_bps = {{ jito_commission_bps | default(0) }}
+
+{% endif %}

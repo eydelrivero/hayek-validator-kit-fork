@@ -1,0 +1,14 @@
+{{ validator_logs_dir }}/firedancer.log {
+  su root root
+  rotate 1
+  {% if solana_cluster == 'localnet' %}
+  size 100M
+  {% else %}
+  size 1G
+  {% endif %}
+  compress
+  missingok
+  postrotate
+  systemctl kill -s USR1 {{ validator_service_name }}.service
+  endscript
+}

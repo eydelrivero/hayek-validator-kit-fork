@@ -1,0 +1,50 @@
+---
+# Firedancer CLI Setup
+# -------------------
+# Installs the fdctl binary for Frankendancer.
+#
+# Usage:
+# ------
+# Run from /ansible directory:
+#
+# For syntax check add --syntax-check
+# For dry run add --diff --check
+#
+# ansible-playbook playbooks/pb_install_solana_cli_firedancer.yml \
+#   -i solana_localnet.yml \
+#   --limit host-charlie \
+#   -e "target_host=host-charlie" \
+#   -e "operator_user=bob" \
+#   -e "firedancer_version=0.910.40000" \
+#   -e "solana_cluster=mainnet"
+#
+# Extended vars:
+# - firedancer_version (REQUIRED): Version of Firedancer to install (e.g. 0.910.40000).
+# - solana_cluster (OPTIONAL): Target Solana cluster for informational use. One of localnet, testnet, mainnet.
+
+- name: Install Firedancer CLI
+  hosts: "{{ target_host }}"
+  user: "{{ operator_user }}"
+  become: false
+
+  pre_tasks:
+    - name: Assert required parameters are defined
+      ansible.builtin.assert:
+        that:
+          - target_host is defined
+          - firedancer_version is defined
+          - operator_user is defined
+          - solana_cluster is not defined or solana_cluster in ['localnet', 'testnet', 'mainnet']
+        fail_msg: >
+          Missing required variables.
+          Must provide:
+            - target_host
+            - firedancer_version
+            - operator_user
+          Optional:
+            - solana_cluster (one of: localnet, testnet, mainnet)
+
+  roles:
+    - role: solana_cli_firedancer
+      vars:
+        firedancer_version: "{{ firedancer_version }}"

@@ -1,0 +1,14 @@
+---
+- name: Precheck environment
+  import_tasks: precheck.yml
+  tags: [solana_cli_firedancer, precheck]
+
+- name: Install Firedancer CLI
+  import_tasks: install.yml
+  when: not firedancer_cli_already_installed
+  tags: [solana_cli_firedancer, install]
+
+- name: Verify Firedancer CLI installation is correct
+  import_tasks: verify.yml
+  when: not firedancer_cli_already_installed
+  tags: [solana_cli_firedancer, verify]

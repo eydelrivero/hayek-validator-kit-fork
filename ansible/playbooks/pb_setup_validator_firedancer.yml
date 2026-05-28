@@ -1,0 +1,69 @@
+---
+# Frankendancer Validator Setup
+# -------------------
+# Sets up a Solana validator with the Frankendancer client
+# (Firedancer networking + Agave consensus + optional Jito BAM).
+#
+# Usage:
+# ------
+# Run from /ansible directory:
+#
+# syntax check
+# ansible-playbook playbooks/pb_setup_validator_firedancer.yml \
+#   -i solana_setup_host.yml \
+#   --limit host-charlie \
+#   --syntax-check \
+#   -e "target_host=host-charlie"
+#
+# ansible-playbook playbooks/pb_setup_validator_firedancer.yml \
+#   -i solana_localnet.yml \
+#   --limit host-charlie \
+#   -e "target_host=host-charlie" \
+#   -e "ansible_user=bob" \
+#   -e "validator_name=penny" \
+#   -e "firedancer_version=0.910.40000" \
+#   -e "solana_cluster=localnet" \
+#   -K
+#
+# Extended vars:
+# - firedancer_version (REQUIRED): Frankendancer version to install (e.g. 0.910.40000)
+# - validator_type (OPTIONAL): Validator identity mode. Defaults to hot-spare; set validator_type=primary to opt in.
+# - frankendancer_jito_enabled (OPTIONAL): Enable Jito BAM via [tiles.bundle] config section (default false).
+#   Requires block_engine_url, jito_tip_payment_program_pubkey, jito_tip_distribution_program_pubkey.
+# - firedancer_tile_affinity (OPTIONAL): CPU affinity for tiles (default: auto).
+# - firedancer_net_interface (OPTIONAL): Network interface override (default: auto).
+# - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
+# - solana_validator_ha_install_enabled (OPTIONAL): Install solana-validator-ha alongside validator setup.
+
+- name: Install Frankendancer Validator
+  hosts: "{{ target_host }}"
+  user: "{{ ansible_user }}"
+  become: false
+
+  pre_tasks:
+    - name: Assert required parameters are defined
+      ansible.builtin.assert:
+        that:
+          - target_host is defined
+          - ansible_user is defined
+        fail_msg: >
+          Missing required playbook variables: target_host, ansible_user
+
+    - name: Debug ansible_limit and target_host
+      ansible.builtin.debug:
+        msg:
+          - "ansible_limit: {{ ansible_limit | default('not defined') }}"
+          - "target_host: {{ target_host }}"
+          - "ansible_play_hosts: {{ ansible_play_hosts }}"
+
+    - name: Validate that target_host matches the limited host
+      ansible.builtin.assert:
+        that:
+          - ansible_limit is defined
+          - target_host == ansible_limit
+        fail_msg: >
+          This playbook must be run with --limit to target exactly one host.
+          Make sure you run this playbook with: --limit {{ target_host }} -e "target_host={{ target_host }}"
+
+  roles:
+    - role: solana_validator_firedancer

@@ -1,0 +1,31 @@
+---
+- name: summary - Determine Solana cluster parameter
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/determine_solana_cluster_param.yml
+
+- name: Display validator monitoring hints
+  ansible.builtin.debug:
+    msg: |
+      ===========================================================
+      Frankendancer validator setup complete. Helpful commands:
+      ===========================================================
+
+      Log in to {{ inventory_hostname }} via SSH:
+      ssh -p {{ ansible_port | default(22) }} {{ ansible_user }}@{{ inventory_hostname }}
+
+      Monitor cluster validators:
+      solana validators {{ solana_cluster_param }} --keep-unstaked-delinquents
+
+      Monitor Frankendancer live:
+      fdctl monitor --config {{ firedancer_config_path }}
+
+      View validator catchup status:
+      solana catchup {{ solana_cluster_param }} --our-localhost {{ solana_rpc_port | default(8899) }}
+
+      Inspect logs:
+      tail -f {{ validator_logs_dir }}/firedancer.log
+      journalctl -u {{ validator_service_name }} -f
+
+      Rotate identity (live, without restart):
+      fdctl set-identity --config {{ firedancer_config_path }} <new-keypair.json>
+
+      ===========================================================

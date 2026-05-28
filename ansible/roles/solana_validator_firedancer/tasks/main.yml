@@ -1,0 +1,40 @@
+---
+- name: Setup validator directory structure
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/setup_validator_directory.yml
+  tags: [solana_validator_firedancer, setup_validator_directory]
+
+- name: Precheck parameters
+  import_tasks: precheck.yml
+  tags: [solana_validator_firedancer, precheck]
+
+- name: Prepare variables needed for the role
+  import_tasks: prepare.yml
+  tags: [solana_validator_firedancer, prepare]
+
+- name: Cleanup the host from existing validator data
+  import_tasks: ../../solana_validator_shared/tasks/cleanup_validator_data.yml
+  when: (force_host_cleanup | default(false)) | bool
+  tags: [solana_validator_firedancer, cleanup]
+
+- name: Configure and start Frankendancer validator
+  import_tasks: configure.yml
+  tags: [solana_validator_firedancer, configure]
+
+- name: Configure Solana Validator HA integration
+  ansible.builtin.include_role:
+    name: solana_validator_ha
+  vars:
+    solana_validator_ha_client: "firedancer"
+  tags: [solana_validator_firedancer, solana_validator_ha]
+
+- name: handlers - Flush handlers before verification
+  meta: flush_handlers
+  tags: [solana_validator_firedancer, configure]
+
+- name: Verify Frankendancer validator installation
+  import_tasks: verify.yml
+  tags: [solana_validator_firedancer, verify]
+
+- name: Print summary
+  import_tasks: summary.yml
+  tags: [solana_validator_firedancer, summary]
