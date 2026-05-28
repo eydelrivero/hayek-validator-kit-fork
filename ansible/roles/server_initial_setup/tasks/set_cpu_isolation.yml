@@ -25,7 +25,14 @@
 - name: Derive PoH core and HT sibling
   ansible.builtin.set_fact:
     _cpu_poh: "{{ cpu_config.poh_core | int }}"
-    _cpu_sibling: "{{ _thread_siblings.stdout.split(',') | map('trim') | reject('equalto', cpu_config.poh_core | string) | first | int }}"
+    _cpu_sibling: >-
+      {{
+        (_thread_siblings.stdout.split(',') | map('trim')
+          | reject('equalto', cpu_config.poh_core | string) | list | first | int)
+        if (_thread_siblings.stdout.split(',') | map('trim')
+          | reject('equalto', cpu_config.poh_core | string) | list | length > 0)
+        else (cpu_config.poh_core | int)
+      }}
     _cpu_total: "{{ _nproc.stdout | trim | int }}"
   when: ansible_facts['architecture'] == "x86_64"
 
