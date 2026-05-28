@@ -102,6 +102,7 @@ AGAVE_VERSION="${AGAVE_VERSION:-3.1.10}"
 JITO_VERSION="${JITO_VERSION:-2.3.6}"
 BAM_JITO_VERSION="${BAM_JITO_VERSION:-3.1.10}"
 BAM_JITO_VERSION_PATCH="${BAM_JITO_VERSION_PATCH:-}"
+FIREDANCER_VERSION="${FIREDANCER_VERSION:-0.910.40000}"
 BAM_EXPECT_CLIENT_REGEX="${BAM_EXPECT_CLIENT_REGEX:-Bam}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 FORCE_HOST_CLEANUP="${FORCE_HOST_CLEANUP:-true}"
@@ -202,8 +203,8 @@ Usage:
   verify-vm-hot-swap.sh --source-flavor <flavor> --destination-flavor <flavor> [options]
 
 Required:
-  --source-flavor <agave|jito-shared|jito-cohosted|jito-bam>
-  --destination-flavor <agave|jito-shared|jito-cohosted|jito-bam>
+  --source-flavor <agave|jito-shared|jito-cohosted|jito-bam|frankendancer>
+  --destination-flavor <agave|jito-shared|jito-cohosted|jito-bam|frankendancer>
 
 Optional:
   --run-id <id>
@@ -539,6 +540,9 @@ ha_client_for_flavor() {
     jito-shared|jito-cohosted|jito-bam)
       printf '%s\n' "jito"
       ;;
+    frankendancer)
+      printf '%s\n' "firedancer"
+      ;;
     *)
       echo "Unsupported HA client flavor: $flavor" >&2
       exit 2
@@ -551,6 +555,7 @@ expected_client_regex_for_flavor() {
   case "$flavor" in
     agave) echo 'client:(Solana|Agave)' ;;
     jito-shared|jito-cohosted|jito-bam) echo 'client:(JitoLabs|Bam)' ;;
+    frankendancer) echo 'Frankendancer' ;;
     *)
       echo "Unsupported flavor: $flavor" >&2
       exit 2
@@ -2482,6 +2487,13 @@ bootstrap_host_with_shared_flow() {
           "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
       fi
       ;;
+    frankendancer)
+      ansible-playbook \
+        "${base_args[@]}" \
+        -e "validator_flavor=frankendancer" \
+        -e "firedancer_version=$FIREDANCER_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
+      ;;
     *)
       echo "Unsupported flavor: $flavor" >&2
       exit 2
@@ -2561,6 +2573,13 @@ setup_host_flavor() {
           -e "jito_version=$BAM_JITO_VERSION" \
           "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
       fi
+      ;;
+    frankendancer)
+      ansible-playbook \
+        "${base_args[@]}" \
+        "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
+        -e "firedancer_version=$FIREDANCER_VERSION" \
+        "$REPO_ROOT/ansible/playbooks/pb_setup_validator_firedancer.yml"
       ;;
     *)
       echo "Unsupported flavor: $flavor" >&2
@@ -3521,6 +3540,8 @@ ansible-playbook \
   "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
   -e "source_host=vm-source" \
   -e "destination_host=vm-destination" \
+  -e "source_client=$(ha_client_for_flavor "$SOURCE_FLAVOR")" \
+  -e "destination_client=$(ha_client_for_flavor "$DESTINATION_FLAVOR")" \
   -e "operator_user=$VALIDATOR_OPERATOR_USER" \
   -e "auto_confirm_swap=true" \
   -e "deprovision_source_host=false" \
