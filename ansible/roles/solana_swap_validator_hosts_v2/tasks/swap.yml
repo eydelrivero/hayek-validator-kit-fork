@@ -37,11 +37,11 @@
 
     - name: swap - Get vote account data from source validator
       ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana vote-account
+        solana vote-account
         {{ solana_cluster_param }} {{ source_vote_pubkey }} --output json
       register: source_vote_account_before
       environment:
-        PATH: "{{ system_solana_active_release_dir }}"
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       when: inventory_hostname == source_host
       changed_when: false
       failed_when: false
@@ -66,6 +66,7 @@
       run_once: true
       when:
         - hostvars[source_host].get('source_vote_account_before', {}).get('rc', 1) != 0
+        - "'account does not exist' not in (hostvars[source_host].get('source_vote_account_before', {}).get('stderr', '') ~ hostvars[source_host].get('source_vote_account_before', {}).get('stdout', ''))"
 
     - name: swap - Parse vote account data before swap
       ansible.builtin.set_fact:
@@ -123,15 +124,21 @@
 - name: Pre-swap facts gathering
   block:
     - name: swap - Get tower filename
-      check_mode: false
-      ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana-keygen pubkey
-        {{ source_host_primary_target_identity_path }}
+      ansible.builtin.shell: |
+        {% if source_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ hostvars[source_host]['firedancer_config_path'] }} keys pubkey {{ source_host_primary_target_identity_path }} | grep -v '^Log at'
+        {% else %}
+        {{ system_solana_active_release_dir }}/solana-keygen pubkey {{ source_host_primary_target_identity_path }}
+        {% endif %}
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: staked_identity_pubkey_stdout
       become: true
       become_user: "{{ solana_user }}"
       delegate_to: "{{ source_host }}"
       when: inventory_hostname == destination_host
+      changed_when: false
+      check_mode: false
 
     - name: swap - Save tower filename
       ansible.builtin.set_fact:
@@ -179,7 +186,7 @@
 - name: swap - Wait for Restart Window and Unstake Source Validator
   any_errors_fatal: true
   block:
-    - name: swap - Wait for safe restart window
+    - name: swap - Wait for safe restart window (agave/jito)
       ansible.builtin.command: >
         agave-validator --ledger {{ ledger_path }} wait-for-restart-window
         --max-delinquent-stake {{ restart_max_delinquent_stake }} --min-idle-time {{ restart_min_idle_time }}
@@ -188,9 +195,18 @@
         PATH: "{{ system_solana_active_release_dir }}"
       become: true
       become_user: "{{ solana_user }}"
-      when: inventory_hostname == source_host
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') != 'firedancer'
       register: wait_restart_result
       failed_when: wait_restart_result.rc != 0
+
+    - name: swap - Skip restart-window check for firedancer source (handled by fdctl internally)
+      ansible.builtin.debug:
+        msg: "Skipping agave-validator wait-for-restart-window: source is Frankendancer (fdctl manages delinquency)"
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') == 'firedancer'
 
     # Start measuring time for swap duration
     - name: Store current timestamp
@@ -200,14 +216,36 @@
       run_once: true
 
     # Step 1: Switch to unstaked identity on source
-    - name: swap - Switch to unstaked identity on source
-      ansible.builtin.command: agave-validator -l {{ ledger_path }} set-identity {{ source_host_hot_spare_identity_path }}
+    - name: swap - Switch to unstaked identity on source (agave/jito)
+      ansible.builtin.command: >-
+        agave-validator -l {{ ledger_path }} set-identity {{ source_host_hot_spare_identity_path }}
       environment:
         PATH: "{{ system_solana_active_release_dir }}"
       become: true
       become_user: "{{ solana_user }}"
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') != 'firedancer'
+      register: wait_and_unstake_result_agave
+
+    - name: swap - Switch to unstaked identity on source (firedancer)
+      ansible.builtin.command: >-
+        fdctl set-identity --config {{ firedancer_config_path }} --force {{ source_host_hot_spare_identity_path }}
+      become: true
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') == 'firedancer'
+      register: wait_and_unstake_result_firedancer
+
+    - name: swap - Merge source unstake result
+      ansible.builtin.set_fact:
+        wait_and_unstake_result: >-
+          {{
+            wait_and_unstake_result_firedancer
+            if (source_client | default('agave') == 'firedancer')
+            else wait_and_unstake_result_agave
+          }}
       when: inventory_hostname == source_host
-      register: wait_and_unstake_result
   when: not ansible_check_mode
 
 - name: swap - Assert source validator demotion completed before promotion
@@ -226,6 +264,24 @@
   any_errors_fatal: true
   block:
     # Step 3: Rsync tower file from source to destination
+    - name: swap - Check if tower file exists on source
+      ansible.builtin.stat:
+        path: "{{ tower_file_src }}"
+      register: source_tower_stat
+      become: true
+      become_user: "{{ solana_user }}"
+      delegate_to: "{{ source_host }}"
+      when: inventory_hostname == destination_host
+
+    - name: swap - Skip tower transfer (file not found on source)
+      ansible.builtin.debug:
+        msg: >-
+          Skipping tower file transfer: {{ tower_file_src }} not found on {{ source_host }}.
+          This is expected for validators that have not yet voted under the primary identity.
+      when:
+        - inventory_hostname == destination_host
+        - not (source_tower_stat.stat.exists | default(false))
+
     - name: swap - Rsync tower file from source to destination
       ansible.builtin.shell: |
         rsync --delay-updates -F --archive --delete \
@@ -234,7 +290,9 @@
           "{{ tower_file_src }}" "{{ ansible_user }}@{{ destination_host_address }}:{{ tower_file_dest }}"
       delegate_to: "{{ source_host }}"
       become: false
-      when: inventory_hostname == destination_host
+      when:
+        - inventory_hostname == destination_host
+        - source_tower_stat.stat.exists | default(false)
       register: transfer_tower_result
       changed_when: transfer_tower_result.rc == 0
       failed_when: transfer_tower_result.rc != 0
@@ -246,6 +304,7 @@
           RC: {{ transfer_tower_result.rc | default('N/A') }}
           Error: {{ transfer_tower_result.msg | default('Unknown error') }}
       when:
+        - transfer_tower_result is defined
         - transfer_tower_result is failed
   when: not ansible_check_mode
 
@@ -253,13 +312,27 @@
   any_errors_fatal: true
   block:
     # Step 4: Switch to staked identity on destination
-    - name: swap - Switch to staked identity on destination
-      ansible.builtin.command: agave-validator -l {{ ledger_path }} set-identity --require-tower {{ destination_host_primary_target_identity_path }}
+    - name: swap - Switch to staked identity on destination (agave/jito)
+      ansible.builtin.command: >-
+        agave-validator -l {{ ledger_path }} set-identity
+        {{ '--require-tower' if (hostvars[destination_host]['source_tower_stat']['stat']['exists'] | default(false)) else '' }}
+        {{ destination_host_primary_target_identity_path }}
       environment:
         PATH: "{{ system_solana_active_release_dir }}"
       become: true
       become_user: "{{ solana_user }}"
-      when: inventory_hostname == destination_host
+      when:
+        - inventory_hostname == destination_host
+        - destination_client | default('agave') != 'firedancer'
+
+    - name: swap - Switch to staked identity on destination (firedancer)
+      ansible.builtin.command: >-
+        fdctl set-identity --config {{ firedancer_config_path }} --force
+        {{ destination_host_primary_target_identity_path }}
+      become: true
+      when:
+        - inventory_hostname == destination_host
+        - destination_client | default('agave') == 'firedancer'
 
     - name: Calculate elapsed time since current_timestamp
       ansible.builtin.command: >

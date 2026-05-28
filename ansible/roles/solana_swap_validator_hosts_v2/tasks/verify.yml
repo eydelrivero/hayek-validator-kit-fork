@@ -13,7 +13,7 @@
       register: source_primary_identity
       when: inventory_hostname == source_host
 
-    - name: verify - Get source validator running identity pubkey
+    - name: verify - Get source validator running identity pubkey (agave/jito)
       ansible.builtin.shell: |
         set -o pipefail
         {{ system_solana_active_release_dir }}/agave-validator -l {{ ledger_path }} contact-info |
@@ -25,26 +25,52 @@
       failed_when: source_running_pubkey.rc != 0 or (source_running_pubkey.stdout | default('') | trim) == ''
       become: true
       become_user: "{{ solana_user }}"
-      when: inventory_hostname == source_host
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') != 'firedancer'
+
+    - name: verify - Get source validator running identity pubkey (firedancer via RPC)
+      ansible.builtin.shell: >
+        curl -sf -X POST -H "Content-Type: application/json"
+        -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}'
+        http://127.0.0.1:{{ solana_rpc_port | default(8899) }} | jq -r '.result.identity'
+      register: source_running_pubkey
+      changed_when: false
+      failed_when: source_running_pubkey.rc != 0 or (source_running_pubkey.stdout | default('') | trim) == ''
+      when:
+        - inventory_hostname == source_host
+        - source_client | default('agave') == 'firedancer'
 
     - name: verify - Get source hot-spare identity pubkey
-      ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana-keygen pubkey
-        {{ source_host_keys_dir }}/hot-spare-identity.json
+      ansible.builtin.shell: |
+        {% if source_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ firedancer_config_path }} keys pubkey {{ source_host_keys_dir }}/hot-spare-identity.json | grep -v '^Log at'
+        {% else %}
+        {{ system_solana_active_release_dir }}/solana-keygen pubkey {{ source_host_keys_dir }}/hot-spare-identity.json
+        {% endif %}
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: source_hotspare_pubkey
       become: true
       become_user: "{{ solana_user }}"
+      changed_when: false
       when:
         - inventory_hostname == source_host
         - source_hotspare_identity.stat.exists
 
     - name: verify - Get source primary target identity pubkey
-      ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana-keygen pubkey
-        {{ source_host_keys_dir }}/primary-target-identity.json
+      ansible.builtin.shell: |
+        {% if source_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ firedancer_config_path }} keys pubkey {{ source_host_keys_dir }}/primary-target-identity.json | grep -v '^Log at'
+        {% else %}
+        {{ system_solana_active_release_dir }}/solana-keygen pubkey {{ source_host_keys_dir }}/primary-target-identity.json
+        {% endif %}
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: source_primary_pubkey
       become: true
       become_user: "{{ solana_user }}"
+      changed_when: false
       when:
         - inventory_hostname == source_host
         - source_primary_identity.stat.exists
@@ -57,7 +83,7 @@
       register: destination_primary_identity
       when: inventory_hostname == destination_host
 
-    - name: verify - Get destination validator running identity pubkey
+    - name: verify - Get destination validator running identity pubkey (agave/jito)
       ansible.builtin.shell: |
         set -o pipefail
         {{ system_solana_active_release_dir }}/agave-validator -l {{ ledger_path }} contact-info |
@@ -69,26 +95,74 @@
       failed_when: destination_running_pubkey.rc != 0 or (destination_running_pubkey.stdout | default('') | trim) == ''
       become: true
       become_user: "{{ solana_user }}"
-      when: inventory_hostname == destination_host
+      when:
+        - inventory_hostname == destination_host
+        - destination_client | default('agave') != 'firedancer'
+
+    - name: verify - Get destination validator running identity pubkey (firedancer via RPC)
+      ansible.builtin.shell: >
+        curl -sf -X POST -H "Content-Type: application/json"
+        -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}'
+        http://127.0.0.1:{{ solana_rpc_port | default(8899) }} | jq -r '.result.identity'
+      register: destination_running_pubkey
+      changed_when: false
+      failed_when: destination_running_pubkey.rc != 0 or (destination_running_pubkey.stdout | default('') | trim) == ''
+      when:
+        - inventory_hostname == destination_host
+        - destination_client | default('agave') == 'firedancer'
 
     - name: verify - Get destination primary target identity pubkey
-      ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana-keygen pubkey
-        {{ destination_host_primary_target_identity_path }}
+      ansible.builtin.shell: |
+        {% if destination_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ firedancer_config_path }} keys pubkey {{ destination_host_primary_target_identity_path }} | grep -v '^Log at'
+        {% else %}
+        {{ system_solana_active_release_dir }}/solana-keygen pubkey {{ destination_host_primary_target_identity_path }}
+        {% endif %}
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: destination_primary_pubkey
       become: true
       become_user: "{{ solana_user }}"
+      changed_when: false
       when:
         - inventory_hostname == destination_host
         - destination_primary_identity.stat.exists
 
 - name: verify - Make identity pubkeys available globally
   ansible.builtin.set_fact:
-    source_running_pubkey: "{{ (hostvars[source_host]['source_running_pubkey'] | default({'stdout': ''}))['stdout'] | default('') | trim }}"
-    destination_running_pubkey: "{{ (hostvars[destination_host]['destination_running_pubkey'] | default({'stdout': ''}))['stdout'] | default('') | trim }}"
-    source_hotspare_pubkey: "{{ ((hostvars[source_host]['source_hotspare_pubkey'] | default({'stdout_lines': ['']}))['stdout_lines'] | first) | default('') }}"
-    source_primary_pubkey: "{{ ((hostvars[source_host]['source_primary_pubkey'] | default({'stdout_lines': ['']}))['stdout_lines'] | first) | default('') }}"
-    destination_primary_pubkey: "{{ ((hostvars[destination_host]['destination_primary_pubkey'] | default({'stdout_lines': ['']}))['stdout_lines'] | first) | default('') }}"
+    source_running_pubkey: >-
+      {{
+        (hostvars[source_host]['source_running_pubkey']['stdout'] | default('') | trim)
+        if (hostvars[source_host]['source_running_pubkey'] is mapping)
+        else (hostvars[source_host]['source_running_pubkey'] | default('') | string | trim)
+      }}
+    destination_running_pubkey: >-
+      {{
+        (hostvars[destination_host]['destination_running_pubkey']['stdout'] | default('') | trim)
+        if (hostvars[destination_host]['destination_running_pubkey'] is mapping)
+        else (hostvars[destination_host]['destination_running_pubkey'] | default('') | string | trim)
+      }}
+    source_hotspare_pubkey: >-
+      {{
+        (hostvars[source_host]['source_hotspare_pubkey']['stdout_lines'] | first | default(''))
+        if (hostvars[source_host]['source_hotspare_pubkey'] is mapping and
+            hostvars[source_host]['source_hotspare_pubkey']['stdout_lines'] is defined)
+        else (hostvars[source_host]['source_hotspare_pubkey'] | default('') | string | trim)
+      }}
+    source_primary_pubkey: >-
+      {{
+        (hostvars[source_host]['source_primary_pubkey']['stdout_lines'] | first | default(''))
+        if (hostvars[source_host]['source_primary_pubkey'] is mapping and
+            hostvars[source_host]['source_primary_pubkey']['stdout_lines'] is defined)
+        else (hostvars[source_host]['source_primary_pubkey'] | default('') | string | trim)
+      }}
+    destination_primary_pubkey: >-
+      {{
+        (hostvars[destination_host]['destination_primary_pubkey']['stdout_lines'] | first | default(''))
+        if (hostvars[destination_host]['destination_primary_pubkey'] is mapping and
+            hostvars[destination_host]['destination_primary_pubkey']['stdout_lines'] is defined)
+        else (hostvars[destination_host]['destination_primary_pubkey'] | default('') | string | trim)
+      }}
   run_once: true
 
 - name: verify - Verify source validator is using hot-spare identity
@@ -192,13 +266,19 @@
 
 - name: verify - Get vote account data after swap
   block:
+
     - name: verify - Determine Solana cluster parameter
       ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/determine_solana_cluster_param.yml
 
     - name: verify - Get validator identity pubkey at destination host
-      ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana-keygen pubkey
-        {{ destination_host_primary_target_identity_path }}
+      ansible.builtin.shell: |
+        {% if destination_client | default('agave') == 'firedancer' %}
+        fdctl --config {{ firedancer_config_path }} keys pubkey {{ destination_host_primary_target_identity_path }} | grep -v '^Log at'
+        {% else %}
+        {{ system_solana_active_release_dir }}/solana-keygen pubkey {{ destination_host_primary_target_identity_path }}
+        {% endif %}
+      environment:
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       register: validator_identity_pubkey
       become: true
       become_user: "{{ solana_user }}"
@@ -268,11 +348,11 @@
 
     - name: verify - Get vote account data from destination validator
       ansible.builtin.command: >
-        {{ system_solana_active_release_dir }}/solana vote-account
+        solana vote-account
         {{ solana_cluster_param }} {{ post_swap_vote_account_address }} --output json
       register: source_vote_account_after
       environment:
-        PATH: "{{ system_solana_active_release_dir }}"
+        PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
       become: true
       become_user: "{{ solana_user }}"
       when:
@@ -299,6 +379,7 @@
       when:
         - inventory_hostname == destination_host
         - source_vote_account_after.rc is not defined or source_vote_account_after.rc != 0
+        - "'account does not exist' not in ((source_vote_account_after.stderr | default('')) ~ (source_vote_account_after.stdout | default('')))"
 
     - name: verify - Parse vote account data after swap
       ansible.builtin.set_fact:
@@ -330,6 +411,9 @@
         - vote_account_after is defined
         - vote_account_after.epochVotingHistory is defined
         - vote_account_after.epochVotingHistory | length > 0
+  when:
+    - source_vote_pubkey is defined
+    - source_vote_pubkey | default('') != ''
 
 - name: verify - Calculate TVC impact
   block:

@@ -1,10 +1,15 @@
 ---
 # source
 - name: confirm_swap - Get source hot-spare identity pubkey
-  ansible.builtin.command: solana-keygen pubkey {{ source_host_hot_spare_identity_path }}
+  ansible.builtin.shell: |
+    {% if source_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ source_host_hot_spare_identity_path }} | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ source_host_hot_spare_identity_path }}
+    {% endif %}
   register: source_hotspare_pubkey
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
   become: true
   become_user: "{{ solana_user }}"
   when: inventory_hostname == source_host
@@ -36,10 +41,15 @@
   run_once: true
 
 - name: confirm_swap - Get source vote account pubkey
-  ansible.builtin.command: solana-keygen pubkey {{ source_vote_account_path }}
+  ansible.builtin.shell: |
+    {% if source_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ source_vote_account_path }} | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ source_vote_account_path }}
+    {% endif %}
   register: source_vote_pubkey_result
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
   become: true
   become_user: "{{ solana_user }}"
   when:
@@ -82,10 +92,15 @@
   when: inventory_hostname == destination_host
 
 - name: confirm_swap - Get destination hot-spare identity pubkey
-  ansible.builtin.shell: "solana-keygen pubkey {{ destination_host_hot_spare_identity_path }}"
+  ansible.builtin.shell: |
+    {% if destination_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ destination_host_hot_spare_identity_path }} | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ destination_host_hot_spare_identity_path }}
+    {% endif %}
   register: destination_hotspare_pubkey_result
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
   become: true
   become_user: "{{ solana_user }}"
   when:
@@ -126,10 +141,15 @@
   run_once: true
 
 - name: confirm_swap - Get destination vote account pubkey
-  ansible.builtin.command: solana-keygen pubkey "{{ destination_host_keys_dir }}/vote-account.json"
+  ansible.builtin.shell: |
+    {% if destination_client | default('agave') == 'firedancer' %}
+    fdctl --config {{ firedancer_config_path }} keys pubkey {{ destination_host_keys_dir }}/vote-account.json | grep -v '^Log at'
+    {% else %}
+    solana-keygen pubkey {{ destination_host_keys_dir }}/vote-account.json
+    {% endif %}
   register: destination_vote_pubkey_result
   environment:
-    PATH: "{{ system_solana_active_release_dir }}"
+    PATH: "/usr/local/bin:{{ system_solana_active_release_dir }}:/usr/bin:/bin"
   become: true
   become_user: "{{ solana_user }}"
   when:
