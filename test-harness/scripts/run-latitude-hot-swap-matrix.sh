@@ -139,6 +139,9 @@ run_case() {
   local ssh_key_file="$OPERATOR_SSH_PRIVATE_KEY_FILE"
   # Use distinct --scenario values so hostname_for_run() produces different hostnames
   # for source (hs-src) and destination (hs-dst) within the same matrix run.
+  # Include the first 8 chars of the case name so cross-case hostnames are also unique —
+  # without this, retained servers from case 1 collide with case 2 because RUN_ID:0:12
+  # is always "latitude-hot" for both cases (same RUN_ID_PREFIX).
   local _common_base_args=(
     --operator-name "$OPERATOR_NAME"
     --operator-ssh-public-key-file "$OPERATOR_SSH_PUBLIC_KEY_FILE"
@@ -147,8 +150,8 @@ run_case() {
     --project "$PROJECT"
     --ssh-user "$SSH_USER"
   )
-  local src_target_args=(--scenario "hs-src" "${_common_base_args[@]}")
-  local dst_target_args=(--scenario "hs-dst" "${_common_base_args[@]}")
+  local src_target_args=(--scenario "hs-src-${case_name:0:8}" "${_common_base_args[@]}")
+  local dst_target_args=(--scenario "hs-dst-${case_name:0:8}" "${_common_base_args[@]}")
 
   echo "==> [latitude-hot-swap] Case: $case_name ($source_flavor -> $destination_flavor)" >&2
   mkdir -p "$src_state_dir" "$dst_state_dir"
