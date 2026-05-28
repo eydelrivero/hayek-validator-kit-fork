@@ -570,3 +570,6 @@ ansible/roles/monitoring_agent/vars/secrets.yml
 ansible/initial-setup
 solana-localnet/localnet-ssh-keys/*
 solana-localnet/localnet-new-metal-box/*
+
+# Claude Code local settings
+.claude/settings.local.json
