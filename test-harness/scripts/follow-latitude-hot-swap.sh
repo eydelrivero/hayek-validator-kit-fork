@@ -114,8 +114,15 @@ resolve_host_ssh() {
     | python3 -c '
 import json, shlex, sys
 data = json.load(sys.stdin)
-for key in ("ansible_host","ansible_port","ansible_user","ansible_ssh_private_key_file","ansible_ssh_common_args"):
-    print(f"{key}={shlex.quote(str(data.get(key, \"\")))}")
+for key in (
+    "ansible_host",
+    "ansible_port",
+    "ansible_user",
+    "ansible_ssh_private_key_file",
+    "ansible_ssh_common_args",
+):
+    value = data.get(key, "")
+    print(f"{key}={shlex.quote(str(value))}")
 '
 }
 
