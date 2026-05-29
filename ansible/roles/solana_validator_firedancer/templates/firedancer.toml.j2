@@ -60,6 +60,12 @@ user = "{{ solana_user }}"
 
 [net]
   interface = "{{ firedancer_net_interface | default(_firedancer_detected_iface.stdout | trim) }}"
+  provider = "xdp"
+
+[net.xdp]
+  xdp_mode = "{{ firedancer_xdp_mode | default('default') }}"
+  xdp_zero_copy = {{ firedancer_xdp_zero_copy | default(false) | lower }}
+  rss_queue_mode = "{{ firedancer_xdp_rss_queue_mode | default('auto') }}"
 
 {% if frankendancer_jito_enabled | default(false) | bool %}
 [tiles.bundle]

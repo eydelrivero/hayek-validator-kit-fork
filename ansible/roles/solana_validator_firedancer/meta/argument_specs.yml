@@ -121,3 +121,26 @@ argument_specs:
         type: str
         required: false
         description: "Jito merkle root upload authority pubkey (maps from agave --merkle-root-upload-authority; required when frankendancer_jito_enabled=true)"
+      firedancer_xdp_mode:
+        type: str
+        required: false
+        default: "default"
+        description: >-
+          XDP attach mode for Firedancer networking. 'default' lets fdctl auto-select between
+          'skb' (compatible, slower) and 'drv' (driver-native, faster) at startup.
+          Override to 'skb' to force generic mode, or 'drv' to force driver mode
+          (requires NIC support: mlx5, i40e, ice — see default.toml for full list).
+      firedancer_xdp_zero_copy:
+        type: bool
+        required: false
+        default: false
+        description: >-
+          Enable zero-copy DMA for XDP. Safe on mlx5, i40e, ice NICs; unstable on some Intel
+          NICs due to driver bugs. Use pb_validate_xdp_shared.yml with
+          xdp_enabled=true xdp_experimental_retransmit_xdp_zero_copy=true to confirm
+          'Zero-copy effective: True' on a given host before enabling.
+      firedancer_xdp_rss_queue_mode:
+        type: str
+        required: false
+        default: "auto"
+        description: "RSS queue distribution mode for XDP. 'auto' is recommended; Firedancer's compiled default is 'simple'."
