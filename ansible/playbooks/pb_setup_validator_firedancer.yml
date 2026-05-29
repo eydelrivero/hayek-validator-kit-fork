@@ -34,6 +34,8 @@
 # - firedancer_net_interface (OPTIONAL): Network interface override (default: auto).
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - solana_validator_ha_install_enabled (OPTIONAL): Install solana-validator-ha alongside validator setup.
+# - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the latest pinned in the role.
+# - solana_validator_ha_install_from_source (OPTIONAL): Build solana-validator-ha from source instead of the published GitHub release binary.
 
 - name: Install Frankendancer Validator
   hosts: "{{ target_host }}"
