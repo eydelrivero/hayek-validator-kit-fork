@@ -164,11 +164,18 @@ run_case() {
   local src_state_dir="$case_dir/source"
   local dst_state_dir="$case_dir/destination"
   local ssh_key_file="$OPERATOR_SSH_PRIVATE_KEY_FILE"
-  # Use distinct --scenario values so hostname_for_run() produces different hostnames
-  # for source (hs-src) and destination (hs-dst) within the same matrix run.
-  # Include the first 8 chars of the case name so cross-case hostnames are also unique —
-  # without this, retained servers from case 1 collide with case 2 because RUN_ID:0:12
-  # is always "latitude-hot" for both cases (same RUN_ID_PREFIX).
+  # Embed the first 8 chars of each server's *flavor* (not the case name) in the scenario.
+  # This ensures:
+  #  1. Cross-case uniqueness: retained servers don't collide because RUN_ID:0:12 is always
+  #     "latitude-hot" (same RUN_ID_PREFIX), so the scenario slug is the only differentiator.
+  #  2. Names reflect what runs on each host — jito-bam source gets "jito-bam" in its name,
+  #     frankendancer destination gets "frankend", not the same "frankend" for both.
+  #
+  # Full matrix with --retain-always (all 4 servers live simultaneously):
+  #   jito_bam_to_frankendancer: hvk-<op>-hs-src-jito-bam-latitude-hot
+  #                              hvk-<op>-hs-dst-frankend-latitude-hot
+  #   frankendancer_to_jito_bam: hvk-<op>-hs-src-frankend-latitude-hot
+  #                              hvk-<op>-hs-dst-jito-bam-latitude-hot
   local _common_base_args=(
     --operator-name "$OPERATOR_NAME"
     --operator-ssh-public-key-file "$OPERATOR_SSH_PUBLIC_KEY_FILE"
@@ -177,8 +184,8 @@ run_case() {
     --project "$PROJECT"
     --ssh-user "$SSH_USER"
   )
-  local src_target_args=(--scenario "hs-src-${case_name:0:8}" "${_common_base_args[@]}")
-  local dst_target_args=(--scenario "hs-dst-${case_name:0:8}" "${_common_base_args[@]}")
+  local src_target_args=(--scenario "hs-src-${source_flavor:0:8}" "${_common_base_args[@]}")
+  local dst_target_args=(--scenario "hs-dst-${destination_flavor:0:8}" "${_common_base_args[@]}")
 
   echo "==> [latitude-hot-swap] Case: $case_name ($source_flavor -> $destination_flavor)" >&2
   mkdir -p "$src_state_dir" "$dst_state_dir"
