@@ -28,6 +28,7 @@ AGAVE_VERSION="${AGAVE_VERSION:-3.1.10}"
 BAM_JITO_VERSION="${BAM_JITO_VERSION:-3.1.10}"
 BAM_JITO_VERSION_PATCH="${BAM_JITO_VERSION_PATCH:-}"
 FIREDANCER_VERSION="${FIREDANCER_VERSION:-0.910.40000}"
+FIREDANCER_XDP_ZERO_COPY="${FIREDANCER_XDP_ZERO_COPY:-false}"
 VALIDATOR_NAME="${VALIDATOR_NAME:-hayek-lat-swap}"
 AUTHORIZED_IPS_INPUT="${AUTHORIZED_IPS_INPUT:-}"
 POST_METAL_SSH_PORT="${POST_METAL_SSH_PORT:-2522}"
@@ -59,6 +60,8 @@ Options:
   --bam-jito-version <semver>            (default: 3.1.10)
   --bam-jito-version-patch <suffix>      (default: unset)
   --firedancer-version <version>         (default: 0.910.40000)
+  --firedancer-xdp-zero-copy             Enable XDP zero-copy for Frankendancer (default: false)
+                                         Verify hardware support first with pb_validate_xdp_shared.yml
   --validator-name <name>                (default: hayek-lat-swap)
   --authorized-ips <csv>                 Comma-separated IPs allowed through firewall
                                          (auto-detected via ifconfig.me if unset)
@@ -87,6 +90,7 @@ while (($# > 0)); do
     --bam-jito-version) BAM_JITO_VERSION="${2:-}"; shift 2 ;;
     --bam-jito-version-patch) BAM_JITO_VERSION_PATCH="${2:-}"; shift 2 ;;
     --firedancer-version) FIREDANCER_VERSION="${2:-}"; shift 2 ;;
+    --firedancer-xdp-zero-copy) FIREDANCER_XDP_ZERO_COPY=true; shift ;;
     --validator-name) VALIDATOR_NAME="${2:-}"; shift 2 ;;
     --authorized-ips) AUTHORIZED_IPS_INPUT="${2:-}"; shift 2 ;;
     --continue-on-error) CONTINUE_ON_ERROR=true; shift ;;
@@ -449,6 +453,7 @@ _run_common_setup() {
       ansible-playbook "${base_args[@]}" \
         -e "validator_flavor=frankendancer" \
         -e "firedancer_version=$FIREDANCER_VERSION" \
+        -e "firedancer_xdp_zero_copy=$FIREDANCER_XDP_ZERO_COPY" \
         "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
       ;;
     *)
