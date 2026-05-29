@@ -35,6 +35,7 @@ POST_METAL_SSH_PORT="${POST_METAL_SSH_PORT:-2522}"
 CONTINUE_ON_ERROR=false
 RETAIN_ON_FAILURE=false
 RETAIN_ALWAYS=false
+CASE_FILTER=""
 
 usage() {
   cat <<'EOF'
@@ -65,11 +66,12 @@ Options:
   --validator-name <name>                (default: hayek-lat-swap)
   --authorized-ips <csv>                 Comma-separated IPs allowed through firewall
                                          (auto-detected via ifconfig.me if unset)
+  --case <name>                          Run only this case (repeatable; default: all cases)
   --continue-on-error                    Continue matrix on case failure
   --retain-on-failure                    Keep servers on failure for debugging
   --retain-always                        Never tear down servers
 
-Cases run:
+Cases run (all by default; filter with --case):
   jito_bam_to_frankendancer  (jito-bam -> frankendancer)
   frankendancer_to_jito_bam  (frankendancer -> jito-bam)
 EOF
@@ -93,6 +95,7 @@ while (($# > 0)); do
     --firedancer-xdp-zero-copy) FIREDANCER_XDP_ZERO_COPY=true; shift ;;
     --validator-name) VALIDATOR_NAME="${2:-}"; shift 2 ;;
     --authorized-ips) AUTHORIZED_IPS_INPUT="${2:-}"; shift 2 ;;
+    --case) CASE_FILTER="${CASE_FILTER:+${CASE_FILTER},}${2:-}"; shift 2 ;;
     --continue-on-error) CONTINUE_ON_ERROR=true; shift ;;
     --retain-on-failure) RETAIN_ON_FAILURE=true; shift ;;
     --retain-always) RETAIN_ALWAYS=true; shift ;;
@@ -124,10 +127,30 @@ COMMON_ANSIBLE_EXTRA_VARS_ARGS=(
   -e "@$_CITY_VARS_FILE"
 )
 
-cases=(
+all_cases=(
   "jito_bam_to_frankendancer:jito-bam:frankendancer"
   "frankendancer_to_jito_bam:frankendancer:jito-bam"
 )
+
+if [[ -n "$CASE_FILTER" ]]; then
+  cases=()
+  IFS=',' read -ra _filter_names <<<"$CASE_FILTER"
+  for _entry in "${all_cases[@]}"; do
+    _name="${_entry%%:*}"
+    for _f in "${_filter_names[@]}"; do
+      if [[ "$_name" == "$_f" ]]; then
+        cases+=("$_entry")
+        break
+      fi
+    done
+  done
+  if [[ "${#cases[@]}" -eq 0 ]]; then
+    echo "ERROR: --case filter matched no cases. Valid cases: $(IFS=', '; echo "${all_cases[*]%%:*}")" >&2
+    exit 2
+  fi
+else
+  cases=("${all_cases[@]}")
+fi
 
 pass_count=0
 fail_count=0
