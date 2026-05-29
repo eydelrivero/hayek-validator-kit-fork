@@ -15,8 +15,8 @@
       Monitor cluster validators:
       solana validators {{ solana_cluster_param }} --keep-unstaked-delinquents
 
-      Monitor Frankendancer live:
-      fdctl monitor --config {{ firedancer_config_path }}
+      Monitor Frankendancer live (requires root / CAP_SYS_RESOURCE):
+      sudo fdctl monitor --config {{ firedancer_config_path }}
 
       View validator catchup status:
       solana catchup {{ solana_cluster_param }} --our-localhost {{ solana_rpc_port | default(8899) }}
@@ -25,7 +25,7 @@
       tail -f {{ validator_logs_dir }}/firedancer.log
       journalctl -u {{ validator_service_name }} -f
 
-      Rotate identity (live, without restart):
-      fdctl set-identity --config {{ firedancer_config_path }} <new-keypair.json>
+      Rotate identity (live, without restart — requires root):
+      sudo fdctl set-identity --config {{ firedancer_config_path }} <new-keypair.json>
 
       ===========================================================
