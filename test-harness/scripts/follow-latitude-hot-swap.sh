@@ -20,8 +20,8 @@ export ANSIBLE_CONFIG="$REPO_ROOT/ansible/ansible.cfg"
 
 WORKDIR=""
 INVENTORY=""
-SOURCE_CLIENT="jito"        # agave | jito | frankendancer
-DESTINATION_CLIENT="frankendancer"
+SOURCE_CLIENT=""            # auto-detected from workdir name; override with --source-client
+DESTINATION_CLIENT=""       # auto-detected from workdir name; override with --destination-client
 JOURNAL_LINES=50
 FOLLOW_MODE=true
 
@@ -35,20 +35,23 @@ Stream identity-change log lines from both hosts in a Latitude hot-swap run.
 Opens two parallel SSH sessions (lat-source and lat-destination).
 
 Options:
-  --workdir <path>            Per-run case directory (contains operator-inventory.yml)
+  --workdir <path>            Per-run case directory (contains operator-inventory.yml).
+                              Client types are auto-detected from the directory name.
   --inventory <path>          Explicit path to operator inventory file
-  --source-client <client>    Client on lat-source: agave | jito | frankendancer (default: jito)
-  --destination-client <c>    Client on lat-destination: agave | jito | frankendancer (default: frankendancer)
+  --source-client <client>    Override client on lat-source: agave | jito | frankendancer
+  --destination-client <c>    Override client on lat-destination: agave | jito | frankendancer
   -n, --lines <n>             Journal lines to show before following (default: 50)
   --no-follow                 Print recent matching lines and exit
   -h, --help                  Show this help
 
 Examples:
-  # jito-bam -> frankendancer run (defaults)
+  # Client types auto-detected from workdir name (no extra flags needed)
   follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-jito_bam_to_frankendancer-20260529-123456
+  follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-frankendancer_to_jito_bam-20260529-123456
 
-  # frankendancer -> jito-bam run (swap client labels)
-  follow-latitude-hot-swap.sh --workdir <dir> --source-client frankendancer --destination-client jito
+  # Explicit override when using --inventory directly
+  follow-latitude-hot-swap.sh --inventory /path/to/operator-inventory.yml \
+    --source-client frankendancer --destination-client jito
 EOF
 }
 
@@ -68,6 +71,35 @@ done
 if [[ -n "$WORKDIR" && -z "$INVENTORY" ]]; then
   INVENTORY="$WORKDIR/operator-inventory.yml"
 fi
+
+# Auto-detect client types from the workdir basename (e.g. latitude-hot-swap-CASE-YYYYMMDD-HHMMSS).
+# Explicit --source-client / --destination-client flags always take precedence.
+if [[ -n "$WORKDIR" && ( -z "$SOURCE_CLIENT" || -z "$DESTINATION_CLIENT" ) ]]; then
+  _basename="$(basename "$WORKDIR")"
+  # Strip trailing -YYYYMMDD-HHMMSS timestamp
+  _no_ts="${_basename%-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]}"
+  # Strip leading run-id prefix up to and including the first dash-separated segment pair
+  _case="${_no_ts#latitude-hot-swap-}"
+  case "$_case" in
+    jito_bam_to_frankendancer)
+      [[ -z "$SOURCE_CLIENT" ]]      && SOURCE_CLIENT="jito"
+      [[ -z "$DESTINATION_CLIENT" ]] && DESTINATION_CLIENT="frankendancer"
+      ;;
+    frankendancer_to_jito_bam)
+      [[ -z "$SOURCE_CLIENT" ]]      && SOURCE_CLIENT="frankendancer"
+      [[ -z "$DESTINATION_CLIENT" ]] && DESTINATION_CLIENT="jito"
+      ;;
+    *)
+      # Unknown case name — fall back to safe defaults and warn
+      echo "WARNING: could not detect client types from workdir name '$_basename'" >&2
+      echo "         Use --source-client and --destination-client to set them explicitly." >&2
+      ;;
+  esac
+fi
+
+# Final fallback if still unset (e.g. --inventory used without client flags)
+SOURCE_CLIENT="${SOURCE_CLIENT:-jito}"
+DESTINATION_CLIENT="${DESTINATION_CLIENT:-frankendancer}"
 
 if [[ -z "$INVENTORY" ]]; then
   echo "ERROR: --workdir or --inventory is required" >&2; usage; exit 2
