@@ -8,7 +8,7 @@ user = "{{ solana_user }}"
   colorize = "auto"
 
 [reporting]
-  solana_metrics_config = "{{ solana_metrics_config | default('') }}"
+  solana_metrics_config = "{% if solana_metrics_url is defined and solana_metrics_url %}host={{ solana_metrics_url }}{% endif %}"
 
 [ledger]
   path = "{{ ledger_path }}"
