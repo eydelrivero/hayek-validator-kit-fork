@@ -566,6 +566,10 @@ solana-localnet/validator-keys/*
 ansible/roles/monitoring_hub/vars/secrets.yml
 ansible/roles/monitoring_agent/vars/secrets.yml
 
+# Local-only host inventories (contain real host IPs; keep out of the repo)
+ansible/latitude-hayek-testnet.yml
+ansible/latitude-hayek-testnet-ha.yml
+
 # Ignoring initial-setup until migrated
 ansible/initial-setup
 solana-localnet/localnet-ssh-keys/*
