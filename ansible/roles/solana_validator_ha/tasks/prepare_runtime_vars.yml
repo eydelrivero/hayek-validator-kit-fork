@@ -16,6 +16,16 @@
       validator_keyset_dir must be defined before configuring solana-validator-ha runtime.
       Set validator_keyset_dir directly or provide validator_keys_dir and validator_name.
 
+- name: solana_validator_ha - Derive Firedancer config path for set-identity
+  # Mirrors solana_validator_firedancer/tasks/configure.yml; the HA wrapper script needs
+  # this at render time and must not rely on that role's transient set_fact being in scope
+  # (e.g. during a reconcile run where solana_validator_firedancer never executed).
+  ansible.builtin.set_fact:
+    firedancer_config_path: "{{ validator_root_dir }}/config/{{ validator_name }}/firedancer.toml"
+  when:
+    - solana_validator_ha_client == 'firedancer'
+    - (firedancer_config_path | default('')) | string | trim | length == 0
+
 - name: solana_validator_ha - Assert explicit active and passive identity paths are configured
   ansible.builtin.assert:
     that:

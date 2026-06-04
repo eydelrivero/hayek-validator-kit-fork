@@ -90,7 +90,7 @@ set_identity_command() {
         log ERROR "FIREDANCER_CONFIG_PATH is not set; cannot run fdctl set-identity"
         return 1
       fi
-      printf '%q set-identity --config %q %q' "/usr/local/bin/fdctl" "${FIREDANCER_CONFIG_PATH}" "${CONFIG[identity-keyfile]}"
+      printf '%q set-identity --config %q --force %q' "/usr/local/bin/fdctl" "${FIREDANCER_CONFIG_PATH}" "${CONFIG[identity-keyfile]}"
       ;;
     *)
       printf '%q --ledger %q set-identity %q' "{{ system_solana_active_release_dir }}/agave-validator" "{{ ledger_path }}" "${CONFIG[identity-keyfile]}"
@@ -125,10 +125,12 @@ ensure_passive_via_service_controls() {
 }
 
 run_set_identity() {
+  local cmd
+  cmd="$(set_identity_command)" || return 1
   if is_firedancer_client; then
-    eval "$(set_identity_command)"
+    eval "${cmd}"
   else
-    run_as_validator_user "$(set_identity_command)"
+    run_as_validator_user "${cmd}"
   fi
 }
 
@@ -144,7 +146,10 @@ set_active() {
   fi
 
   remove_tower_file
-  run_set_identity
+  if ! run_set_identity; then
+    log ERROR "set-identity to active failed; node did not become active"
+    return 1
+  fi
   log INFO "promoted validator to active identity ${desired_pubkey}; service startup remains passive via hot-spare-identity.json"
 }
 
