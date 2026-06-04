@@ -28,9 +28,17 @@
     root_disk="$root_node"
 
     lsblk -b -d -o NAME,TYPE,SIZE | awk '$2 == "disk"' | sort -k3 -nr | while read name type size; do
-      if [ "$name" != "$root_disk" ] && ! grep -q "/dev/$name" /proc/mounts; then
-        echo "$name"
+      if [ "$name" = "$root_disk" ]; then
+        continue
       fi
+      if grep -q "/dev/$name" /proc/mounts; then
+        continue
+      fi
+      # Skip disks involved in any RAID array (whole-disk or partition-based)
+      if lsblk -n -o TYPE "/dev/$name" 2>/dev/null | grep -qE "^raid"; then
+        continue
+      fi
+      echo "$name"
     done
   register: available_disks_list
   changed_when: false

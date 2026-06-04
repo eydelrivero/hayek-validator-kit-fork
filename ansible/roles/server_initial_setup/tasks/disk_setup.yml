@@ -6,9 +6,14 @@
 - name: Get available disks
   ansible.builtin.shell: |
     lsblk -b -d -o NAME,TYPE,SIZE | awk '$2 == "disk"' | sort -k3 -nr | while read name type size; do
-      if ! grep -q "/dev/$name" /proc/mounts; then
-        echo "$name"
+      if grep -q "/dev/$name" /proc/mounts; then
+        continue
       fi
+      # Skip disks involved in any RAID array (whole-disk or partition-based)
+      if lsblk -n -o TYPE "/dev/$name" 2>/dev/null | grep -qE "^raid"; then
+        continue
+      fi
+      echo "$name"
     done
   register: available_disks_list
   changed_when: false
@@ -30,6 +35,7 @@
         (available_disks_list.stdout_lines[2] if available_disks_list.stdout_lines | length > 2
           else (
             (root_device.stdout | regex_replace('^/dev/', '')).split('p')[0] if 'nvme' in root_device.stdout
+            else (root_device.stdout | regex_replace('^/dev/', '')) if (root_device.stdout | regex_replace('^/dev/', '')) is match('^(md|dm-)')
             else (root_device.stdout | regex_replace('^/dev/', '') | regex_replace('[0-9]+$', ''))
           )
       )
