@@ -321,6 +321,8 @@
       ansible.builtin.include_role:
         name: solana_validator_ha
         tasks_from: stage_runtime.yml
+      vars:
+        solana_validator_ha_pair_hosts: "{{ hostvars['localhost'].ha_reconcile_target_hosts }}"
       when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
 
     - name: Stage HA runtime artifacts on every cluster member with experimental fake peer map
@@ -351,6 +353,7 @@
             tasks_from: commit_staged_runtime.yml
           vars:
             solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+            solana_validator_ha_pair_hosts: "{{ hostvars['localhost'].ha_reconcile_target_hosts }}"
           when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
 
         - name: Commit staged HA runtime artifacts with experimental fake peer map
@@ -375,6 +378,7 @@
             tasks_from: rollback_staged_runtime.yml
           vars:
             solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+            solana_validator_ha_pair_hosts: "{{ hostvars['localhost'].ha_reconcile_target_hosts }}"
           when: not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
 
         - name: Roll back staged runtime on the failing host with experimental fake peer map
@@ -410,6 +414,7 @@
         tasks_from: rollback_staged_runtime.yml
       vars:
         solana_validator_ha_reconcile_generation: "{{ hostvars['localhost'].ha_reconcile_generation }}"
+        solana_validator_ha_pair_hosts: "{{ hostvars['localhost'].ha_reconcile_target_hosts }}"
       when:
         - not (hostvars['localhost'].ha_reconcile_experimental_fake_peer_enabled_effective | default(false) | bool)
         - hostvars['localhost'].ha_reconcile_abort | default(false) | bool
