@@ -26,7 +26,11 @@
 #   -K
 #
 # Extended vars:
-# - firedancer_version (REQUIRED): Frankendancer version to install (e.g. 0.910.40000)
+# - firedancer_version (REQUIRED): Frankendancer version to install (e.g. 0.1001.40101)
+# - agave_version (OPTIONAL): Agave release to download from S3 as a companion binary set
+#   (agave-validator, solana). Auto-detected from the Firedancer submodule's Cargo.toml when
+#   not provided; pass explicitly to override (e.g. if the auto-detected version is not yet
+#   published to S3). Set install_agave_companion=false to skip the companion install entirely.
 # - validator_type (OPTIONAL): Validator identity mode. Defaults to hot-spare; set validator_type=primary to opt in.
 # - frankendancer_jito_enabled (OPTIONAL): Enable Jito BAM via [tiles.bundle] config section (default false).
 #   Requires block_engine_url, jito_tip_payment_program_pubkey, jito_tip_distribution_program_pubkey.
@@ -48,8 +52,9 @@
         that:
           - target_host is defined
           - ansible_user is defined
+          - firedancer_version is defined
         fail_msg: >
-          Missing required playbook variables: target_host, ansible_user
+          Missing required playbook variables: target_host, ansible_user, firedancer_version
 
     - name: Debug ansible_limit and target_host
       ansible.builtin.debug:

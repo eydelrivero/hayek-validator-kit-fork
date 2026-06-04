@@ -8,6 +8,11 @@
   when: not firedancer_cli_already_installed
   tags: [solana_cli_firedancer, install]
 
+- name: Install Agave companion binaries
+  import_tasks: install_agave_companion.yml
+  when: install_agave_companion | default(true) | bool
+  tags: [solana_cli_firedancer, install_agave_companion]
+
 - name: Verify Firedancer CLI installation is correct
   import_tasks: verify.yml
   when: not firedancer_cli_already_installed

@@ -1,0 +1,222 @@
+---
+# Install Agave companion binaries (agave-validator, solana) from the S3 binary
+# bucket alongside the Firedancer CLI. These are placed at the standard
+# /opt/solana/active_release path so existing monitoring and scripting tools
+# (agave-validator monitor, solana catchup, etc.) work without modification.
+#
+# Per Firedancer docs, agave-validator monitor connects to a running fdctl
+# process and provides the same startup-stage visibility as on Agave validators.
+#
+# The Firedancer-built solana binary (/usr/local/bin/solana) is NOT replaced.
+# Both binaries coexist: use /usr/local/bin/solana for Firedancer-specific ops,
+# /opt/solana/active_release/bin/solana for scripting compatibility.
+#
+# agave_version is auto-detected from the Firedancer submodule's Cargo.toml.
+# Pass -e "agave_version=X.Y.Z" to override. Pass
+# -e "install_agave_companion=false" to skip this task entirely.
+
+- name: install agave companion - detect host architecture
+  ansible.builtin.import_tasks: ../../common/tasks/set_host_architecture.yml
+
+# ── Auto-detect Agave version from Firedancer submodule ─────────────────────
+# The Firedancer repo clones its Agave consensus layer as a git submodule pinned
+# to a specific tagged Agave release. We read that version from the submodule's
+# Cargo.toml using the same grep pattern as
+# solana_cli_agave/tasks/install_from_source.yml:88.
+
+- name: install agave companion - set Firedancer build directory
+  ansible.builtin.set_fact:
+    _firedancer_build_dir: "{{ system_shared_build_dir }}/firedancer"
+
+- name: install agave companion - find Agave submodule path from .gitmodules
+  ansible.builtin.shell: |
+    git config --file .gitmodules --get-regexp '^submodule\..*\.path$' \
+      | grep -i agave | head -1 | awk '{print $2}'
+  args:
+    chdir: "{{ _firedancer_build_dir }}"
+    executable: /bin/bash
+  register: _agave_submodule_path
+  changed_when: false
+  become: true
+  failed_when: false
+
+- name: install agave companion - extract Agave version from submodule Cargo.toml
+  ansible.builtin.shell: |
+    grep '^version =' Cargo.toml | head -n1 | awk -F '"' '{print $2}'
+  args:
+    chdir: "{{ _firedancer_build_dir }}/{{ _agave_submodule_path.stdout | trim }}"
+    executable: /bin/bash
+  register: _agave_version_from_submodule
+  changed_when: false
+  become: true
+  when: _agave_submodule_path.stdout | trim | length > 0
+  failed_when: false
+
+- name: install agave companion - use auto-detected version when agave_version not provided
+  ansible.builtin.set_fact:
+    agave_version: "{{ _agave_version_from_submodule.stdout | trim }}"
+  when:
+    - agave_version is not defined or agave_version | string | trim | length == 0
+    - _agave_version_from_submodule.stdout is defined
+    - _agave_version_from_submodule.stdout | trim | length > 0
+
+- name: install agave companion - fail if agave_version cannot be determined
+  ansible.builtin.fail:
+    msg: >-
+      Cannot determine agave_version for companion install.
+      Auto-detection from the Firedancer submodule failed
+      (build dir: {{ _firedancer_build_dir }}).
+      Provide agave_version explicitly: -e "agave_version=X.Y.Z".
+      To skip the companion install: -e "install_agave_companion=false".
+  when: agave_version is not defined or agave_version | string | trim | length == 0
+
+- name: install agave companion - print auto-detected Agave version
+  ansible.builtin.debug:
+    msg: "Agave companion version: {{ agave_version }}"
+
+# ── Version check and install ────────────────────────────────────────────────
+
+- name: install agave companion - check installed version
+  ansible.builtin.command: "{{ system_solana_install_dir }}/active_release/bin/agave-validator --version"
+  register: _agave_companion_current
+  changed_when: false
+  failed_when: false
+
+- name: install agave companion - set install-needed flag
+  ansible.builtin.set_fact:
+    _agave_companion_needs_install: >-
+      {{ not (agave_version in (_agave_companion_current.stdout | default(''))) }}
+
+- name: install agave companion - download and install
+  when: _agave_companion_needs_install | bool
+  block:
+    - name: install agave companion - set S3 base URL
+      ansible.builtin.set_fact:
+        _agave_companion_s3_base: "{{ s3_release_base_url | default('https://solv-store.s3.us-east-1.amazonaws.com') }}"
+        _agave_companion_release_dir: "{{ system_solana_installed_releases_dir }}/v{{ agave_version }}"
+
+    - name: install agave companion - fetch manifest
+      ansible.builtin.uri:
+        url: "{{ _agave_companion_s3_base }}/manifests/solana-binary-manifest-v{{ agave_version }}.json"
+        method: GET
+        return_content: true
+        status_code:
+          - 200
+          - 404
+        timeout: 20
+      register: _agave_companion_manifest
+      changed_when: false
+      failed_when: false
+
+    - name: install agave companion - resolve URL from manifest
+      ansible.builtin.set_fact:
+        _agave_companion_download_url: >-
+          {{
+            (
+              ((_agave_companion_manifest.content | from_json).entries | default([])
+              | selectattr('client', 'equalto', 'agave')
+              | selectattr('version', 'equalto', agave_version)
+              | selectattr('arch', 'equalto', host_arch)
+              | list | first) | default({})
+            ).release_url | default(
+              (
+                ((_agave_companion_manifest.content | from_json).entries | default([])
+                | selectattr('client', 'equalto', 'agave')
+                | selectattr('version', 'equalto', agave_version)
+                | selectattr('arch', 'equalto', host_arch)
+                | list | first) | default({})
+              ).destination_url | default('')
+            )
+          }}
+        _agave_companion_checksum: >-
+          {{
+            'sha256:' ~ (
+              ((_agave_companion_manifest.content | from_json).entries | default([])
+              | selectattr('client', 'equalto', 'agave')
+              | selectattr('version', 'equalto', agave_version)
+              | selectattr('arch', 'equalto', host_arch)
+              | list | first) | default({})
+            ).sha256 | default('')
+            if (
+              ((_agave_companion_manifest.content | from_json).entries | default([])
+              | selectattr('client', 'equalto', 'agave')
+              | selectattr('version', 'equalto', agave_version)
+              | selectattr('arch', 'equalto', host_arch)
+              | list | first) | default({})
+            ).sha256 | default('') != ''
+            else ''
+          }}
+      when: _agave_companion_manifest.status | default(0) == 200
+
+    - name: install agave companion - fall back to direct S3 URL
+      ansible.builtin.set_fact:
+        _agave_companion_download_url: >-
+          {{ _agave_companion_s3_base }}/agave/releases/download/v{{ agave_version }}/solana-release-{{ host_arch }}.tar.bz2
+        _agave_companion_checksum: ""
+      when: _agave_companion_download_url | default('') == ''
+
+    - name: install agave companion - print download URL
+      ansible.builtin.debug:
+        msg: "Downloading Agave {{ agave_version }} companion from: {{ _agave_companion_download_url }}"
+
+    - name: install agave companion - ensure release directory exists
+      ansible.builtin.file:
+        path: "{{ _agave_companion_release_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "2755"
+      become: true
+
+    - name: install agave companion - download archive
+      ansible.builtin.get_url:
+        url: "{{ _agave_companion_download_url }}"
+        dest: "/tmp/agave-companion-v{{ agave_version }}-{{ host_arch }}.tar.bz2"
+        mode: "0644"
+        force: true
+        checksum: "{{ _agave_companion_checksum if _agave_companion_checksum != '' else omit }}"
+        timeout: 120
+      become: true
+      register: _agave_companion_archive
+      failed_when: false
+
+    - name: install agave companion - warn if binary not available in S3
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Agave {{ agave_version }} binary not found at
+          {{ _agave_companion_download_url }}.
+          The agave-validator binary will not be available for monitoring until
+          the binary is published to the S3 bucket. Re-run once published, or
+          pass -e "agave_version=X.Y.Z" to use an already-published version.
+          To suppress this step: -e "install_agave_companion=false".
+      when: _agave_companion_archive is failed
+
+    - name: install agave companion - unarchive
+      ansible.builtin.unarchive:
+        src: "{{ _agave_companion_archive.dest }}"
+        dest: "{{ _agave_companion_release_dir }}"
+        remote_src: true
+      become: true
+      when: _agave_companion_archive is succeeded
+
+    - name: install agave companion - create active_release symlink
+      ansible.builtin.file:
+        src: "{{ _agave_companion_release_dir }}/solana-release"
+        dest: "{{ system_solana_install_dir }}/active_release"
+        state: link
+        owner: root
+        group: root
+        force: true
+      become: true
+      when: _agave_companion_archive is succeeded
+
+- name: install agave companion - verify binary
+  ansible.builtin.command: "{{ system_solana_install_dir }}/active_release/bin/agave-validator --version"
+  register: _agave_companion_verify
+  changed_when: false
+  failed_when: false
+
+- name: install agave companion - print installed version
+  ansible.builtin.debug:
+    msg: "Agave companion: {{ _agave_companion_verify.stdout }}"
+  when: _agave_companion_verify.rc == 0

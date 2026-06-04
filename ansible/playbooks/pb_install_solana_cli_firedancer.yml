@@ -20,6 +20,12 @@
 #
 # Extended vars:
 # - firedancer_version (REQUIRED): Version of Firedancer to install (e.g. 0.910.40000).
+# - agave_version (OPTIONAL): Agave release to download from S3 as a companion binary set
+#   (agave-validator, solana). Auto-detected from the Firedancer submodule's Cargo.toml when
+#   not provided. Pass explicitly to override the auto-detected version (e.g. when it is not
+#   yet published to S3). Set install_agave_companion=false to skip the companion entirely.
+# - install_agave_companion (OPTIONAL): Set to false to skip the Agave companion install.
+#   Default: true.
 # - solana_cluster (OPTIONAL): Target Solana cluster for informational use. One of localnet, testnet, mainnet.
 
 - name: Install Firedancer CLI
