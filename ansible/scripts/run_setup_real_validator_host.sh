@@ -320,6 +320,7 @@ remote_total_disk_count() {
   local ansible_ssh_private_key_file=""
   local ansible_ssh_common_args=""
 
+  REMOTE_DISK_PROBE_TARGETS=()
   eval "$(resolve_host_ssh "$TARGET_HOST")"
   [[ -z "$ansible_host" ]] && return 1
   local inv_port="${ansible_port:-22}"
@@ -330,23 +331,42 @@ remote_total_disk_count() {
   # Single-line so quoting through ssh -> bash -lc stays simple.
   local detect='root_node=$(basename "$(readlink -f "$(findmnt -n -o SOURCE /)")"); while p=$(lsblk -ndo PKNAME "/dev/$root_node" 2>/dev/null | head -n1); [ -n "$p" ]; do root_node="$p"; done; c=$(lsblk -dn -o NAME,TYPE | while read -r n t; do [ "$t" = disk ] && [ "$n" != "$root_node" ] && echo x; done | wc -l); echo $((c+1))'
 
-  local -a candidates=(
-    "${BOOTSTRAP_USER}:${inv_port}"     # fresh run, pre-hardening
-    "${METAL_BOX_USER}:2522"            # post-hardening (resume-from-metal-box)
-    "${VALIDATOR_OPERATOR_USER}:2522"
-  )
+  # Try a deduped (user x port) matrix: the disk count is identical regardless of
+  # which login succeeds, so the first reachable candidate wins. This covers fresh
+  # hosts (sshd on :22) and hardened hosts (sshd on :2522) no matter the inventory
+  # port or which operator user can currently log in.
+  local -a users=("$BOOTSTRAP_USER" "$METAL_BOX_USER" "$VALIDATOR_OPERATOR_USER")
+  local -a ports=("$inv_port" 2522 22)
 
-  local cand user port out
-  for cand in "${candidates[@]}"; do
-    user="${cand%%:*}"
-    port="${cand##*:}"
+  local -a common_args=()
+  if [[ -n "$ansible_ssh_common_args" ]]; then
+    # shellcheck disable=SC2206
+    common_args=( $ansible_ssh_common_args )
+  fi
+
+  local -A seen=()
+  local user port target out
+  local -a ssh_cmd
+  for user in "${users[@]}"; do
     [[ -z "$user" ]] && continue
-    out="$(ssh -p "$port" -o BatchMode=yes -o ConnectTimeout=10 \
-      -o StrictHostKeyChecking=accept-new \
-      ${ansible_ssh_private_key_file:+-i "$ansible_ssh_private_key_file"} \
-      "${user}@${ansible_host}" "bash -lc $(printf '%q' "$detect")" 2>/dev/null)" || continue
-    out="$(printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n1)"
-    [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+    for port in "${ports[@]}"; do
+      [[ -z "$port" ]] && continue
+      target="${user}@${ansible_host}:${port}"
+      [[ -n "${seen[$target]:-}" ]] && continue
+      seen[$target]=1
+      REMOTE_DISK_PROBE_TARGETS+=("$target")
+
+      ssh_cmd=(ssh -p "$port"
+        -o BatchMode=yes -o ConnectTimeout=6
+        -o StrictHostKeyChecking=accept-new)
+      [[ -n "$ansible_ssh_private_key_file" ]] && ssh_cmd+=(-i "$ansible_ssh_private_key_file")
+      [[ ${#common_args[@]} -gt 0 ]] && ssh_cmd+=("${common_args[@]}")
+      ssh_cmd+=("${user}@${ansible_host}" "bash -lc $(printf '%q' "$detect")")
+
+      out="$("${ssh_cmd[@]}" 2>/dev/null)" || continue
+      out="$(printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n1)"
+      [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+    done
   done
   return 1
 }
@@ -501,20 +521,37 @@ maybe_autodetect_two_disk_layout() {
   [[ "$RESUME_FROM_VALIDATOR" == true || "$RESUME_FROM_MONITORING" == true ]] && return  # disk setup not re-run
 
   local total=""
-  if ! total="$(remote_total_disk_count)"; then
-    printf '%s[disk auto-detect] Could not inspect disks on %s; not enabling two-disk layout (pass --allow-unconventional-testnet-two-disk-layout to force).%s\n' \
-      "$COLOR_META" "$TARGET_HOST" "$COLOR_RESET" >&2
+  if total="$(remote_total_disk_count)"; then
+    if [[ "$total" == "2" ]]; then
+      ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
+      printf '%s[disk auto-detect] %s has 2 disks (1 root + 1 non-root) on testnet; enabling special two-disk layout.%s\n' \
+        "$COLOR_META" "$TARGET_HOST" "$COLOR_RESET"
+    else
+      printf '%s[disk auto-detect] %s has %s disks; using standard multi-disk layout.%s\n' \
+        "$COLOR_META" "$TARGET_HOST" "$total" "$COLOR_RESET"
+    fi
     return
   fi
 
-  if [[ "$total" == "2" ]]; then
-    ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
-    printf '%s[disk auto-detect] %s has 2 disks (1 root + 1 non-root) on testnet; enabling special two-disk layout.%s\n' \
-      "$COLOR_META" "$TARGET_HOST" "$COLOR_RESET"
-  else
-    printf '%s[disk auto-detect] %s has %s disks; using standard multi-disk layout.%s\n' \
-      "$COLOR_META" "$TARGET_HOST" "$total" "$COLOR_RESET"
+  # Probe could not reach the host on any candidate. Make it loud and offer a
+  # manual decision instead of silently failing at the role's 3-disk assertion.
+  printf '\n%s[disk auto-detect] WARNING: could not inspect disks on %s.%s\n' \
+    "$COLOR_SECTION" "$TARGET_HOST" "$COLOR_RESET" >&2
+  printf '%sTried: %s%s\n' \
+    "$COLOR_META" "${REMOTE_DISK_PROBE_TARGETS[*]:-none}" "$COLOR_RESET" >&2
+
+  if [[ -t 0 ]]; then
+    local reply=""
+    read -r -p "Enable the special testnet two-disk layout for $TARGET_HOST? [y/N] " reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+      ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
+      printf '%s[disk auto-detect] Two-disk layout enabled by operator.%s\n' \
+        "$COLOR_META" "$COLOR_RESET"
+      return
+    fi
   fi
+  printf '%s[disk auto-detect] Proceeding with standard layout. Re-run with --allow-unconventional-testnet-two-disk-layout to force the two-disk layout.%s\n' \
+    "$COLOR_META" "$COLOR_RESET" >&2
 }
 
 maybe_autodetect_two_disk_layout
