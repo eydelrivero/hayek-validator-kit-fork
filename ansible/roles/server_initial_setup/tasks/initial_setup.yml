@@ -28,6 +28,7 @@
       - hwloc
       - nvme-cli
       - logrotate
+      - jq          # JSON processor used by monitor + swap/verify/configure tasks
       - xfsprogs  # For XFS filesystem operations
     state: present
 

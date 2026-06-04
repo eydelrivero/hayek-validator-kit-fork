@@ -30,15 +30,16 @@ Options:
   --bootstrap-user <name>                   Required. Initial SSH user (typically ubuntu).
   --metal-box-user <name>                   Required. Sysadmin user for metal-box hardening.
   --validator-operator-user <name>          Required. Validator operator SSH user.
-  --users-csv-file <name>                   Required. Users CSV filename.
-  --users-base-dir <path>                   Required. Directory containing the users CSV.
-  --authorized-ips-csv-file <name>          Required. Authorized IP CSV filename.
-  --authorized-access-csv <path>            Required. Full path to the authorized IP CSV.
-  --validator-flavor <agave|jito-bam>       Required. Validator client flavor.
+  --users-csv <path>                        Required. Full path to the users CSV.
+  --authorized-ips-csv <path>               Required. Full path to the authorized IP CSV.
+  --validator-flavor <agave|jito-bam|frankendancer>
+                                            Required. Validator client flavor.
   --validator-name <name>                   Required. Validator keyset name.
   --validator-type <primary|hot-spare>      Optional. Defaults to playbook/role default.
   --solana-cluster <name>                   Required. Cluster name, e.g. testnet.
-  --agave-version <version>                 Optional. Agave version.
+  --agave-version <version>                 Optional. Agave version (agave/jito-bam flavors).
+                                            For frankendancer: auto-detected from submodule; use to override.
+  --firedancer-version <version>            Required for frankendancer. Firedancer version (e.g. 0.1001.40101).
   --jito-version <version>                  Optional. Jito version.
   --jito-version-patch <value>              Optional. Jito patch suffix/version patch.
   --solana-validator-ha-version <version>   Optional. HA binary version.
@@ -46,7 +47,9 @@ Options:
   --resume-from-validator                   Optional. Skip directly to validator + HA setup.
   --resume-from-monitoring                  Optional. Skip directly to validator startup monitoring.
   --allow-unconventional-testnet-two-disk-layout
-                                            Optional. Enable the special testnet two-disk mode.
+                                            Optional. Force the special testnet two-disk mode.
+                                            Auto-detected when the host has 1 root + 1 non-root
+                                            disk on testnet; use this only to force it.
   --build-from-source <true|false>          Optional. Passed through to the playbook.
   --use-official-repo <true|false>          Optional. Passed through to the playbook.
   --monitor-interval <seconds>              Optional. Poll interval for startup monitoring (default: 20).
@@ -60,10 +63,8 @@ Examples:
     --bootstrap-user ubuntu \
     --metal-box-user eydel_admin \
     --validator-operator-user eydel \
-    --users-csv-file iam_setup_prod.csv \
-    --users-base-dir "$HOME/new-metal-box" \
-    --authorized-ips-csv-file authorized_ips_prod.csv \
-    --authorized-access-csv "$HOME/new-metal-box/authorized_ips_prod.csv" \
+    --users-csv "$HOME/new-metal-box/iam_setup_prod.csv" \
+    --authorized-ips-csv "$HOME/new-metal-box/authorized_ips_prod.csv" \
     --validator-flavor jito-bam \
     --validator-name hayek-testnet \
     --validator-type hot-spare \
@@ -71,8 +72,7 @@ Examples:
     --jito-version 4.0.0-beta.4 \
     --build-from-source true \
     --use-official-repo true \
-    --solana-validator-ha-version 0.1.19 \
-    --allow-unconventional-testnet-two-disk-layout
+    --solana-validator-ha-version 0.1.19
 EOF
 }
 
@@ -92,15 +92,14 @@ HOST_NAME=""
 BOOTSTRAP_USER=""
 METAL_BOX_USER=""
 VALIDATOR_OPERATOR_USER=""
-USERS_CSV_FILE=""
-USERS_BASE_DIR=""
-AUTHORIZED_IPS_CSV_FILE=""
-AUTHORIZED_ACCESS_CSV=""
+USERS_CSV=""
+AUTHORIZED_IPS_CSV=""
 VALIDATOR_FLAVOR=""
 VALIDATOR_NAME=""
 VALIDATOR_TYPE=""
 SOLANA_CLUSTER=""
 AGAVE_VERSION=""
+FIREDANCER_VERSION=""
 JITO_VERSION=""
 JITO_VERSION_PATCH=""
 SOLANA_VALIDATOR_HA_VERSION=""
@@ -138,20 +137,12 @@ while (($# > 0)); do
       VALIDATOR_OPERATOR_USER="${2:-}"
       shift 2
       ;;
-    --users-csv-file)
-      USERS_CSV_FILE="${2:-}"
+    --users-csv)
+      USERS_CSV="${2:-}"
       shift 2
       ;;
-    --users-base-dir)
-      USERS_BASE_DIR="${2:-}"
-      shift 2
-      ;;
-    --authorized-ips-csv-file)
-      AUTHORIZED_IPS_CSV_FILE="${2:-}"
-      shift 2
-      ;;
-    --authorized-access-csv)
-      AUTHORIZED_ACCESS_CSV="${2:-}"
+    --authorized-ips-csv)
+      AUTHORIZED_IPS_CSV="${2:-}"
       shift 2
       ;;
     --validator-flavor)
@@ -172,6 +163,10 @@ while (($# > 0)); do
       ;;
     --agave-version)
       AGAVE_VERSION="${2:-}"
+      shift 2
+      ;;
+    --firedancer-version)
+      FIREDANCER_VERSION="${2:-}"
       shift 2
       ;;
     --jito-version)
@@ -231,13 +226,18 @@ require_arg --target-host "$TARGET_HOST"
 require_arg --bootstrap-user "$BOOTSTRAP_USER"
 require_arg --metal-box-user "$METAL_BOX_USER"
 require_arg --validator-operator-user "$VALIDATOR_OPERATOR_USER"
-require_arg --users-csv-file "$USERS_CSV_FILE"
-require_arg --users-base-dir "$USERS_BASE_DIR"
-require_arg --authorized-ips-csv-file "$AUTHORIZED_IPS_CSV_FILE"
-require_arg --authorized-access-csv "$AUTHORIZED_ACCESS_CSV"
+require_arg --users-csv "$USERS_CSV"
+require_arg --authorized-ips-csv "$AUTHORIZED_IPS_CSV"
 require_arg --validator-flavor "$VALIDATOR_FLAVOR"
 require_arg --validator-name "$VALIDATOR_NAME"
 require_arg --solana-cluster "$SOLANA_CLUSTER"
+
+# The roles still consume the CSV path as a filename + directory (iam_manager) and as
+# a full path (server_initial_setup), so derive those pieces from the single-path flags.
+USERS_CSV_FILE="$(basename "$USERS_CSV")"
+USERS_BASE_DIR="$(dirname "$USERS_CSV")"
+AUTHORIZED_ACCESS_CSV="$AUTHORIZED_IPS_CSV"
+AUTHORIZED_IPS_CSV_FILE="$(basename "$AUTHORIZED_IPS_CSV")"
 
 if ! [[ "$MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || [[ "$MONITOR_INTERVAL" -lt 1 ]]; then
   echo "--monitor-interval must be a positive integer" >&2
@@ -270,6 +270,9 @@ fi
 if [[ -n "$AGAVE_VERSION" ]]; then
   COMMON_ARGS+=(-e "agave_version=$AGAVE_VERSION")
 fi
+if [[ -n "$FIREDANCER_VERSION" ]]; then
+  COMMON_ARGS+=(-e "firedancer_version=$FIREDANCER_VERSION")
+fi
 if [[ -n "$JITO_VERSION" ]]; then
   COMMON_ARGS+=(-e "jito_version=$JITO_VERSION")
 fi
@@ -285,9 +288,8 @@ fi
 if [[ -n "$USE_OFFICIAL_REPO" ]]; then
   COMMON_ARGS+=(-e "use_official_repo=$USE_OFFICIAL_REPO")
 fi
-if [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == true ]]; then
-  COMMON_ARGS+=(-e "allow_unconventional_testnet_two_disk_layout=true")
-fi
+# allow_unconventional_testnet_two_disk_layout is appended later, after
+# maybe_autodetect_two_disk_layout has had a chance to enable it.
 
 cd "$ANSIBLE_DIR"
 
@@ -309,6 +311,68 @@ for key in (
     value = data.get(key, "")
     print(f"{key}={shlex.quote(str(value))}")
 '
+}
+
+remote_total_disk_count() {
+  local ansible_host=""
+  local ansible_port=""
+  local ansible_user=""
+  local ansible_ssh_private_key_file=""
+  local ansible_ssh_common_args=""
+
+  eval "$(resolve_host_ssh "$TARGET_HOST")"
+  [[ -z "$ansible_host" ]] && return 1
+  local inv_port="${ansible_port:-22}"
+  [[ -z "$inv_port" ]] && inv_port=22
+
+  # Mirrors server_initial_setup precheck: resolve the root disk, then count
+  # whole disks (lsblk TYPE==disk) excluding it. Total = non-root + 1.
+  # Single-line so quoting through ssh -> bash -lc stays simple.
+  local detect='root_node=$(basename "$(readlink -f "$(findmnt -n -o SOURCE /)")"); while p=$(lsblk -ndo PKNAME "/dev/$root_node" 2>/dev/null | head -n1); [ -n "$p" ]; do root_node="$p"; done; c=$(lsblk -dn -o NAME,TYPE | while read -r n t; do [ "$t" = disk ] && [ "$n" != "$root_node" ] && echo x; done | wc -l); echo $((c+1))'
+
+  local -a candidates=(
+    "${BOOTSTRAP_USER}:${inv_port}"     # fresh run, pre-hardening
+    "${METAL_BOX_USER}:2522"            # post-hardening (resume-from-metal-box)
+    "${VALIDATOR_OPERATOR_USER}:2522"
+  )
+
+  local cand user port out
+  for cand in "${candidates[@]}"; do
+    user="${cand%%:*}"
+    port="${cand##*:}"
+    [[ -z "$user" ]] && continue
+    out="$(ssh -p "$port" -o BatchMode=yes -o ConnectTimeout=10 \
+      -o StrictHostKeyChecking=accept-new \
+      ${ansible_ssh_private_key_file:+-i "$ansible_ssh_private_key_file"} \
+      "${user}@${ansible_host}" "bash -lc $(printf '%q' "$detect")" 2>/dev/null)" || continue
+    out="$(printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n1)"
+    [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+  done
+  return 1
+}
+
+ssh_login_hint() {
+  local user="$1"
+  local force_port="${2:-}"
+  local ansible_host=""
+  local ansible_port=""
+  local ansible_user=""
+  local ansible_ssh_private_key_file=""
+  local ansible_ssh_common_args=""
+
+  eval "$(resolve_host_ssh "$TARGET_HOST")"
+
+  local port="${force_port:-${ansible_port:-22}}"
+  [[ -z "$port" ]] && port=22
+
+  # No -i: the inventory key is the automation key, not the operators' personal keys.
+  printf 'ssh -p %s %s@%s' "$port" "$user" "${ansible_host:-<host-unresolved>}"
+}
+
+announce_become_user() {
+  local user="$1"
+  printf '%sThis stage runs as %s and will prompt for %s'\''s sudo (BECOME) password.%s\n' \
+    "$COLOR_META" "$user" "$user" "$COLOR_RESET"
 }
 
 run_remote_command() {
@@ -411,7 +475,7 @@ monitor_validator_startup() {
   printf '%sPress Ctrl+C to stop monitoring.%s\n\n' "$COLOR_META" "$COLOR_RESET"
   while true; do
     printf '%s[%s] getIdentity%s\n' "$COLOR_SECTION" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$COLOR_RESET"
-    run_remote_command "curl -s http://127.0.0.1:8899 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getIdentity\"}' | jq . || true"
+    run_remote_command "curl -s http://127.0.0.1:8899 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getIdentity\"}' | { jq . 2>/dev/null || cat; } || true"
 
     printf '\n%s[%s] catchup%s\n' "$COLOR_SECTION" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$COLOR_RESET"
     run_remote_command "sudo -u sol HOME=/home/sol ${remote_solana_bin_dir}/solana -ut catchup --our-localhost 8899 || true"
@@ -431,8 +495,37 @@ if [[ "$RESUME_FROM_METAL_BOX" == true && "$RESUME_FROM_VALIDATOR" == true ]] \
   exit 2
 fi
 
+maybe_autodetect_two_disk_layout() {
+  [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == true ]] && return   # operator forced it
+  [[ "$SOLANA_CLUSTER" != "testnet" ]] && return                            # flag only valid on testnet
+  [[ "$RESUME_FROM_VALIDATOR" == true || "$RESUME_FROM_MONITORING" == true ]] && return  # disk setup not re-run
+
+  local total=""
+  if ! total="$(remote_total_disk_count)"; then
+    printf '%s[disk auto-detect] Could not inspect disks on %s; not enabling two-disk layout (pass --allow-unconventional-testnet-two-disk-layout to force).%s\n' \
+      "$COLOR_META" "$TARGET_HOST" "$COLOR_RESET" >&2
+    return
+  fi
+
+  if [[ "$total" == "2" ]]; then
+    ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=true
+    printf '%s[disk auto-detect] %s has 2 disks (1 root + 1 non-root) on testnet; enabling special two-disk layout.%s\n' \
+      "$COLOR_META" "$TARGET_HOST" "$COLOR_RESET"
+  else
+    printf '%s[disk auto-detect] %s has %s disks; using standard multi-disk layout.%s\n' \
+      "$COLOR_META" "$TARGET_HOST" "$total" "$COLOR_RESET"
+  fi
+}
+
+maybe_autodetect_two_disk_layout
+
+if [[ "$ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT" == true ]]; then
+  COMMON_ARGS+=(-e "allow_unconventional_testnet_two_disk_layout=true")
+fi
+
 if [[ "$RESUME_FROM_METAL_BOX" == true ]]; then
   echo "== Resuming real validator host bootstrap from metal-box =="
+  announce_become_user "$METAL_BOX_USER"
   ansible-playbook -K "${COMMON_ARGS[@]}" \
     -e "validator_host_bootstrap_start_at=metal_box" \
     -e "password_handoff_mode=assume_ready"
@@ -443,7 +536,8 @@ if [[ "$RESUME_FROM_METAL_BOX" == true ]]; then
     echo "The validator setup will reuse the same sudo password for $VALIDATOR_OPERATOR_USER."
   else
     echo "Metal-box stage finished."
-    echo "Before validator setup, SSH as $VALIDATOR_OPERATOR_USER and run:"
+    echo "Before validator setup, SSH in and run the password reset:"
+    echo "  $(ssh_login_hint "$VALIDATOR_OPERATOR_USER" 2522)"
     echo "  sudo reset-my-password"
     echo "Then confirm:"
     echo "  sudo -v"
@@ -453,6 +547,7 @@ if [[ "$RESUME_FROM_METAL_BOX" == true ]]; then
 
   echo
   echo "== Phase 3: validator + HA =="
+  announce_become_user "$VALIDATOR_OPERATOR_USER"
   ansible-playbook -K "${COMMON_ARGS[@]}" \
     -e "validator_host_bootstrap_start_at=validator" \
     -e "password_handoff_mode=assume_ready"
@@ -463,6 +558,7 @@ fi
 
 if [[ "$RESUME_FROM_VALIDATOR" == true ]]; then
   echo "== Resuming real validator host bootstrap from validator =="
+  announce_become_user "$VALIDATOR_OPERATOR_USER"
   ansible-playbook -K "${COMMON_ARGS[@]}" \
     -e "validator_host_bootstrap_start_at=validator" \
     -e "password_handoff_mode=assume_ready"
@@ -482,13 +578,13 @@ ansible-playbook "${COMMON_ARGS[@]}"
 echo
 echo "Phase 1 finished."
 echo "Complete the manual password handoff now:"
-echo "  1. SSH as $METAL_BOX_USER"
+echo "  1. SSH in: $(ssh_login_hint "$METAL_BOX_USER")"
 echo "  2. Run: sudo reset-my-password"
 echo "  3. Verify: sudo -v"
 if [[ "$METAL_BOX_USER" != "$VALIDATOR_OPERATOR_USER" ]]; then
   echo
   echo "Then also prepare the validator operator sudo password:"
-  echo "  4. SSH as $VALIDATOR_OPERATOR_USER"
+  echo "  4. SSH in: $(ssh_login_hint "$VALIDATOR_OPERATOR_USER")"
   echo "  5. Run: sudo reset-my-password"
   echo "  6. Verify: sudo -v"
 fi
@@ -497,6 +593,7 @@ read -r -p "Press Enter when the manual password handoff is complete..."
 
 echo
 echo "== Phase 2: metal-box =="
+announce_become_user "$METAL_BOX_USER"
 ansible-playbook -K "${COMMON_ARGS[@]}" \
   -e "validator_host_bootstrap_start_at=metal_box" \
   -e "password_handoff_mode=assume_ready"
@@ -507,7 +604,8 @@ if [[ "$METAL_BOX_USER" == "$VALIDATOR_OPERATOR_USER" ]]; then
   echo "The validator setup will reuse the same sudo password for $VALIDATOR_OPERATOR_USER."
 else
   echo "Metal-box stage finished."
-  echo "If you have not already done so, SSH as $VALIDATOR_OPERATOR_USER and run:"
+  echo "If you have not already done so, SSH in and run the password reset:"
+  echo "  $(ssh_login_hint "$VALIDATOR_OPERATOR_USER" 2522)"
   echo "  sudo reset-my-password"
   echo "Then confirm:"
   echo "  sudo -v"
@@ -517,6 +615,7 @@ read -r -p "Press Enter when the validator-operator password handoff is complete
 
 echo
 echo "== Phase 3: validator + HA =="
+announce_become_user "$VALIDATOR_OPERATOR_USER"
 ansible-playbook -K "${COMMON_ARGS[@]}" \
   -e "validator_host_bootstrap_start_at=validator" \
   -e "password_handoff_mode=assume_ready"
