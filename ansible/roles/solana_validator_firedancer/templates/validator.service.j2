@@ -12,6 +12,7 @@ UMask=0002
 LimitNOFILE=1000000
 LimitMEMLOCK=infinity
 LogRateLimitIntervalSec=0
+ExecStartPre=/usr/local/bin/fdctl configure init all --config {{ firedancer_config_path }}
 ExecStart=/usr/local/bin/fdctl run --config {{ firedancer_config_path }}
 
 [Install]

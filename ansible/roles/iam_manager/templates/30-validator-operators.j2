@@ -14,6 +14,7 @@
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart {{ validator_service }}
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cron
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cron
+%validator_operators ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 
 # Process management
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/pkill -f {{ validator_service }}
@@ -182,6 +183,7 @@
 # Key management
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/solana-keygen
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/agave-validator
+%validator_operators ALL=(ALL) NOPASSWD: /usr/local/bin/fdctl
 
 # Monitoring and debugging
 %validator_operators ALL=(ALL) NOPASSWD: /usr/bin/strace -p
