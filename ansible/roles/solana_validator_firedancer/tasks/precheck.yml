@@ -25,6 +25,18 @@
       - expected_genesis_hash is defined
     fail_msg: "expected_genesis_hash must be defined"
 
+- name: precheck - Validate Jito bundle vars when frankendancer_jito_enabled
+  ansible.builtin.assert:
+    that:
+      - jito_tip_payment_program_pubkey | default('') | length > 0
+      - jito_tip_distribution_program_pubkey | default('') | length > 0
+      - jito_merkle_root_upload_authority | default('') | length > 0
+    fail_msg: >-
+      frankendancer_jito_enabled=true requires jito_tip_payment_program_pubkey,
+      jito_tip_distribution_program_pubkey and jito_merkle_root_upload_authority
+      (normally provided by group_vars/solana_<cluster>.yml).
+  when: frankendancer_jito_enabled | default(false) | bool
+
 - name: precheck - Gather facts for localhost
   ansible.builtin.setup:
   delegate_to: localhost

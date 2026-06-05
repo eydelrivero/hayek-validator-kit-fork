@@ -53,7 +53,12 @@ argument_specs:
       block_engine_url:
         type: str
         required: false
-        description: "Jito block engine URL (required when frankendancer_jito_enabled=true)"
+        description: >-
+          Jito block engine URL for the [tiles.bundle] section. When
+          frankendancer_jito_enabled=true and this is unset, it is auto-derived
+          from the host's BAM region (jito_{{ solana_cluster }}_bam_region ->
+          jito_bam_endpoints[region].block_engine_url). Set explicitly only to
+          force a specific endpoint.
       jito_tip_payment_program_pubkey:
         type: str
         required: false

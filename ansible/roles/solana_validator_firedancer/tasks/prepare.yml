@@ -1,4 +1,31 @@
 ---
+- name: prepare - Resolve Jito BAM block engine URL for Frankendancer bundle
+  when: frankendancer_jito_enabled | default(false) | bool
+  block:
+    - name: prepare - Build Jito BAM region key
+      ansible.builtin.set_fact:
+        jito_bam_region_key: "jito_{{ solana_cluster }}_bam_region"
+
+    - name: prepare - Resolve Jito BAM target region for this host
+      ansible.builtin.set_fact:
+        jito_target_bam_region: "{{ hostvars[inventory_hostname][jito_bam_region_key] | default('') }}"
+
+    - name: prepare - Require BAM region assignment
+      ansible.builtin.fail:
+        msg: "Host {{ inventory_hostname }} must be in a BAM region group (city_dal, city_lax, ...) when frankendancer_jito_enabled=true"
+      when: jito_target_bam_region == ''
+
+    - name: prepare - Verify BAM endpoint mapping exists
+      ansible.builtin.assert:
+        that:
+          - jito_bam_endpoints is defined
+          - jito_bam_endpoints[jito_target_bam_region] is defined
+        fail_msg: "No Jito BAM endpoint mapping for region '{{ jito_target_bam_region }}'."
+
+    - name: prepare - Set block_engine_url from region mapping (allow explicit override)
+      ansible.builtin.set_fact:
+        block_engine_url: "{{ block_engine_url | default(jito_bam_endpoints[jito_target_bam_region].block_engine_url) }}"
+
 - name: prepare - Stop validator service
   block:
     - name: prepare - Check if validator service exists and is running
