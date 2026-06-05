@@ -52,6 +52,10 @@ Options:
                                             disk on testnet; use this only to force it.
   --build-from-source <true|false>          Optional. Passed through to the playbook.
   --use-official-repo <true|false>          Optional. Passed through to the playbook.
+  --firedancer-park-ht-siblings-on-start <true|false>
+                                            Optional (frankendancer). Auto-offline the HT siblings
+                                            firedancer flags, as an ExecStartPost on each start.
+                                            Default false (park manually with the deployed script).
   --monitor-interval <seconds>              Optional. Poll interval for startup monitoring (default: 20).
   -h, --help                                Show this help.
 
@@ -105,6 +109,7 @@ JITO_VERSION_PATCH=""
 SOLANA_VALIDATOR_HA_VERSION=""
 BUILD_FROM_SOURCE=""
 USE_OFFICIAL_REPO=""
+FIREDANCER_PARK_HT_SIBLINGS_ON_START=""
 ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=false
 RESUME_FROM_METAL_BOX=false
 RESUME_FROM_VALIDATOR=false
@@ -187,6 +192,10 @@ while (($# > 0)); do
       ;;
     --use-official-repo)
       USE_OFFICIAL_REPO="${2:-}"
+      shift 2
+      ;;
+    --firedancer-park-ht-siblings-on-start)
+      FIREDANCER_PARK_HT_SIBLINGS_ON_START="${2:-}"
       shift 2
       ;;
     --allow-unconventional-testnet-two-disk-layout)
@@ -287,6 +296,9 @@ if [[ -n "$BUILD_FROM_SOURCE" ]]; then
 fi
 if [[ -n "$USE_OFFICIAL_REPO" ]]; then
   COMMON_ARGS+=(-e "use_official_repo=$USE_OFFICIAL_REPO")
+fi
+if [[ -n "$FIREDANCER_PARK_HT_SIBLINGS_ON_START" ]]; then
+  COMMON_ARGS+=(-e "firedancer_park_ht_siblings_on_start=$FIREDANCER_PARK_HT_SIBLINGS_ON_START")
 fi
 # allow_unconventional_testnet_two_disk_layout is appended later, after
 # maybe_autodetect_two_disk_layout has had a chance to enable it.

@@ -12,8 +12,16 @@ UMask=0002
 LimitNOFILE=1000000
 LimitMEMLOCK=infinity
 LogRateLimitIntervalSec=0
+# Firedancer truncates its log on boot, so archive the previous run before it does (the prior
+# process is already dead here, so this is an instant mv), then prune to the newest N archives.
+ExecStartPre=/bin/sh -c 'f="{{ validator_logs_dir }}/firedancer.log"; [ -s "$f" ] && mv -f "$f" "$f.$(date -u +%%Y%%m%%dT%%H%%M%%SZ).prev" || true'
+ExecStartPre=/bin/sh -c 'ls -1t "{{ validator_logs_dir }}"/firedancer.log.*.prev 2>/dev/null | tail -n +{{ (firedancer_log_prev_retain | int) + 1 }} | xargs -r rm -f'
 ExecStartPre=/usr/local/bin/fdctl configure init all --config {{ firedancer_config_path }}
 ExecStart=/usr/local/bin/fdctl run --config {{ firedancer_config_path }}
+{% if firedancer_park_ht_siblings_on_start | default(false) | bool %}
+# Opt-in: park the HT siblings firedancer flagged this boot (firedancer_park_ht_siblings_on_start=true).
+ExecStartPost=-{{ validator_scripts_dir }}/firedancer-park-ht-siblings.sh --park --wait 30
+{% endif %}
 
 [Install]
 WantedBy=multi-user.target

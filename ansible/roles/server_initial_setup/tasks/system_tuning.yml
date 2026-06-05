@@ -53,6 +53,32 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# Persistent journald with bounded retention. Firedancer truncates its own file log on boot,
+# so the systemd journal is the durable forensic record of validator crashes/restarts; the
+# default cap (~a few MB) is too small to survive an incident.
+- name: Ensure journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: manage_journald_retention | default(true) | bool
+
+- name: Configure persistent journald retention
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-hayek-retention.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible server_initial_setup.
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ journald_system_max_use | default('2G') }}
+  when: manage_journald_retention | default(true) | bool
+  notify: Restart systemd-journald
+
 # IPv6 deactivation
 - name: Upload IPv6 disable configuration
   ansible.builtin.copy:

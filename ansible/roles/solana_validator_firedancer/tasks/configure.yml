@@ -107,6 +107,15 @@
   become: true
   changed_when: true
 
+- name: configure - Deploy HT-sibling park/unpark script
+  ansible.builtin.template:
+    src: firedancer-park-ht-siblings.sh.j2
+    dest: "{{ validator_scripts_dir }}/firedancer-park-ht-siblings.sh"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "{{ validator_scripts_file_mode }}"
+  become: true
+
 - name: configure - Render validator systemd unit
   ansible.builtin.template:
     src: validator.service.j2

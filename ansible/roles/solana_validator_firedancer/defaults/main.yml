@@ -1,0 +1,9 @@
+---
+# Opt-in: run the HT-sibling park script automatically as ExecStartPost after each
+# firedancer (re)start. Off by default so operators keep manual control (the Firedancer
+# project deliberately stopped auto-offlining siblings). When false, run the script
+# manually after start: sudo {{ validator_scripts_dir }}/firedancer-park-ht-siblings.sh
+firedancer_park_ht_siblings_on_start: false
+
+# Number of archived pre-restart firedancer logs (firedancer.log.<ts>.prev) to retain.
+firedancer_log_prev_retain: 3

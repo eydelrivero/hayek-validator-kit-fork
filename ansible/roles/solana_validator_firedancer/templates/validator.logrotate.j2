@@ -12,3 +12,16 @@
   systemctl kill -s USR1 {{ validator_service_name }}.service
   endscript
 }
+
+# Pre-restart firedancer logs archived by the sol.service ExecStartPre (firedancer truncates its
+# log on boot). The unit already prunes to the newest {{ firedancer_log_prev_retain }} at each
+# restart; this stanza is a size/age backstop that compresses them and ages them out.
+{{ validator_logs_dir }}/firedancer.log.*.prev {
+  su root root
+  rotate {{ firedancer_log_prev_retain }}
+  maxage 14
+  compress
+  missingok
+  notifempty
+  nocreate
+}

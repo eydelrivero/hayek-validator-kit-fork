@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+# firedancer-park-ht-siblings.sh  (managed by Ansible: solana_validator_firedancer)
+#
+# Firedancer wants the hyperthread SIBLING of each core it pins (pack, pohh, ...) to be
+# OFFLINE so the tile gets a full physical core. `fdctl configure init hyperthreads` no
+# longer offlines them automatically (operators must do it manually, by design), so this
+# script does it at runtime.
+#
+# Detection is authoritative and on-demand: it runs `fdctl configure check all` (with its
+# log diverted to a throwaway file) and reads the lines firedancer emits:
+#   "... pack cpu 6 has hyperthread pair cpu 30 which should be offline ..."
+# extracting the SIBLING cpu numbers (here 30). Falls back to the boot log if fdctl can't
+# be run.
+#
+#   --park    (default)  Offline the sibling CPUs firedancer reports.
+#   --unpark             Bring every currently-offline CPU back online (use before
+#                        switching the host back to agave/jito).
+#
+# /sys CPU online state does not persist across reboot, so run --park after each
+# firedancer (re)start. Requires root (writes /sys/devices/system/cpu/cpuN/online, and
+# `fdctl configure check` must run as root or the configured sol user).
+#
+# NOTE: intentionally NOT using `set -e` — this is an ops script that must always report
+# what it did rather than exit silently on a non-zero helper command.
+
+set -uo pipefail
+
+LOG_FILE="{{ validator_logs_dir }}/firedancer.log"
+FD_CONFIG="{{ firedancer_config_path }}"
+FDCTL="/usr/local/bin/fdctl"
+MODE="park"
+DRY_RUN=false
+WAIT_SECS=0
+
+usage() {
+  echo "Usage: $0 [--park|--unpark] [--config <toml>] [--log-file <path>] [--wait <secs>] [--dry-run] [--debug]" >&2
+  exit "${1:-1}"
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --park)     MODE="park";   shift ;;
+    --unpark)   MODE="unpark"; shift ;;
+    --config)   FD_CONFIG="${2:-}"; shift 2 ;;
+    --log-file) LOG_FILE="${2:-}"; shift 2 ;;
+    --wait)     WAIT_SECS="${2:-0}"; shift 2 ;;
+    --dry-run)  DRY_RUN=true;  shift ;;
+    --debug)    set -x;        shift ;;
+    -h|--help)  usage 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage 1 ;;
+  esac
+done
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "ERROR: must run as root (writes /sys/.../cpu*/online and runs fdctl). Try sudo." >&2
+  exit 1
+fi
+
+CPU_ROOT="/sys/devices/system/cpu"
+TOTAL_CPUS="$(nproc --all)"
+
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+
+# CPUs the kernel isolated (isolcpus=) — never touch these; they belong to the agave layout.
+isolated_cpus() {
+  local cmdline isol
+  cmdline="$(cat /proc/cmdline 2>/dev/null)"
+  isol="$(printf '%s\n' "$cmdline" | grep -oE 'isolcpus=[^ ]+')"
+  printf '%s' "${isol#isolcpus=}" | tr ',' '\n' \
+    | grep -E '^[0-9]+(-[0-9]+)?$' \
+    | while IFS= read -r tok; do
+        if [[ "$tok" == *-* ]]; then seq "${tok%-*}" "${tok#*-}"; else echo "$tok"; fi
+      done | sort -un
+}
+
+is_online()  { [[ "$(cat "$CPU_ROOT/cpu$1/online" 2>/dev/null || echo 1)" == "1" ]]; }
+set_online() {
+  local cpu="$1" want="$2" f="$CPU_ROOT/cpu$cpu/online"
+  [[ -w "$f" ]] || { log "skip cpu$cpu: $f not writable"; return 0; }
+  if $DRY_RUN; then log "(dry-run) would set cpu$cpu online=$want"; return 0; fi
+  if echo "$want" >"$f" 2>/dev/null; then log "cpu$cpu online=$want"; else log "FAILED to set cpu$cpu online=$want"; fi
+}
+
+summary() {
+  local off; off="$(cat "$CPU_ROOT/offline" 2>/dev/null)"
+  log "online=$(nproc) of $TOTAL_CPUS total; offline=[${off:-none}]"
+}
+
+# Combined output of `fdctl configure check all` with the log diverted off the live file.
+fd_check_output() {
+  [[ -x "$FDCTL" && -r "$FD_CONFIG" ]] || return 0
+  local tmp; tmp="$(mktemp 2>/dev/null || echo "/tmp/fd-htcheck.$$.log")"
+  "$FDCTL" configure check all --config "$FD_CONFIG" --log-path "$tmp" 2>&1
+  rm -f "$tmp" 2>/dev/null
+}
+
+# Sibling CPUs firedancer wants offline. Primary: fdctl's own check; fallback: boot log head.
+# (Runs in a $() subshell, so it only emits the cpu list — diagnosis re-runs fd_check_output.)
+detect_siblings() {
+  local raw; raw="$(fd_check_output)"
+  if ! printf '%s' "$raw" | grep -q 'hyperthread pair cpu [0-9]'; then
+    raw="${raw}"$'\n'"$(head -n 3000 "$LOG_FILE" 2>/dev/null)"
+  fi
+  printf '%s\n' "$raw" | grep -oE 'hyperthread pair cpu [0-9]+' | grep -oE '[0-9]+$' | sort -un
+}
+
+do_park() {
+  local siblings waited=0
+  siblings="$(detect_siblings)"
+  while [[ -z "$siblings" && "$waited" -lt "$WAIT_SECS" ]]; do
+    sleep 1; waited=$((waited + 1)); siblings="$(detect_siblings)"
+  done
+
+  if [[ -z "$siblings" ]]; then
+    log "no HT siblings reported by fdctl/boot-log — nothing to park."
+    log "fdctl 'configure check all' said (first lines, for diagnosis):"
+    fd_check_output | grep -vE '^\s*$' | head -n 8 | sed 's/^/    /'
+    summary; return 0
+  fi
+
+  log "siblings to offline: $(printf '%s' "$siblings" | tr '\n' ' ')"
+  local count; count="$(printf '%s\n' "$siblings" | grep -c .)"
+  if (( count > TOTAL_CPUS / 2 )); then
+    echo "ERROR: refusing to offline $count CPUs (> half of $TOTAL_CPUS); detection looks wrong." >&2
+    exit 1
+  fi
+
+  local isol; isol="$(isolated_cpus)"
+  local cpu
+  for cpu in $siblings; do
+    if [[ "$cpu" == "0" ]]; then log "skip cpu0 (never offline boot CPU)"; continue; fi
+    if printf '%s\n' "$isol" | grep -qx "$cpu"; then
+      log "skip cpu$cpu (isolcpus core, owned by agave layout)"; continue
+    fi
+    if is_online "$cpu"; then set_online "$cpu" 0; else log "cpu$cpu already offline"; fi
+  done
+  summary
+}
+
+do_unpark() {
+  local cpu f
+  for ((cpu = 1; cpu < TOTAL_CPUS; cpu++)); do
+    f="$CPU_ROOT/cpu$cpu/online"
+    [[ -e "$f" ]] || continue
+    is_online "$cpu" || set_online "$cpu" 1
+  done
+  summary
+}
+
+log "mode=$MODE config=$FD_CONFIG dry_run=$DRY_RUN"
+case "$MODE" in
+  park)   do_park ;;
+  unpark) do_unpark ;;
+esac

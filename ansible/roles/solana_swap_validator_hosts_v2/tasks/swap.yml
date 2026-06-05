@@ -326,8 +326,14 @@
         - destination_client | default('agave') != 'firedancer'
 
     - name: swap - Switch to staked identity on destination (firedancer)
+      # --force and --require-tower are orthogonal: --force resets any partial key state left by an
+      # interrupted set-identity (firedancer-specific recovery; keep it as before), while
+      # --require-tower refuses promotion unless the transferred tower is present (mirrors the
+      # agave/jito branch, preventing a lockout-unsafe rebuild). Add the tower gate when a tower
+      # was rsynced from source.
       ansible.builtin.command: >-
         fdctl set-identity --config {{ firedancer_config_path }} --force
+        {{ '--require-tower' if (hostvars[destination_host]['source_tower_stat']['stat']['exists'] | default(false)) else '' }}
         {{ destination_host_primary_target_identity_path }}
       become: true
       when:
