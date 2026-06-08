@@ -117,7 +117,7 @@
         that:
           - (expected_shred_version | default(0) | int) > 0
         fail_msg: >-
-          xdp_experimental_retransmit_xdp_zero_copy resolved to an effective startup flag, but
+          xdp_zero_copy resolved to an effective startup flag, but
           expected_shred_version is not a positive integer. Set expected_shred_version explicitly
           or enable expected_shred_version_auto_detect=true.
       when:

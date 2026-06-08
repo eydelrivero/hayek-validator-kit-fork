@@ -439,6 +439,9 @@
         - { name: "xdp_short", arg: "--xdp" }
         - { name: "xdp_enable", arg: "--enable-xdp" }
         - { name: "xdp_enabled", arg: "--xdp-enabled" }
+        - { name: "xdp_cpu", arg: "--xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }}" }
+        - { name: "xdp_interface", arg: "--xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }} --xdp-interface {{ (((xdp_primary_iface | default('') | length) > 0) | ternary(xdp_primary_iface, 'lo')) | quote }}" }
+        - { name: "xdp_zero_copy", arg: "--xdp-zero-copy" }
         - { name: "exp_retransmit_cpu", arg: "--experimental-retransmit-xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }}" }
         - { name: "exp_retransmit_interface", arg: "--experimental-retransmit-xdp-cpu-cores {{ xdp_experimental_retransmit_xdp_cpu_cores | default(1) }} --experimental-retransmit-xdp-interface {{ (((xdp_primary_iface | default('') | length) > 0) | ternary(xdp_primary_iface, 'lo')) | quote }}" }
         - { name: "exp_retransmit_zero_copy", arg: "--experimental-retransmit-xdp-zero-copy" }
@@ -519,6 +522,48 @@
               (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_enabled') | map(attribute='rc') | first | default(1)) == 0
             )
           }}
+        xdp_flag_support_cpu: >-
+          {{
+            (
+              (
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_cpu') | map(attribute='stdout') | first | default(''))
+                ~ ' ' ~
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_cpu') | map(attribute='stderr') | first | default(''))
+              ) is not search('unexpected argument|found argument .*which wasn.t expected|unrecognized option|unknown argument')
+            )
+            and
+            (
+              (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_cpu') | map(attribute='rc') | first | default(1)) == 0
+            )
+          }}
+        xdp_flag_support_interface: >-
+          {{
+            (
+              (
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_interface') | map(attribute='stdout') | first | default(''))
+                ~ ' ' ~
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_interface') | map(attribute='stderr') | first | default(''))
+              ) is not search('unexpected argument|found argument .*which wasn.t expected|unrecognized option|unknown argument')
+            )
+            and
+            (
+              (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_interface') | map(attribute='rc') | first | default(1)) == 0
+            )
+          }}
+        xdp_flag_support_zero_copy: >-
+          {{
+            (
+              (
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_zero_copy') | map(attribute='stdout') | first | default(''))
+                ~ ' ' ~
+                (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_zero_copy') | map(attribute='stderr') | first | default(''))
+              ) is not search('unexpected argument|found argument .*which wasn.t expected|unrecognized option|unknown argument')
+            )
+            and
+            (
+              (xdp_flag_probe_results.results | selectattr('item.name', 'equalto', 'xdp_zero_copy') | map(attribute='rc') | first | default(1)) == 0
+            )
+          }}
         xdp_flag_support_exp_retransmit_cpu: >-
           {{
             (
@@ -573,14 +618,25 @@
 
     - name: xdp - Compute interface flag eligibility
       ansible.builtin.set_fact:
+        xdp_use_modern_flags: "{{ xdp_validator_version is version('4.1.0', '>=') }}"
         xdp_interface_flag_eligible: >-
           {{
             (xdp_primary_iface | default('') | length > 0)
             and (xdp_iface_present | bool)
             and (xdp_iface_driver_link_present | bool)
-            and (xdp_flag_support_exp_retransmit_interface | bool)
+            and (
+              (
+                (xdp_validator_version is version('4.1.0', '>='))
+                and (xdp_flag_support_interface | bool)
+              )
+              or
+              (
+                not (xdp_validator_version is version('4.1.0', '>='))
+                and (xdp_flag_support_exp_retransmit_interface | bool)
+              )
+            )
           }}
-        xdp_zero_copy_requested: "{{ xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool }}"
+        xdp_zero_copy_requested: "{{ (xdp_zero_copy | default(false) | bool) or (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool) }}"
 
     - name: xdp - Compute zero-copy safety
       ansible.builtin.set_fact:
@@ -600,10 +656,20 @@
         xdp_zero_copy_block_reason: >-
           {{
             'not_requested'
-            if not (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool)
+            if not (xdp_zero_copy_requested | default(false) | bool)
             else (
               'flag_unsupported'
-              if not (xdp_flag_support_exp_retransmit_zero_copy | bool)
+              if not (
+                (
+                  (xdp_use_modern_flags | default(false) | bool)
+                  and (xdp_flag_support_zero_copy | bool)
+                )
+                or
+                (
+                  not (xdp_use_modern_flags | default(false) | bool)
+                  and (xdp_flag_support_exp_retransmit_zero_copy | bool)
+                )
+              )
               else (
                 'physical_interface_unresolved'
                 if not ((xdp_primary_iface | default('') | length > 0) and (xdp_iface_present | bool) and (xdp_iface_driver_link_present | bool))
@@ -624,8 +690,18 @@
           }}
         xdp_zero_copy_effective: >-
           {{
-            (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool)
-            and (xdp_flag_support_exp_retransmit_zero_copy | bool)
+            (xdp_zero_copy_requested | default(false) | bool)
+            and (
+              (
+                (xdp_use_modern_flags | default(false) | bool)
+                and (xdp_flag_support_zero_copy | bool)
+              )
+              or
+              (
+                not (xdp_use_modern_flags | default(false) | bool)
+                and (xdp_flag_support_exp_retransmit_zero_copy | bool)
+              )
+            )
             and (xdp_zero_copy_interface_safe | bool)
             and not ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en'])) | map('lower') | list))
           }}
@@ -894,6 +970,9 @@
             or xdp_flag_support_short
             or xdp_flag_support_enable
             or xdp_flag_support_enabled
+            or xdp_flag_support_cpu
+            or xdp_flag_support_interface
+            or xdp_flag_support_zero_copy
             or xdp_flag_support_exp_retransmit_cpu
             or xdp_flag_support_exp_retransmit_interface
             or xdp_flag_support_exp_retransmit_zero_copy
@@ -921,18 +1000,27 @@
         xdp_params: >-
           {{
             (
-              ['--experimental-retransmit-xdp-cpu-cores ' ~ ((xdp_experimental_retransmit_xdp_cpu_cores | default(1)) | string)]
+              ['--xdp-cpu-cores ' ~ ((xdp_experimental_retransmit_xdp_cpu_cores | default(1)) | string)]
               +
-              (['--experimental-retransmit-xdp-interface ' ~ (xdp_primary_iface | string | quote)] if (xdp_interface_flag_eligible | bool) else [])
+              (['--xdp-interface ' ~ (xdp_primary_iface | string | quote)] if (xdp_interface_flag_eligible | bool) else [])
               +
-              (['--experimental-retransmit-xdp-zero-copy'] if (xdp_zero_copy_effective | bool) else [])
-            ) if ((xdp_skip_reasons | length == 0) and (xdp_flag_support_exp_retransmit_cpu | bool))
+              (['--xdp-zero-copy'] if (xdp_zero_copy_effective | bool) else [])
+            ) if ((xdp_skip_reasons | length == 0) and (xdp_use_modern_flags | bool) and (xdp_flag_support_cpu | bool))
+            else (
+              (
+                ['--experimental-retransmit-xdp-cpu-cores ' ~ ((xdp_experimental_retransmit_xdp_cpu_cores | default(1)) | string)]
+                +
+                (['--experimental-retransmit-xdp-interface ' ~ (xdp_primary_iface | string | quote)] if (xdp_interface_flag_eligible | bool) else [])
+                +
+                (['--experimental-retransmit-xdp-zero-copy'] if (xdp_zero_copy_effective | bool) else [])
+              ) if ((xdp_skip_reasons | length == 0) and (not (xdp_use_modern_flags | bool)) and (xdp_flag_support_exp_retransmit_cpu | bool))
             else (
               ['--xdp-mode ' ~ (xdp_mode | default('native'))] if ((xdp_skip_reasons | length == 0) and (xdp_flag_support_mode | bool))
               else (['--xdp'] if ((xdp_skip_reasons | length == 0) and (not xdp_flag_support_mode) and (xdp_flag_support_short | bool))
               else (['--enable-xdp'] if ((xdp_skip_reasons | length == 0) and (not xdp_flag_support_mode) and (not xdp_flag_support_short) and (xdp_flag_support_enable | bool))
               else (['--xdp-enabled'] if ((xdp_skip_reasons | length == 0) and (not xdp_flag_support_mode) and (not xdp_flag_support_short) and (not xdp_flag_support_enable) and (xdp_flag_support_enabled | bool))
               else [])))
+            )
             )
           }}
 
@@ -943,7 +1031,7 @@
 
     - name: xdp - Derive zero-copy startup status from params
       ansible.builtin.set_fact:
-        xdp_zero_copy_startup_enabled: "{{ (xdp_effective_enabled | bool) and ('--experimental-retransmit-xdp-zero-copy' in (xdp_params | default([]))) }}"
+        xdp_zero_copy_startup_enabled: "{{ (xdp_effective_enabled | bool) and (('--xdp-zero-copy' in (xdp_params | default([]))) or ('--experimental-retransmit-xdp-zero-copy' in (xdp_params | default([])))) }}"
 
     - name: xdp - Merge XDP params into extra_params
       ansible.builtin.set_fact:

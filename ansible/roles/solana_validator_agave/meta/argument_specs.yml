@@ -66,6 +66,16 @@ argument_specs:
         required: false
         default: ""
         description: "Optional network interface override for XDP preflight checks (auto-detect when empty)"
+      xdp_zero_copy:
+        type: bool
+        required: false
+        default: false
+        description: "Enable XDP zero-copy startup mode. On non-localnet clusters, also set expected_shred_version_auto_detect=true or expected_shred_version."
+      xdp_experimental_retransmit_xdp_zero_copy:
+        type: bool
+        required: false
+        default: false
+        description: "Deprecated alias for xdp_zero_copy; temporarily accepted for compatibility."
       xdp_numa_check_enabled:
         type: bool
         required: false

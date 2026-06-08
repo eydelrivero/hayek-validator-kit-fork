@@ -41,6 +41,9 @@
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - run_poh_cpu_affinity_fix (OPTIONAL): Pin validator process to specific CPU core to improve PoH stability.
 # - xdp_enabled (OPTIONAL): Enable or disable XDP flag injection in validator startup script (default is disabled).
+# - xdp_zero_copy (OPTIONAL): Enable XDP zero-copy startup mode (default is disabled). On non-localnet clusters,
+#   zero-copy requires either expected_shred_version_auto_detect=true or expected_shred_version=<positive_integer>.
+#   Legacy xdp_experimental_retransmit_xdp_zero_copy is deprecated but temporarily accepted as an alias.
 # - xdp_ring_config_enabled (OPTIONAL): Persist XDP NIC ring sizing before validator startup (default is disabled).
 # - xdp_ring_rx / xdp_ring_tx (OPTIONAL): RX/TX ring sizes used when xdp_ring_config_enabled=true (default 4096/4096).
 # - xdp_ring_interface (OPTIONAL): Interface override for ring sizing; defaults to the resolved XDP interface.
@@ -58,6 +61,19 @@
           - ansible_user is defined
         fail_msg: >
           Missing required playbook variables: target_host, ansible_user
+
+    - name: Assert XDP zero-copy shred version guardrail is configured
+      ansible.builtin.assert:
+        that:
+          - expected_shred_version_auto_detect | default(false) | bool or (expected_shred_version | default(0) | int) > 0
+        fail_msg: >-
+          XDP zero-copy on non-localnet clusters requires a shred-version guardrail.
+          Set expected_shred_version_auto_detect=true or expected_shred_version=<positive_integer>.
+          Use xdp_zero_copy=true for new runs; legacy xdp_experimental_retransmit_xdp_zero_copy is deprecated.
+      when:
+        - solana_cluster | default('') != "localnet"
+        - xdp_enabled | default(false) | bool
+        - (xdp_zero_copy | default(false) | bool) or (xdp_experimental_retransmit_xdp_zero_copy | default(false) | bool)
 
     - name: Debug ansible_limit and target_host
       ansible.builtin.debug:

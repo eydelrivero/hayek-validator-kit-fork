@@ -69,7 +69,7 @@
   ansible.builtin.set_fact:
     validator_startup_has_xdp: >-
       {{
-        (validator_startup_script.content | b64decode) is search('--xdp-mode|--xdp\\s|--enable-xdp|--xdp-enabled|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy')
+        (validator_startup_script.content | b64decode) is search('--xdp-mode|--xdp\\s|--enable-xdp|--xdp-enabled|--xdp-cpu-cores|--xdp-zero-copy|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy')
       }}
 
 - name: verify - Print XDP startup status

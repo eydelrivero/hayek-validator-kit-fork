@@ -91,10 +91,10 @@
       when: xdp_experimental_retransmit_xdp_cpu_cores is not defined
       tags: [xdp, xdp_preflight, xdp_validate]
 
-    - name: validate_xdp - Set default xdp_experimental_retransmit_xdp_zero_copy when undefined
+    - name: validate_xdp - Set default xdp_zero_copy when undefined
       ansible.builtin.set_fact:
-        xdp_experimental_retransmit_xdp_zero_copy: false
-      when: xdp_experimental_retransmit_xdp_zero_copy is not defined
+        xdp_zero_copy: false
+      when: xdp_zero_copy is not defined
       tags: [xdp, xdp_preflight, xdp_validate]
 
     - name: validate_xdp - Set default xdp_target_interface when undefined

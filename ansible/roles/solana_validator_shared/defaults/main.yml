@@ -4,6 +4,7 @@ validator_type: "hot-spare"
 xdp_enabled: false
 xdp_mode: "native"
 xdp_experimental_retransmit_xdp_cpu_cores: 1
+xdp_zero_copy: false
 xdp_experimental_retransmit_xdp_zero_copy: false
 xdp_target_interface: ""
 xdp_min_supported_version: "3.0.9"

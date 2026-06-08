@@ -56,7 +56,7 @@ fi
 STARTUP_SCRIPT="$(ls "${VALIDATOR_SCRIPTS_DIR}"/run-*.sh 2>/dev/null | head -n1 || true)"
 if [[ -n "${STARTUP_SCRIPT}" && -r "${STARTUP_SCRIPT}" ]]; then
   STARTUP_SCRIPT_PRESENT=1
-  if grep -Eq -- '--xdp-mode|--xdp($|[[:space:]])|--enable-xdp|--xdp-enabled|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy' "${STARTUP_SCRIPT}"; then
+  if grep -Eq -- '--xdp-mode|--xdp($|[[:space:]])|--enable-xdp|--xdp-enabled|--xdp-cpu-cores|--xdp-zero-copy|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy' "${STARTUP_SCRIPT}"; then
     STARTUP_FLAGS_PRESENT=1
   fi
 fi
@@ -65,7 +65,7 @@ VALIDATOR_PID="$(pgrep -f "agave-validator.*--identity" | head -n1 || true)"
 if [[ -n "${VALIDATOR_PID}" ]]; then
   VALIDATOR_RUNNING=1
   VALIDATOR_ARGS="$(ps -o args= -p "${VALIDATOR_PID}" 2>/dev/null || true)"
-  if [[ "${VALIDATOR_ARGS}" =~ (--xdp-mode|--xdp($|[[:space:]])|--enable-xdp|--xdp-enabled|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy) ]]; then
+  if [[ "${VALIDATOR_ARGS}" =~ (--xdp-mode|--xdp($|[[:space:]])|--enable-xdp|--xdp-enabled|--xdp-cpu-cores|--xdp-zero-copy|--experimental-retransmit-xdp-cpu-cores|--experimental-retransmit-xdp-zero-copy) ]]; then
     RUNTIME_FLAGS_PRESENT=1
   fi
 fi

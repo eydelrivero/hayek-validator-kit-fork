@@ -78,9 +78,9 @@ Default behavior:
 - No extra XDP variables are required.
 - XDP is default-off (`xdp_enabled=false`).
 - If `xdp_enabled=true` is requested explicitly and the host/binary support it, XDP params are injected into validator startup.
-- Current preference order is:
-  - `--experimental-retransmit-xdp-cpu-cores`
-  - `--experimental-retransmit-xdp-zero-copy` when enabled and accepted
+- Current preference order is version-aware:
+  - v4.1.0 and newer: `--xdp-cpu-cores`, optional `--xdp-interface`, and `--xdp-zero-copy` when enabled and accepted
+  - older supported versions, including v4.0.x: legacy `--experimental-retransmit-xdp-*` flags
   - fallback to older `--xdp-mode` / `--xdp` / `--enable-xdp` / `--xdp-enabled` flags only when needed
 - If unsupported, behavior is fail-open: validator setup/startup continues with explicit warnings and no XDP params injected.
 - When validator directory vars are available, the role also exports an XDP state snapshot to `{{ xdp_runtime_state_file_path }}` for monitoring.
@@ -93,8 +93,9 @@ Optional override variables:
   - `-e "xdp_mode=native"`
 - Tune experimental retransmit cores:
   - `-e "xdp_experimental_retransmit_xdp_cpu_cores=1"`
-- Toggle experimental zero-copy:
-  - `-e "xdp_experimental_retransmit_xdp_zero_copy=true"`
+- Toggle zero-copy:
+  - `-e "xdp_zero_copy=true"`
+  - Legacy alias `xdp_experimental_retransmit_xdp_zero_copy=true` is deprecated but temporarily accepted.
 - Force interface selection for XDP preflight checks:
   - `-e "xdp_target_interface=eno1"`
 - Toggle NUMA placement assessment:
@@ -111,8 +112,8 @@ XDP Validation Summary
 - Effective: True
 - Primary reason: none
 - All reasons: none
-- Computed params: --experimental-retransmit-xdp-cpu-cores 1 --experimental-retransmit-xdp-zero-copy
-- Validator version: 3.1.8
+- Computed params: --xdp-cpu-cores 1 --xdp-zero-copy
+- Validator version: 4.1.0
 - Kernel semver: 6.8.0
 - NUMA check: ok (none)
 - PoH core/node: 10/1
@@ -185,7 +186,7 @@ Interpretation:
 
 Practical guidance for teams:
 
-- `--experimental-retransmit-xdp-cpu-cores` takes CPU ids/list/ranges (`CPU_LIST`), not a count.
+- `--xdp-cpu-cores` and legacy `--experimental-retransmit-xdp-cpu-cores` take CPU ids/list/ranges (`CPU_LIST`), not a count.
   - Example: `1` means CPU id 1.
   - Example: `1,9-10` means CPU ids 1, 9, and 10.
 - Keep XDP core(s) and PoH core on different NUMA nodes when possible.
