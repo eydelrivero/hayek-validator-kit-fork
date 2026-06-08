@@ -10,7 +10,7 @@
 #            tower rebuild, dead slots, partitions, "behind by N slots")
 #
 # The validator log path and grep pattern are chosen per host from the
-# `solana_validator_ha_client` inventory variable (firedancer vs bam/jito/agave).
+# `validator_flavor` inventory variable (firedancer vs jito-bam/jito/agave).
 #
 # Ordering:
 #   * Backfill (recent history) from ALL sources is collected, then sorted by each
@@ -336,7 +336,7 @@ def label(host_name):
 
 def client(host_name):
     host_data = hostvars.get(host_name, {})
-    return host_data.get("solana_validator_ha_client") or ""
+    return host_data.get("validator_flavor") or ""
 
 print(f"HA_GROUP={quote(ha_group)}")
 print("HA_HOSTS=(" + " ".join(quote(host_name) for host_name in hosts) + ")")

@@ -23,8 +23,6 @@
 - name: Configure Solana Validator HA integration
   ansible.builtin.include_role:
     name: solana_validator_ha
-  vars:
-    solana_validator_ha_client: "firedancer"
   tags: [solana_validator_firedancer, solana_validator_ha]
 
 - name: handlers - Flush handlers before verification

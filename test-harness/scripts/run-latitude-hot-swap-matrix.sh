@@ -4,7 +4,7 @@
 # Provision two Latitude bare-metal hosts, run a hot-swap identity transfer
 # between them, verify the result, and tear both hosts down.
 #
-# Default matrix covers frankendancer swap cases that cannot run in QEMU VMs
+# Default matrix covers Frankendancer swap cases that cannot run in QEMU VMs
 # due to Firedancer's core/tile requirements.
 
 set -euo pipefail
@@ -72,8 +72,8 @@ Options:
   --retain-always                        Never tear down servers
 
 Cases run (all by default; filter with --case):
-  jito_bam_to_frankendancer  (jito-bam -> frankendancer)
-  frankendancer_to_jito_bam  (frankendancer -> jito-bam)
+  jito_bam_to_firedancer  (jito-bam -> firedancer)
+  firedancer_to_jito_bam  (firedancer -> jito-bam)
 EOF
 }
 
@@ -128,8 +128,8 @@ COMMON_ANSIBLE_EXTRA_VARS_ARGS=(
 )
 
 all_cases=(
-  "jito_bam_to_frankendancer:jito-bam:frankendancer"
-  "frankendancer_to_jito_bam:frankendancer:jito-bam"
+  "jito_bam_to_firedancer:jito-bam:firedancer"
+  "firedancer_to_jito_bam:firedancer:jito-bam"
 )
 
 if [[ -n "$CASE_FILTER" ]]; then
@@ -169,13 +169,13 @@ run_case() {
   #  1. Cross-case uniqueness: retained servers don't collide because RUN_ID:0:12 is always
   #     "latitude-hot" (same RUN_ID_PREFIX), so the scenario slug is the only differentiator.
   #  2. Names reflect what runs on each host — jito-bam source gets "jito-bam" in its name,
-  #     frankendancer destination gets "frankend", not the same "frankend" for both.
+  #     firedancer destination gets "firedanc", not the same prefix for both.
   #
   # Full matrix with --retain-always (all 4 servers live simultaneously):
-  #   jito_bam_to_frankendancer: hvk-<op>-hs-src-jito-bam-latitude-hot
-  #                              hvk-<op>-hs-dst-frankend-latitude-hot
-  #   frankendancer_to_jito_bam: hvk-<op>-hs-src-frankend-latitude-hot
-  #                              hvk-<op>-hs-dst-jito-bam-latitude-hot
+  #   jito_bam_to_firedancer: hvk-<op>-hs-src-jito-bam-latitude-hot
+  #                           hvk-<op>-hs-dst-firedanc-latitude-hot
+  #   firedancer_to_jito_bam: hvk-<op>-hs-src-firedanc-latitude-hot
+  #                           hvk-<op>-hs-dst-jito-bam-latitude-hot
   local _common_base_args=(
     --operator-name "$OPERATOR_NAME"
     --operator-ssh-public-key-file "$OPERATOR_SSH_PUBLIC_KEY_FILE"
@@ -390,10 +390,10 @@ OPERATOR_EOF
   echo "[latitude-hot-swap] Running common host setup for destination ($destination_flavor)..." >&2
   _run_common_setup "$destination_flavor" "${dst_common_args[@]}" "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" || return 1
 
-  # Derive client values for swap role
-  local source_client destination_client
-  source_client="$(_ha_client_for_flavor "$source_flavor")"
-  destination_client="$(_ha_client_for_flavor "$destination_flavor")"
+  # Client values for the swap role are the validator flavors themselves
+  # (single namespace; the swap/HA roles bucket firedancer-vs-rest internally).
+  local source_client="$source_flavor"
+  local destination_client="$destination_flavor"
 
   echo "[latitude-hot-swap] Running hot-swap playbook ($source_flavor -> $destination_flavor)..." >&2
   ansible-playbook \
@@ -441,16 +441,6 @@ _ensure_keyset() {
   echo "[latitude-hot-swap] Keypairs ready in $keyset_dir (primary shared from $shared_dir)" >&2
 }
 
-_ha_client_for_flavor() {
-  local flavor="$1"
-  case "$flavor" in
-    agave)           echo "agave" ;;
-    jito-bam)        echo "jito" ;;
-    frankendancer)   echo "firedancer" ;;
-    *) echo "agave" ;;
-  esac
-}
-
 # Run pb_setup_validator_host_common.yml for a given flavor.
 # Handles the full bootstrap: users → metal-box hardening → validator install → HA install.
 _run_common_setup() {
@@ -479,9 +469,9 @@ _run_common_setup() {
           "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
       fi
       ;;
-    frankendancer)
+    firedancer)
       ansible-playbook "${base_args[@]}" \
-        -e "validator_flavor=frankendancer" \
+        -e "validator_flavor=firedancer" \
         -e "firedancer_version=$FIREDANCER_VERSION" \
         -e "firedancer_xdp_zero_copy=$FIREDANCER_XDP_ZERO_COPY" \
         "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"

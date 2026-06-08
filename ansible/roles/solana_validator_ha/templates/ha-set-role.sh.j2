@@ -21,7 +21,7 @@ log() {
 usage() {
   cat <<'EOF' >&2
 Usage:
-  ha-set-role.sh --role <active|passive> --client <agave|jito|jito-solana|bam-client|firedancer> \
+  ha-set-role.sh --role <active|passive> --client <agave|jito|jito-bam|jito-shared|jito-cohosted|firedancer> \
     --identity-keyfile <path> --rpc-url <url> --tower-file <path> [--user <user>]
 EOF
   exit "${1:-1}"
@@ -57,7 +57,7 @@ parse_args() {
   esac
 
   case "${CONFIG[client]}" in
-    agave|jito|jito-solana|bam-client|firedancer) ;;
+    agave|jito|jito-bam|jito-shared|jito-cohosted|firedancer) ;;
     *) log ERROR "unsupported client: ${CONFIG[client]}"; usage 1 ;;
   esac
 }

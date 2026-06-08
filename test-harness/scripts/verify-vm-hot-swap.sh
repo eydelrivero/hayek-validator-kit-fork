@@ -203,8 +203,8 @@ Usage:
   verify-vm-hot-swap.sh --source-flavor <flavor> --destination-flavor <flavor> [options]
 
 Required:
-  --source-flavor <agave|jito-shared|jito-cohosted|jito-bam|frankendancer>
-  --destination-flavor <agave|jito-shared|jito-cohosted|jito-bam|frankendancer>
+  --source-flavor <agave|jito-shared|jito-cohosted|jito-bam|firedancer>
+  --destination-flavor <agave|jito-shared|jito-cohosted|jito-bam|firedancer>
 
 Optional:
   --run-id <id>
@@ -531,31 +531,12 @@ ensure_local_keyset() {
   cp -f "$hot_spare_source" "$target_dir/hot-spare-identity.json"
 }
 
-ha_client_for_flavor() {
-  local flavor="$1"
-  case "$flavor" in
-    agave)
-      printf '%s\n' "agave"
-      ;;
-    jito-shared|jito-cohosted|jito-bam)
-      printf '%s\n' "jito"
-      ;;
-    frankendancer)
-      printf '%s\n' "firedancer"
-      ;;
-    *)
-      echo "Unsupported HA client flavor: $flavor" >&2
-      exit 2
-      ;;
-  esac
-}
-
 expected_client_regex_for_flavor() {
   local flavor="$1"
   case "$flavor" in
     agave) echo 'client:(Solana|Agave)' ;;
     jito-shared|jito-cohosted|jito-bam) echo 'client:(JitoLabs|Bam)' ;;
-    frankendancer) echo 'Frankendancer' ;;
+    firedancer) echo 'Frankendancer' ;;
     *)
       echo "Unsupported flavor: $flavor" >&2
       exit 2
@@ -2335,7 +2316,7 @@ all:
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
       validator_keyset_name: ${SOURCE_VALIDATOR_KEYSET_NAME}
-      solana_validator_ha_client: $(ha_client_for_flavor "$SOURCE_FLAVOR")
+      validator_flavor: ${SOURCE_FLAVOR}
       solana_validator_ha_public_ip_value: ${VM_SOURCE_BRIDGE_IP:-$SOURCE_OPERATOR_HOST_EFFECTIVE}
       solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_SOURCE_NODE_ID}
       solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_SOURCE_PRIORITY}
@@ -2347,7 +2328,7 @@ all:
       ansible_ssh_common_args: "${SSH_COMMON_ARGS}"
       ansible_become: true
       validator_keyset_name: ${DESTINATION_VALIDATOR_KEYSET_NAME}
-      solana_validator_ha_client: $(ha_client_for_flavor "$DESTINATION_FLAVOR")
+      validator_flavor: ${DESTINATION_FLAVOR}
       solana_validator_ha_public_ip_value: ${VM_DESTINATION_BRIDGE_IP:-$DESTINATION_OPERATOR_HOST_EFFECTIVE}
       solana_validator_ha_node_id: ${SOLANA_VALIDATOR_HA_DESTINATION_NODE_ID}
       solana_validator_ha_priority: ${SOLANA_VALIDATOR_HA_DESTINATION_PRIORITY}
@@ -2487,10 +2468,10 @@ bootstrap_host_with_shared_flow() {
           "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
       fi
       ;;
-    frankendancer)
+    firedancer)
       ansible-playbook \
         "${base_args[@]}" \
-        -e "validator_flavor=frankendancer" \
+        -e "validator_flavor=firedancer" \
         -e "firedancer_version=$FIREDANCER_VERSION" \
         "$REPO_ROOT/ansible/playbooks/pb_setup_validator_host_common.yml"
       ;;
@@ -2574,7 +2555,7 @@ setup_host_flavor() {
           "$REPO_ROOT/ansible/playbooks/pb_setup_validator_jito_v2.yml"
       fi
       ;;
-    frankendancer)
+    firedancer)
       ansible-playbook \
         "${base_args[@]}" \
         "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
@@ -3540,8 +3521,8 @@ ansible-playbook \
   "${COMMON_ANSIBLE_EXTRA_VARS_ARGS[@]}" \
   -e "source_host=vm-source" \
   -e "destination_host=vm-destination" \
-  -e "source_client=$(ha_client_for_flavor "$SOURCE_FLAVOR")" \
-  -e "destination_client=$(ha_client_for_flavor "$DESTINATION_FLAVOR")" \
+  -e "source_client=$SOURCE_FLAVOR" \
+  -e "destination_client=$DESTINATION_FLAVOR" \
   -e "operator_user=$VALIDATOR_OPERATOR_USER" \
   -e "auto_confirm_swap=true" \
   -e "deprovision_source_host=false" \

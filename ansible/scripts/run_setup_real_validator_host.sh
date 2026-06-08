@@ -32,14 +32,14 @@ Options:
   --validator-operator-user <name>          Required. Validator operator SSH user.
   --users-csv <path>                        Required. Full path to the users CSV.
   --authorized-ips-csv <path>               Required. Full path to the authorized IP CSV.
-  --validator-flavor <agave|jito-bam|frankendancer>
+  --validator-flavor <agave|jito-bam|firedancer>
                                             Required. Validator client flavor.
   --validator-name <name>                   Required. Validator keyset name.
   --validator-type <primary|hot-spare>      Optional. Defaults to playbook/role default.
   --solana-cluster <name>                   Required. Cluster name, e.g. testnet.
   --agave-version <version>                 Optional. Agave version (agave/jito-bam flavors).
-                                            For frankendancer: auto-detected from submodule; use to override.
-  --firedancer-version <version>            Required for frankendancer. Firedancer version (e.g. 0.1001.40101).
+                                            For firedancer: auto-detected from submodule; use to override.
+  --firedancer-version <version>            Required for firedancer. Firedancer version (e.g. 0.1001.40101).
   --jito-version <version>                  Optional. Jito version.
   --jito-version-patch <value>              Optional. Jito patch suffix/version patch.
   --solana-validator-ha-version <version>   Optional. HA binary version.
@@ -53,7 +53,7 @@ Options:
   --build-from-source <true|false>          Optional. Passed through to the playbook.
   --use-official-repo <true|false>          Optional. Passed through to the playbook.
   --firedancer-park-ht-siblings-on-start <true|false>
-                                            Optional (frankendancer). Auto-offline the HT siblings
+                                            Optional (firedancer). Auto-offline the HT siblings
                                             firedancer flags, as an ExecStartPost on each start.
                                             Default false (park manually with the deployed script).
   --monitor-interval <seconds>              Optional. Poll interval for startup monitoring (default: 20).

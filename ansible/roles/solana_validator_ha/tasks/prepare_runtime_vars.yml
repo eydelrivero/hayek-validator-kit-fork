@@ -23,7 +23,7 @@
   ansible.builtin.set_fact:
     firedancer_config_path: "{{ validator_root_dir }}/config/{{ validator_name }}/firedancer.toml"
   when:
-    - solana_validator_ha_client == 'firedancer'
+    - validator_flavor == 'firedancer'
     - (firedancer_config_path | default('')) | string | trim | length == 0
 
 - name: solana_validator_ha - Assert explicit active and passive identity paths are configured

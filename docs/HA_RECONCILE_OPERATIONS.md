@@ -161,7 +161,7 @@ Inventory — add the third host definition and list all three in the retained g
 ari-lat-nyc:
   ansible_host: 203.0.113.40
   ansible_port: 2522
-  solana_validator_ha_client: firedancer
+  validator_flavor: firedancer
   solana_validator_ha_public_ip_value: 203.0.113.40
   solana_validator_ha_node_id: ari          # unique
   solana_validator_ha_priority: 20           # unique across the group

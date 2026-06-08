@@ -39,7 +39,7 @@ failover:
       - "--role"
       - "passive"
       - "--client"
-      - {{ solana_validator_ha_client | to_json }}
+      - {{ validator_flavor | to_json }}
       - "--rpc-url"
       - {{ solana_validator_ha_validator_rpc_url | to_json }}
       - "--identity-keyfile"
@@ -54,7 +54,7 @@ failover:
       - "--role"
       - "active"
       - "--client"
-      - {{ solana_validator_ha_client | to_json }}
+      - {{ validator_flavor | to_json }}
       - "--rpc-url"
       - {{ solana_validator_ha_validator_rpc_url | to_json }}
       - "--identity-keyfile"

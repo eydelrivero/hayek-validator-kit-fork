@@ -20,7 +20,7 @@ solana_validator_ha_public_ip_file_path: "{{ solana_validator_ha_config_dir }}/p
 solana_validator_ha_staged_config_path: "{{ solana_validator_ha_config_path }}.next"
 solana_validator_ha_staged_public_ip_file_path: "{{ solana_validator_ha_public_ip_file_path }}.next"
 solana_validator_ha_wrapper_script_path: "{{ validator_scripts_dir }}/ha-set-role.sh"
-solana_validator_ha_client: "agave"
+validator_flavor: "agave"
 solana_validator_ha_node_name: "{{ inventory_hostname }}"
 solana_validator_ha_node_id: ""
 solana_validator_ha_priority: ""

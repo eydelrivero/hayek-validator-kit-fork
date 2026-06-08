@@ -8,7 +8,7 @@
 #   follow-latitude-hot-swap.sh --workdir <case-dir> [options]
 #
 # The case-dir is the per-run directory created by run-latitude-hot-swap-matrix.sh,
-# e.g. test-harness/work/latitude-hot-swap/latitude-hot-swap-jito_bam_to_frankendancer-20260529-123456
+# e.g. test-harness/work/latitude-hot-swap/latitude-hot-swap-jito_bam_to_firedancer-20260529-123456
 # It must contain operator-inventory.yml.
 
 set -euo pipefail
@@ -38,20 +38,20 @@ Options:
   --workdir <path>            Per-run case directory (contains operator-inventory.yml).
                               Client types are auto-detected from the directory name.
   --inventory <path>          Explicit path to operator inventory file
-  --source-client <client>    Override client on lat-source: agave | jito | frankendancer
-  --destination-client <c>    Override client on lat-destination: agave | jito | frankendancer
+  --source-client <client>    Override client on lat-source: agave | jito | firedancer
+  --destination-client <c>    Override client on lat-destination: agave | jito | firedancer
   -n, --lines <n>             Journal lines to show before following (default: 50)
   --no-follow                 Print recent matching lines and exit
   -h, --help                  Show this help
 
 Examples:
   # Client types auto-detected from workdir name (no extra flags needed)
-  follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-jito_bam_to_frankendancer-20260529-123456
-  follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-frankendancer_to_jito_bam-20260529-123456
+  follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-jito_bam_to_firedancer-20260529-123456
+  follow-latitude-hot-swap.sh --workdir test-harness/work/latitude-hot-swap/latitude-hot-swap-firedancer_to_jito_bam-20260529-123456
 
   # Explicit override when using --inventory directly
   follow-latitude-hot-swap.sh --inventory /path/to/operator-inventory.yml \
-    --source-client frankendancer --destination-client jito
+    --source-client firedancer --destination-client jito
 EOF
 }
 
@@ -81,12 +81,12 @@ if [[ -n "$WORKDIR" && ( -z "$SOURCE_CLIENT" || -z "$DESTINATION_CLIENT" ) ]]; t
   # Strip leading run-id prefix up to and including the first dash-separated segment pair
   _case="${_no_ts#latitude-hot-swap-}"
   case "$_case" in
-    jito_bam_to_frankendancer)
+    jito_bam_to_firedancer)
       [[ -z "$SOURCE_CLIENT" ]]      && SOURCE_CLIENT="jito"
-      [[ -z "$DESTINATION_CLIENT" ]] && DESTINATION_CLIENT="frankendancer"
+      [[ -z "$DESTINATION_CLIENT" ]] && DESTINATION_CLIENT="firedancer"
       ;;
-    frankendancer_to_jito_bam)
-      [[ -z "$SOURCE_CLIENT" ]]      && SOURCE_CLIENT="frankendancer"
+    firedancer_to_jito_bam)
+      [[ -z "$SOURCE_CLIENT" ]]      && SOURCE_CLIENT="firedancer"
       [[ -z "$DESTINATION_CLIENT" ]] && DESTINATION_CLIENT="jito"
       ;;
     *)
@@ -99,7 +99,7 @@ fi
 
 # Final fallback if still unset (e.g. --inventory used without client flags)
 SOURCE_CLIENT="${SOURCE_CLIENT:-jito}"
-DESTINATION_CLIENT="${DESTINATION_CLIENT:-frankendancer}"
+DESTINATION_CLIENT="${DESTINATION_CLIENT:-firedancer}"
 
 if [[ -z "$INVENTORY" ]]; then
   echo "ERROR: --workdir or --inventory is required" >&2; usage; exit 2
@@ -127,7 +127,7 @@ build_identity_watch_cmd() {
   local grep_pattern
   case "$client" in
     agave|jito)      grep_pattern='[Ii]dentity' ;;
-    frankendancer)   grep_pattern='set.identity\|validator.set.identity\|identity' ;;
+    firedancer)      grep_pattern='set.identity\|validator.set.identity\|identity' ;;
     *)               grep_pattern='[Ii]dentity' ;;
   esac
 
