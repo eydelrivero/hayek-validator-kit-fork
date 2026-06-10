@@ -83,6 +83,16 @@ This role automates the initial configuration and hardening of a Solana validato
 
 For SSH, the role standardizes on `ssh.service` and disables `ssh.socket` if present, so port changes are controlled only through `/etc/ssh/sshd_config`. On Ubuntu-style socket-activated hosts, it also removes the socket-activation generator/drop-in state before starting `ssh.service`.
 
+## NIC Ring Buffer Tuning
+
+NIC ring buffers are configured by `ethtool-ring-buffers.service`. The helper
+targets power-of-two RX/TX ring sizes: it uses the maximum when already a power
+of two, tries `512` for the known `511` maximum quirk, and rounds other
+non-power-of-two maxima down. The helper only applies increases. If the NIC
+rejects the first attempt, it falls back to half the attempted power-of-two
+target only when that would increase the current ring size and a lower
+power-of-two fallback exists.
+
 ## Running the Playbook
 
 1. **Prepare the authorized IPs CSV:**
