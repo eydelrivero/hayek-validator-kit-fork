@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# switch-validator-client.sh - flip which staged validator client owns the shared `sol` service.
+#
+# Managed by Ansible (solana_validator_shared). Do not edit on the host.
+#
+# Usage:
+#   sudo {{ validator_scripts_dir }}/switch-validator-client.sh <jito-bam|firedancer> [--promote]
+#
+# Default boots the target client PASSIVE (hot-spare identity). Pass --promote to set-identity to
+# the staked primary identity after the client is up.
+#
+# Safety: only ever ONE client may run against the shared ledger/accounts. This script stops and
+# fully drains the current client before starting the target, and serializes via flock.
+set -euo pipefail
+
+# --- rendered configuration ---
+SERVICE="{{ validator_service_name }}"
+VALIDATOR_ROOT="{{ validator_root_dir }}"
+FLAVORS_DIR="${VALIDATOR_ROOT}/flavors"
+STATE_FILE="${VALIDATOR_ROOT}/active-flavor"
+FIREDANCER_CONFIG="{{ firedancer_config_path }}"
+KEYSET_DIR="{{ validator_keyset_dir }}"
+LEDGER="{{ ledger_path }}"
+SCRIPTS_DIR="{{ validator_scripts_dir }}"
+PARK_SCRIPT="${SCRIPTS_DIR}/firedancer-park-ht-siblings.sh"
+FD_BIN="/usr/local/bin/fdctl"
+AGAVE_BIN="{{ system_solana_active_release_dir }}/agave-validator"
+SOL_USER="{{ solana_user }}"
+PRIMARY_KEY="${KEYSET_DIR}/primary-target-identity.json"
+
+DRAIN_TIMEOUT=180   # seconds to wait for the old client to fully stop
+START_TIMEOUT=120   # seconds to wait for the new client to come up
+
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+usage() {
+  echo "Usage: $0 <jito-bam|firedancer> [--promote]" >&2
+  exit "${1:-1}"
+}
+
+# --- arg parsing ---
+TARGET=""
+PROMOTE=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    jito-bam|firedancer) TARGET="$1"; shift ;;
+    --promote)           PROMOTE=true; shift ;;
+    -h|--help)           usage 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage 1 ;;
+  esac
+done
+[[ -n "$TARGET" ]] || usage 1
+
+[[ "$(id -u)" == "0" ]] || die "must run as root (systemctl, /etc, ufw, /sys writes). Try sudo."
+
+# --- serialize: never let two switches race into a double-start ---
+exec 9>/run/switch-validator-client.lock || die "cannot open lock file"
+flock -n 9 || die "another switch is already in progress"
+
+binary_for() { case "$1" in firedancer) echo fdctl ;; *) echo agave-validator ;; esac; }
+
+detect_running() {
+  if pgrep -x fdctl >/dev/null 2>&1; then echo firedancer
+  elif pgrep -x agave-validator >/dev/null 2>&1; then echo jito-bam
+  else echo ""; fi
+}
+
+substate() { systemctl show "$SERVICE" -p SubState --value 2>/dev/null || echo unknown; }
+
+# Refuse to install a staged file unless it is root-owned and not group/other-writable. Defense in
+# depth: these files are executed as root, so a tampered staged copy would be a privesc vector.
+assert_safe_root_file() {
+  local f="$1" owner perms
+  [[ -f "$f" ]] || die "expected file missing: $f"
+  owner="$(stat -c '%U' "$f" 2>/dev/null || echo '?')"
+  perms="$(stat -c '%a' "$f" 2>/dev/null || echo '?')"
+  [[ "$owner" == "root" ]] || die "refusing to install $f: not root-owned (owner=$owner)"
+  [[ "$perms" =~ ^[0-9]+$ ]] || die "refusing to install $f: cannot read mode"
+  (( (8#$perms & 8#022) == 0 )) || die "refusing to install $f: group/other-writable (mode=$perms)"
+}
+
+# --- resolve current active flavor (state file) and what is actually running ---
+ACTIVE="$(cat "$STATE_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+RUNNING="$(detect_running)"
+if [[ -z "$ACTIVE" ]]; then
+  ACTIVE="$RUNNING"
+  log "no state file; detected running flavor: '${ACTIVE:-none}'"
+fi
+
+promote_identity() {
+  local flavor="$1"
+  [[ -f "$PRIMARY_KEY" ]] || die "primary identity keyfile not found: $PRIMARY_KEY"
+  case "$flavor" in
+    firedancer)
+      # Planned promote (not emergency failover): use the SAFE path. fdctl set-identity waits for
+      # any in-progress leader slot by default (so no --force), and --require-tower refuses to vote
+      # without a loaded tower file, preventing a double-vote. (HA's ha-set-role.sh uses --force
+      # because failover is time-critical; a planned switch is not.)
+      log "promoting firedancer to primary identity via fdctl set-identity --require-tower"
+      "$FD_BIN" set-identity --config "$FIREDANCER_CONFIG" --require-tower "$PRIMARY_KEY"
+      ;;
+    jito-bam)
+      log "promoting jito-bam to primary identity via agave-validator set-identity --require-tower"
+      sudo -n -u "$SOL_USER" bash -lc "$(printf '%q --ledger %q set-identity --require-tower %q' \
+        "$AGAVE_BIN" "$LEDGER" "$PRIMARY_KEY")"
+      ;;
+  esac
+  log "promotion complete"
+}
+
+# --- no-op rule: only short-circuit when the target is BOTH recorded active AND actually running.
+# Trusting the state file alone is unsafe: if the recorded client has crashed, "nothing to do" would
+# leave the validator down, and --promote would try to promote a non-running client. ---
+if [[ "$TARGET" == "$ACTIVE" && "$RUNNING" == "$TARGET" ]]; then
+  if $PROMOTE; then
+    log "already running '$TARGET'; running promotion only (no stop/start, no unpark)"
+    promote_identity "$TARGET"
+    exit 0
+  fi
+  log "already running '$TARGET'; nothing to do"
+  exit 0
+fi
+if [[ "$TARGET" == "$ACTIVE" && "$RUNNING" != "$TARGET" ]]; then
+  log "state records '$TARGET' but it is not running ('${RUNNING:-none}'); performing recovery (re)start"
+fi
+
+# --- preflight: target artifacts present ---
+TARGET_UNIT="${FLAVORS_DIR}/${TARGET}/sol.service"
+[[ -f "$TARGET_UNIT" ]] || die "staged unit not found for '$TARGET': $TARGET_UNIT"
+if [[ "$TARGET" == "firedancer" ]]; then
+  [[ -x "$FD_BIN" ]] || die "fdctl not found at $FD_BIN"
+  [[ -f "$FIREDANCER_CONFIG" ]] || die "firedancer config not found: $FIREDANCER_CONFIG"
+else
+  [[ -x "$AGAVE_BIN" ]] || die "agave-validator not found at $AGAVE_BIN"
+fi
+
+log "switching '$ACTIVE' -> '$TARGET' (promote=$PROMOTE)"
+
+# --- step 2: stop + drain the current client ---
+log "stopping $SERVICE and waiting for full drain (cgroup must release ledger locks)"
+systemctl stop "$SERVICE" || true
+deadline=$(( $(date +%s) + DRAIN_TIMEOUT ))
+while :; do
+  st="$(substate)"
+  if [[ "$st" == "dead" ]] && ! pgrep -x fdctl >/dev/null 2>&1 && ! pgrep -x agave-validator >/dev/null 2>&1; then
+    break
+  fi
+  [[ "$(date +%s)" -lt "$deadline" ]] || die "timed out waiting for $SERVICE to stop (SubState=$st); refusing to start $TARGET"
+  sleep 2
+done
+log "$SERVICE drained"
+
+# --- step 3: leaving-firedancer cleanup / entering-jito prep ---
+# Only run firedancer teardown when actually leaving firedancer (not on a same-flavor recovery restart).
+if [[ "$ACTIVE" == "firedancer" && "$TARGET" != "firedancer" ]]; then
+  log "releasing firedancer host config (hugepages/XDP) via fdctl configure fini"
+  "$FD_BIN" configure fini all --config "$FIREDANCER_CONFIG" || log "WARN: fdctl configure fini failed; continuing (jito-bam can still start)"
+  if [[ -x "$PARK_SCRIPT" ]]; then
+    log "re-onlining HT siblings firedancer parked this boot"
+    "$PARK_SCRIPT" --unpark || log "WARN: unpark failed; continuing"
+  fi
+fi
+if [[ "$TARGET" == "jito-bam" ]]; then
+  # The XDP-ring unit is installed by the jito-bam role; just (re)start it. Ignore if absent.
+  systemctl start "xdp-rings-${SERVICE}.service" 2>/dev/null || log "note: xdp-rings-${SERVICE}.service not started (may be absent)"
+fi
+
+# --- step 4: firewall (idempotent, best-effort) ---
+if command -v ufw >/dev/null 2>&1; then
+  case "$TARGET" in
+    firedancer)
+      ufw allow 8900:8930/udp || true
+      ufw allow 8900:8930/tcp || true
+      ufw delete deny 8899/udp || true
+      ufw delete deny 8900/udp || true
+      ufw delete deny 8900/tcp || true
+      ;;
+    jito-bam)
+      ufw delete allow 8900:8930/udp || true
+      ufw delete allow 8900:8930/tcp || true
+      # Restore the agave/jito private-RPC deny rules that entering firedancer removed, so jito-bam
+      # does not run with those ports exposed.
+      ufw deny 8899/udp || true
+      ufw deny 8900/udp || true
+      ufw deny 8900/tcp || true
+      ;;
+  esac
+fi
+
+# --- step 5: install target unit + logrotate, reload, start ---
+assert_safe_root_file "$TARGET_UNIT"
+install -o root -g root -m 0644 "$TARGET_UNIT" "/etc/systemd/system/${SERVICE}.service"
+if [[ -f "${FLAVORS_DIR}/${TARGET}/logrotate" ]]; then
+  assert_safe_root_file "${FLAVORS_DIR}/${TARGET}/logrotate"
+  install -o root -g root -m 0644 "${FLAVORS_DIR}/${TARGET}/logrotate" "/etc/logrotate.d/${SERVICE}"
+fi
+systemctl daemon-reload
+log "starting $SERVICE as $TARGET"
+systemctl start "$SERVICE"
+
+# --- step 6: verify the new client is up ---
+want_bin="$(binary_for "$TARGET")"
+deadline=$(( $(date +%s) + START_TIMEOUT ))
+while :; do
+  st="$(substate)"
+  if [[ "$st" == "running" ]] && pgrep -x "$want_bin" >/dev/null 2>&1; then
+    break
+  fi
+  [[ "$(date +%s)" -lt "$deadline" ]] || die "$TARGET did not come up (SubState=$st, process '$want_bin' not found). Check: journalctl -u $SERVICE"
+  sleep 2
+done
+log "$TARGET is up (SubState=$st, process $want_bin running)"
+
+# --- step 7: record active flavor (only after confirming the new client is up) ---
+tmp="$(mktemp)"
+printf '%s\n' "$TARGET" > "$tmp"
+mv "$tmp" "$STATE_FILE"
+chmod 0644 "$STATE_FILE"
+log "active-flavor set to $TARGET"
+
+# --- step 8: optional promotion to the staked primary identity ---
+if $PROMOTE; then
+  promote_identity "$TARGET"
+else
+  log "client is passive (hot-spare identity); re-run with --promote to vote on the primary identity"
+fi
+
+log "done: $SERVICE now runs $TARGET"

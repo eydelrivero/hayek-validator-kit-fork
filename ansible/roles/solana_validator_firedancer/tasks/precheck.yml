@@ -19,6 +19,18 @@
       - firedancer_version | string | trim | length > 0
     fail_msg: "firedancer_version must be defined"
 
+- name: precheck - Reject inactive install combined with host cleanup
+  # force_host_cleanup wipes the SHARED /mnt/ledger,accounts,snapshots. On an inactive (staged)
+  # install those belong to the co-located LIVE client, so the combination would destroy a running
+  # validator's data. Refuse it outright.
+  ansible.builtin.assert:
+    that:
+      - not ((validator_inactive_install | default(false) | bool) and (force_host_cleanup | default(false) | bool))
+    fail_msg: >-
+      validator_inactive_install=true cannot be combined with force_host_cleanup=true: cleanup would
+      delete the shared ledger/accounts/snapshots used by the live co-located client. Stage without
+      cleanup, or run a destructive (active) install only when no other client owns this host's data.
+
 - name: precheck - Check if expected genesis hash is defined
   ansible.builtin.assert:
     that:

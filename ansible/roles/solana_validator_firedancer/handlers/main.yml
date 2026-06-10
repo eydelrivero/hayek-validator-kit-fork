@@ -9,3 +9,5 @@
     name: "{{ validator_service_name }}"
     state: restarted
   become: true
+  # On inactive install the shared `sol` service belongs to the other (live) client; never restart it.
+  when: not (validator_inactive_install | default(false) | bool)

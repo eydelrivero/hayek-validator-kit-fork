@@ -1,4 +1,7 @@
 ---
+# NOTE: setup_validator_directory chowns the live ledger/accounts/snapshots to
+# sol:validator_operators 2775. On inactive install this is safe because the co-located client
+# (jito-bam) uses the same solana_user, so ownership is unchanged.
 - name: Setup validator directory structure
   ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/setup_validator_directory.yml
   tags: [solana_validator_firedancer, setup_validator_directory]
@@ -21,8 +24,11 @@
   tags: [solana_validator_firedancer, configure]
 
 - name: Configure Solana Validator HA integration
+  # Skipped on inactive install: HA must not be (re)configured/started for a merely-staged client.
+  # stage_inactive_client.yml additionally stops+disables solana-validator-ha on this host.
   ansible.builtin.include_role:
     name: solana_validator_ha
+  when: not (validator_inactive_install | default(false) | bool)
   tags: [solana_validator_firedancer, solana_validator_ha]
 
 - name: handlers - Flush handlers before verification

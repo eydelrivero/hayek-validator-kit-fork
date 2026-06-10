@@ -1,4 +1,10 @@
 ---
+# Inactive install: stage Firedancer artifacts alongside a different LIVE client (e.g. jito-bam)
+# on the shared `sol` service WITHOUT stopping it, overwriting its unit, running fdctl configure
+# init, reconfiguring HA, or starting Firedancer. Activation is then a host-local operation via
+# switch-validator-client.sh. Off by default = normal (active) install.
+validator_inactive_install: false
+
 # Opt-in: run the HT-sibling park script automatically as ExecStartPost after each
 # firedancer (re)start. Off by default so operators keep manual control (the Firedancer
 # project deliberately stopped auto-offlining siblings). When false, run the script

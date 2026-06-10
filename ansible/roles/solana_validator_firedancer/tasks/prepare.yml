@@ -1,4 +1,11 @@
 ---
+- name: prepare - Resolve inactive-install flag
+  # Inactive install: stage Firedancer artifacts alongside a different live client (e.g. jito-bam)
+  # on the shared `sol` service WITHOUT stopping it, overwriting its unit, or starting Firedancer.
+  # The host-local switch-validator-client.sh flips which staged flavor owns `sol` later.
+  ansible.builtin.set_fact:
+    _fd_inactive: "{{ validator_inactive_install | default(false) | bool }}"
+
 - name: prepare - Resolve Jito BAM block engine URL for Frankendancer bundle
   when: frankendancer_jito_enabled | default(false) | bool
   block:
@@ -27,6 +34,8 @@
         block_engine_url: "{{ block_engine_url | default(jito_bam_endpoints[jito_target_bam_region].block_engine_url) }}"
 
 - name: prepare - Stop validator service
+  # Skipped on inactive install: the live `sol` service belongs to the other client and must keep running.
+  when: not _fd_inactive
   block:
     - name: prepare - Check if validator service exists and is running
       ansible.builtin.systemd:
@@ -48,6 +57,8 @@
       become: true
 
 - name: prepare - Remove parameterized validator logrotate config and systemd units
+  # Skipped on inactive install: these paths are keyed on the shared `sol` name and belong to the live client.
+  when: not _fd_inactive
   block:
     - name: prepare - Remove parameterized validator logrotate config if it exists
       ansible.builtin.file:

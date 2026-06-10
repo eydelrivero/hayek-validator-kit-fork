@@ -36,6 +36,12 @@
 #   Requires block_engine_url, jito_tip_payment_program_pubkey, jito_tip_distribution_program_pubkey.
 # - firedancer_tile_affinity (OPTIONAL): CPU affinity for tiles (default: auto).
 # - firedancer_net_interface (OPTIONAL): Network interface override (default: auto).
+# - validator_inactive_install (OPTIONAL, default false): Stage Firedancer alongside a different
+#   LIVE client (e.g. jito-bam) on the shared `sol` service WITHOUT stopping it or starting
+#   Firedancer. Deploys switch-validator-client.sh and turns HA off on this host. Activate later
+#   with: sudo /opt/validator/scripts/switch-validator-client.sh firedancer [--promote].
+#   Recommended companion: firedancer_park_ht_siblings_on_start=true so the staged unit renders
+#   the ExecStartPost HT-sibling park step.
 # - force_host_cleanup (OPTIONAL): Cleanup target host if it has validator data from a different cluster.
 # - solana_validator_ha_install_enabled (OPTIONAL): Install solana-validator-ha alongside validator setup.
 # - solana_validator_ha_version (OPTIONAL): Version of solana-validator-ha to install. Defaults to the latest pinned in the role.

@@ -1,0 +1,145 @@
+---
+# Stage a validator client (e.g. Firedancer) alongside a different LIVE client on the shared
+# `sol` service WITHOUT activating it. Snapshots the live client's unit into a per-flavor slot,
+# deploys the host-local switch script, writes the active-flavor state file, and turns HA off on
+# this host. Imported from a flavor role's configure step only when validator_inactive_install=true.
+
+- name: stage_inactive - Set staging paths
+  ansible.builtin.set_fact:
+    _stage_flavors_dir: "{{ validator_root_dir }}/flavors"
+    _stage_active_flavor_file: "{{ validator_root_dir }}/active-flavor"
+    _stage_jito_dir: "{{ validator_root_dir }}/flavors/jito-bam"
+
+- name: stage_inactive - Ensure flavors staging directories exist
+  # root-owned, non-group-writable: staged units are installed and executed as root by the switch
+  # script; a group-writable staging tree would be a root privilege-escalation path.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    state: directory
+  loop:
+    - "{{ _stage_flavors_dir }}"
+    - "{{ _stage_jito_dir }}"
+  become: true
+
+# --- Detect the currently-running client so we never clobber a valid active-flavor state ---
+- name: stage_inactive - Detect running Firedancer (fdctl)
+  ansible.builtin.shell: pgrep -x fdctl
+  register: _stage_fd_proc
+  changed_when: false
+  failed_when: false
+
+- name: stage_inactive - Detect running Agave/Jito (agave-validator)
+  ansible.builtin.shell: pgrep -x agave-validator
+  register: _stage_agave_proc
+  changed_when: false
+  failed_when: false
+
+- name: stage_inactive - Resolve detected live flavor
+  ansible.builtin.set_fact:
+    _stage_detected_flavor: >-
+      {{ 'firedancer' if _stage_fd_proc.rc == 0
+         else ('jito-bam' if _stage_agave_proc.rc == 0 else 'unknown') }}
+
+# --- Snapshot the live client's unit + logrotate into the jito-bam slot (fallback only) ---
+# force: false => only written when the slot is empty. The jito-bam role keeps this slot fresh
+# on its own runs, so a later binary update of jito-bam will not be shadowed by a stale snapshot.
+- name: stage_inactive - Snapshot live systemd unit into jito-bam slot (if absent)
+  ansible.builtin.copy:
+    src: "/etc/systemd/system/{{ validator_service_name }}.service"
+    dest: "{{ _stage_jito_dir }}/sol.service"
+    remote_src: true
+    owner: "root"
+    group: "root"
+    mode: "0644"
+    force: false
+  become: true
+
+- name: stage_inactive - Check live logrotate config
+  ansible.builtin.stat:
+    path: "/etc/logrotate.d/{{ validator_service_name }}"
+  register: _stage_live_logrotate
+
+- name: stage_inactive - Snapshot live logrotate into jito-bam slot (if absent)
+  ansible.builtin.copy:
+    src: "/etc/logrotate.d/{{ validator_service_name }}"
+    dest: "{{ _stage_jito_dir }}/logrotate"
+    remote_src: true
+    owner: "root"
+    group: "root"
+    mode: "0644"
+    force: false
+  become: true
+  when: _stage_live_logrotate.stat.exists
+
+# --- active-flavor state: write only when absent; fail loudly if it disagrees with reality ---
+- name: stage_inactive - Read existing active-flavor state (if any)
+  ansible.builtin.slurp:
+    src: "{{ _stage_active_flavor_file }}"
+  register: _stage_active_flavor_raw
+  failed_when: false
+
+- name: stage_inactive - Parse existing active-flavor state
+  ansible.builtin.set_fact:
+    _stage_existing_flavor: >-
+      {{ (_stage_active_flavor_raw.content | b64decode | trim)
+         if (_stage_active_flavor_raw.content is defined) else '' }}
+
+- name: stage_inactive - Fail if active-flavor state disagrees with the running client
+  ansible.builtin.fail:
+    msg: >-
+      active-flavor state file says '{{ _stage_existing_flavor }}' but the running client looks like
+      '{{ _stage_detected_flavor }}' on {{ inventory_hostname }}. Refusing to re-stage to avoid
+      corrupting switch state (which could let a switch start two clients against the shared ledger).
+      Resolve the host state manually before re-running.
+  when:
+    - _stage_existing_flavor | length > 0
+    - _stage_detected_flavor != 'unknown'
+    - _stage_existing_flavor != _stage_detected_flavor
+
+- name: stage_inactive - Initialize active-flavor state (only when absent)
+  ansible.builtin.copy:
+    # The live `sol` unit still belongs to the co-located client (jito-bam) since this is an
+    # inactive stage; default to the detected flavor, else jito-bam (the current unit owner).
+    content: "{{ (_stage_detected_flavor if _stage_detected_flavor != 'unknown' else 'jito-bam') }}\n"
+    dest: "{{ _stage_active_flavor_file }}"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+    force: false
+  become: true
+
+# --- Deploy the host-local switch script ---
+- name: stage_inactive - Deploy switch-validator-client.sh
+  ansible.builtin.template:
+    # Absolute path (resolved via playbook_dir) so template lookup does not depend on which role
+    # imported this shared task file. Mirrors the {{ playbook_dir }}/../scripts pattern used elsewhere.
+    src: "{{ playbook_dir }}/../roles/solana_validator_shared/templates/switch-validator-client.sh.j2"
+    dest: "{{ validator_scripts_dir }}/switch-validator-client.sh"
+    owner: "root"
+    group: "{{ validator_operators_group }}"
+    mode: "0754"
+  become: true
+
+# --- HA is left OFF on this single host (no failover peer) ---
+- name: stage_inactive - Stop and disable HA services on this host
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - "{{ solana_validator_ha_service_name | default('solana-validator-ha') }}"
+    - "{{ solana_validator_ha_public_ip_service_name | default('solana-validator-ha-public-ip') }}"
+  become: true
+  failed_when: false
+
+- name: stage_inactive - Staging summary
+  ansible.builtin.debug:
+    msg:
+      - "Staged inactive client; live `{{ validator_service_name }}` service untouched."
+      - "Flavor slots: {{ _stage_flavors_dir }}/{jito-bam,firedancer}"
+      - "Active flavor state: {{ _stage_active_flavor_file }}"
+      - "Switch with: sudo {{ validator_scripts_dir }}/switch-validator-client.sh <jito-bam|firedancer> [--promote]"
+      - "HA stopped+disabled on this host."

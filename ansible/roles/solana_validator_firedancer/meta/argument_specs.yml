@@ -77,6 +77,13 @@ argument_specs:
         required: false
         default: "auto"
         description: "CPU affinity for Firedancer tiles (e.g. 'auto', '1-15', '1,2,3-8')"
+      validator_inactive_install:
+        type: bool
+        required: false
+        default: false
+        description: >-
+          Stage Firedancer alongside a different live client on the shared `sol` service without
+          stopping/overwriting it or starting Firedancer. Activate later with switch-validator-client.sh.
       firedancer_net_interface:
         type: str
         required: false

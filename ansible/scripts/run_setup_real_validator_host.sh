@@ -46,6 +46,13 @@ Options:
   --resume-from-metal-box                   Optional. Skip the users phase and resume from metal-box.
   --resume-from-validator                   Optional. Skip directly to validator + HA setup.
   --resume-from-monitoring                  Optional. Skip directly to validator startup monitoring.
+  --stage-inactive                          Optional (firedancer). Install the validator client
+                                            ALONGSIDE a different live client on the shared `sol`
+                                            service without stopping it or starting this client.
+                                            Skips startup monitoring. Activate later with:
+                                            sudo /opt/validator/scripts/switch-validator-client.sh
+                                            <jito-bam|firedancer> [--promote]. Best paired with
+                                            --resume-from-validator on an already-bootstrapped host.
   --allow-unconventional-testnet-two-disk-layout
                                             Optional. Force the special testnet two-disk mode.
                                             Auto-detected when the host has 1 root + 1 non-root
@@ -114,6 +121,7 @@ ALLOW_UNCONVENTIONAL_TESTNET_TWO_DISK_LAYOUT=false
 RESUME_FROM_METAL_BOX=false
 RESUME_FROM_VALIDATOR=false
 RESUME_FROM_MONITORING=false
+STAGE_INACTIVE=false
 MONITOR_INTERVAL=20
 
 while (($# > 0)); do
@@ -214,6 +222,10 @@ while (($# > 0)); do
       RESUME_FROM_MONITORING=true
       shift
       ;;
+    --stage-inactive)
+      STAGE_INACTIVE=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -240,6 +252,11 @@ require_arg --authorized-ips-csv "$AUTHORIZED_IPS_CSV"
 require_arg --validator-flavor "$VALIDATOR_FLAVOR"
 require_arg --validator-name "$VALIDATOR_NAME"
 require_arg --solana-cluster "$SOLANA_CLUSTER"
+
+if [[ "$STAGE_INACTIVE" == true && "$VALIDATOR_FLAVOR" != "firedancer" ]]; then
+  echo "--stage-inactive is only supported for --validator-flavor firedancer" >&2
+  exit 2
+fi
 
 # The roles still consume the CSV path as a filename + directory (iam_manager) and as
 # a full path (server_initial_setup), so derive those pieces from the single-path flags.
@@ -299,6 +316,9 @@ if [[ -n "$USE_OFFICIAL_REPO" ]]; then
 fi
 if [[ -n "$FIREDANCER_PARK_HT_SIBLINGS_ON_START" ]]; then
   COMMON_ARGS+=(-e "firedancer_park_ht_siblings_on_start=$FIREDANCER_PARK_HT_SIBLINGS_ON_START")
+fi
+if [[ "$STAGE_INACTIVE" == true ]]; then
+  COMMON_ARGS+=(-e "validator_inactive_install=true")
 fi
 # allow_unconventional_testnet_two_disk_layout is appended later, after
 # maybe_autodetect_two_disk_layout has had a chance to enable it.
@@ -520,6 +540,22 @@ monitor_validator_startup() {
   done
 }
 
+finish_after_validator() {
+  # On an inactive stage the target client is NOT started (the other live client still owns `sol`),
+  # so there is nothing to monitor. Print activation guidance instead.
+  if [[ "$STAGE_INACTIVE" == true ]]; then
+    printf '\n\n%s== Staged (inactive) install complete ==%s\n' "$COLOR_PHASE" "$COLOR_RESET"
+    printf '%sThe live client on `sol` was left running and untouched; %s was only staged.%s\n' \
+      "$COLOR_META" "$VALIDATOR_FLAVOR" "$COLOR_RESET"
+    printf '%sActivate later (host-local, during a maintenance window):%s\n' "$COLOR_META" "$COLOR_RESET"
+    printf '  sudo /opt/validator/scripts/switch-validator-client.sh %s [--promote]\n' "$VALIDATOR_FLAVOR"
+    printf '%sSwitch back with:%s sudo /opt/validator/scripts/switch-validator-client.sh jito-bam [--promote]\n\n' \
+      "$COLOR_META" "$COLOR_RESET"
+    return 0
+  fi
+  monitor_validator_startup
+}
+
 if [[ "$RESUME_FROM_METAL_BOX" == true && "$RESUME_FROM_VALIDATOR" == true ]] \
   || [[ "$RESUME_FROM_METAL_BOX" == true && "$RESUME_FROM_MONITORING" == true ]] \
   || [[ "$RESUME_FROM_VALIDATOR" == true && "$RESUME_FROM_MONITORING" == true ]]; then
@@ -601,7 +637,7 @@ if [[ "$RESUME_FROM_METAL_BOX" == true ]]; then
     -e "validator_host_bootstrap_start_at=validator" \
     -e "password_handoff_mode=assume_ready"
   echo
-  monitor_validator_startup
+  finish_after_validator
   exit 0
 fi
 
@@ -612,7 +648,7 @@ if [[ "$RESUME_FROM_VALIDATOR" == true ]]; then
     -e "validator_host_bootstrap_start_at=validator" \
     -e "password_handoff_mode=assume_ready"
   echo
-  monitor_validator_startup
+  finish_after_validator
   exit 0
 fi
 
@@ -670,4 +706,4 @@ ansible-playbook -K "${COMMON_ARGS[@]}" \
   -e "password_handoff_mode=assume_ready"
 
 echo
-monitor_validator_startup
+finish_after_validator

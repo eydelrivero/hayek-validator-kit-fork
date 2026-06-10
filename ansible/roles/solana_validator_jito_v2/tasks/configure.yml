@@ -233,6 +233,47 @@
       ansible.builtin.fail:
         msg: "Failed to configure validator systemd service. Error: {{ ansible_failed_result }}"
 
+# Keep the jito-bam flavor staging slot fresh on co-install hosts (where Firedancer was staged
+# inactive). Only runs if /opt/validator/flavors exists, so plain jito-bam hosts are unaffected.
+# This prevents switch-validator-client.sh from later restoring a stale jito-bam unit/logrotate.
+- name: configure - Refresh jito-bam flavor staging slot (co-install hosts only)
+  block:
+    - name: configure - Check for flavor staging directory
+      ansible.builtin.stat:
+        path: "{{ validator_root_dir }}/flavors"
+      register: _jito_flavors_dir
+
+    - name: configure - Re-stage jito-bam unit + logrotate
+      when: _jito_flavors_dir.stat.exists
+      block:
+        - name: configure - Ensure jito-bam staging slot exists
+          # root-owned, non-group-writable: the switch script installs+runs these as root.
+          ansible.builtin.file:
+            path: "{{ validator_root_dir }}/flavors/jito-bam"
+            owner: "root"
+            group: "root"
+            mode: "0755"
+            state: directory
+
+        - name: configure - Snapshot live jito-bam unit into staging slot
+          ansible.builtin.copy:
+            src: "/etc/systemd/system/{{ validator_service_name }}.service"
+            dest: "{{ validator_root_dir }}/flavors/jito-bam/sol.service"
+            remote_src: true
+            owner: "root"
+            group: "root"
+            mode: "0644"
+
+        - name: configure - Snapshot live jito-bam logrotate into staging slot
+          ansible.builtin.copy:
+            src: "/etc/logrotate.d/{{ validator_service_name }}"
+            dest: "{{ validator_root_dir }}/flavors/jito-bam/logrotate"
+            remote_src: true
+            owner: "root"
+            group: "root"
+            mode: "0644"
+  become: true
+
 - name: configure - Configuration complete
   ansible.builtin.debug:
     msg: "Agave validator configuration completed successfully"

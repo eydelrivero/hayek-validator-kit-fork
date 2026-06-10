@@ -1,4 +1,8 @@
 ---
+- name: configure - Resolve inactive-install flag (defensive for tag-limited runs)
+  ansible.builtin.set_fact:
+    _fd_inactive: "{{ validator_inactive_install | default(false) | bool }}"
+
 - name: configure - Set validator_keyset_name default if not defined
   ansible.builtin.set_fact:
     validator_keyset_name: "{{ validator_name }}"
@@ -11,6 +15,33 @@
   ansible.builtin.set_fact:
     firedancer_config_dir: "{{ validator_root_dir }}/config/{{ validator_name }}"
     firedancer_config_path: "{{ validator_root_dir }}/config/{{ validator_name }}/firedancer.toml"
+
+- name: configure - Resolve systemd unit destination (live vs staged)
+  # On inactive install we render the unit into a per-flavor staging slot instead of the live
+  # /etc/systemd/system/sol.service, so the running client (jito-bam) is left untouched. The
+  # switch-validator-client.sh script copies the staged unit into place when activating Firedancer.
+  ansible.builtin.set_fact:
+    _fd_flavor_stage_dir: "{{ validator_root_dir }}/flavors/firedancer"
+    _fd_unit_dest: >-
+      {{ (validator_root_dir + '/flavors/firedancer/sol.service')
+         if _fd_inactive
+         else ('/etc/systemd/system/' + validator_service_name + '.service') }}
+    _fd_logrotate_dest: >-
+      {{ (validator_root_dir + '/flavors/firedancer/logrotate')
+         if _fd_inactive
+         else ('/etc/logrotate.d/' + validator_service_name) }}
+
+- name: configure - Ensure Firedancer staging directory exists (inactive install)
+  # root-owned and NOT group-writable: these files are installed and executed as root by
+  # switch-validator-client.sh, so a group-writable copy would be a root privilege-escalation path.
+  ansible.builtin.file:
+    path: "{{ _fd_flavor_stage_dir }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    state: directory
+  become: true
+  when: _fd_inactive
 
 - name: configure - Ensure Firedancer config directory exists
   ansible.builtin.file:
@@ -87,7 +118,11 @@
     - { port: "8900", proto: "udp" }
     - { port: "8900", proto: "tcp" }
   become: true
-  when: ansible_facts['os_family'] == 'Debian'
+  # Firewall changes are deferred to switch-validator-client.sh on inactive install so we don't
+  # perturb the live client's firewall while Firedancer is only staged.
+  when:
+    - ansible_facts['os_family'] == 'Debian'
+    - not _fd_inactive
   ignore_errors: true
 
 - name: configure - Allow TCP and UDP port range for firedancer network tiles (8900-8930)
@@ -99,13 +134,18 @@
     - udp
     - tcp
   become: true
-  when: ansible_facts['os_family'] == 'Debian'
+  when:
+    - ansible_facts['os_family'] == 'Debian'
+    - not _fd_inactive
 
 - name: configure - Run fdctl configure init (one-time system setup)
+  # Skipped on inactive install: this reserves hugepages and rebinds the NIC via XDP, which would
+  # disrupt the live client. It is already in the unit's ExecStartPre, so it runs at first real start.
   ansible.builtin.command: >-
     fdctl configure init all --config {{ firedancer_config_path }}
   become: true
   changed_when: true
+  when: not _fd_inactive
 
 - name: configure - Deploy HT-sibling park/unpark script
   ansible.builtin.template:
@@ -117,31 +157,51 @@
   become: true
 
 - name: configure - Render validator systemd unit
+  # _fd_unit_dest points at the Firedancer staging slot on inactive install, or the live
+  # /etc/systemd/system/sol.service otherwise. The restart handler is gated so the staged
+  # render never touches the running client.
   ansible.builtin.template:
     src: validator.service.j2
-    dest: "/etc/systemd/system/{{ validator_service_name }}.service"
+    dest: "{{ _fd_unit_dest }}"
+    owner: "root"
+    group: "root"
     mode: "0644"
   become: true
   notify:
     - handlers - Reload systemd
     - handlers - Restart validator service
 
+- name: configure - Render staged logrotate config (inactive install)
+  # Staged for switch-validator-client.sh to install as /etc/logrotate.d/sol on activation.
+  # Not verified here (logrotate -d would fail against a non-/etc path); validated on activation.
+  # root:root, non-group-writable (installed+used by root on activation).
+  ansible.builtin.template:
+    src: validator.logrotate.j2
+    dest: "{{ _fd_logrotate_dest }}"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  become: true
+  when: _fd_inactive
+
 - name: configure - Configure validator log rotation
+  when: not _fd_inactive
   block:
     - name: configure - Create logrotate configuration
       ansible.builtin.template:
         src: validator.logrotate.j2
-        dest: "/etc/logrotate.d/{{ validator_service_name }}"
+        dest: "{{ _fd_logrotate_dest }}"
         mode: "0644"
 
     - name: configure - Verify logrotate configuration
-      ansible.builtin.command: logrotate -d /etc/logrotate.d/{{ validator_service_name }}
+      ansible.builtin.command: logrotate -d {{ _fd_logrotate_dest }}
       register: logrotate_check
       changed_when: false
       failed_when: logrotate_check.rc != 0 or ('error' in logrotate_check.stderr | lower)
   become: true
 
 - name: configure - Configure validator systemd service
+  when: not _fd_inactive
   block:
     - name: configure - Reload systemd manager configuration
       ansible.builtin.systemd:
@@ -158,6 +218,15 @@
       ansible.builtin.fail:
         msg: "Failed to configure Frankendancer validator service. Error: {{ ansible_failed_result }}"
 
+- name: configure - Stage inactive Firedancer client artifacts
+  # Snapshots the live client's unit, deploys the switch script, writes the active-flavor state,
+  # and disables HA on this host. Runs only on inactive install.
+  ansible.builtin.import_tasks: ../../solana_validator_shared/tasks/stage_inactive_client.yml
+  when: _fd_inactive
+
 - name: configure - Configuration complete
   ansible.builtin.debug:
-    msg: "Frankendancer validator configuration completed successfully"
+    msg: >-
+      {{ 'Frankendancer staged (inactive) - live client untouched. Use switch-validator-client.sh to activate.'
+         if _fd_inactive
+         else 'Frankendancer validator configuration completed successfully' }}
