@@ -681,7 +681,7 @@
                   )
                   else (
                     'driver_unsupported_' ~ xdp_iface_driver_name
-                    if ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en'])) | map('lower') | list))
+                    if ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en', 'ice'])) | map('lower') | list))
                     else 'none'
                   )
                 )
@@ -703,7 +703,7 @@
               )
             )
             and (xdp_zero_copy_interface_safe | bool)
-            and not ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en'])) | map('lower') | list))
+            and not ((xdp_iface_driver_name | default('') | lower) in ((xdp_zero_copy_unsupported_iface_drivers | default(['bnxt_en', 'ice'])) | map('lower') | list))
           }}
 
     - name: xdp - Initialize NUMA placement assessment facts

@@ -22,3 +22,4 @@ xdp_unsupported_iface_drivers:
   - "virtio_net"
 xdp_zero_copy_unsupported_iface_drivers:
   - "bnxt_en"
+  - "ice"
