@@ -19,6 +19,16 @@
   ansible.builtin.debug:
     var: validator_service_status
 
+- name: verify - Assert validator service is active
+  ansible.builtin.assert:
+    that:
+      - validator_service_status.status.ActiveState == "active"
+    fail_msg: >-
+      Validator service {{ validator_service_name }} is not active on {{ inventory_hostname }}
+      (state: {{ validator_service_status.status.ActiveState | default('unknown') }}).
+      Check the logs above for startup errors.
+    success_msg: "Validator service {{ validator_service_name }} is active"
+
 - name: verify - Get last 50 lines of validator logs
   ansible.builtin.command: journalctl -u {{ validator_service_name }} -n 50 --no-pager --since "10 seconds ago"
   register: validator_logs
@@ -29,7 +39,9 @@
     var: validator_logs.stdout_lines
 
 - name: verify - Wait for fdctl process to appear (up to 30s)
-  ansible.builtin.shell: pgrep -f fdctl
+  # pgrep -x matches the exact process name so it cannot match the wrapping shell's
+  # own command line (which contains the literal string "fdctl"), unlike pgrep -f.
+  ansible.builtin.shell: pgrep -x fdctl
   register: validator_process
   changed_when: false
   failed_when: false
@@ -64,8 +76,11 @@
   register: firedancer_config_file
 
 - name: verify - Print Firedancer config
+  # no_log: the rendered TOML includes [reporting] solana_metrics_config, which can carry
+  # InfluxDB credentials (u=/p=). Inspect the file directly on the host when troubleshooting.
   ansible.builtin.debug:
     msg: "{{ firedancer_config_file.content | b64decode }}"
+  no_log: true
 
 - name: verify - Summary - Frankendancer validator verification complete
   ansible.builtin.debug:

@@ -65,9 +65,13 @@
         state: absent
   become: true
 
-- name: prepare - Clear validator logs
+- name: prepare - Clear validator logs (opt-in)
+  # Off by default: the systemd ExecStartPre already archives + prunes firedancer.log on each
+  # (re)start, so wiping the whole logs dir here would destroy the forensic record from a prior
+  # crash before the new process has proven it can start. Enable with clear_validator_logs=true.
   ansible.builtin.shell: |
     #!/bin/bash
     set -e
     rm -rf "{{ validator_logs_dir }}"/*
   become: true
+  when: clear_validator_logs | default(false) | bool

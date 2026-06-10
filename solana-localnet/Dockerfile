@@ -1,4 +1,4 @@
-ARG SOLANA_RELEASE=3.1.10
+ARG SOLANA_RELEASE=4.0.0-rc.1
 ARG SOLANA_DOWNLOAD_ROOT=https://solv-store.s3.us-east-1.amazonaws.com/agave/releases/download
 
 FROM ubuntu:24.04 AS ubuntu-base

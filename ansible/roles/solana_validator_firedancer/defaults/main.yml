@@ -7,3 +7,8 @@ firedancer_park_ht_siblings_on_start: false
 
 # Number of archived pre-restart firedancer logs (firedancer.log.<ts>.prev) to retain.
 firedancer_log_prev_retain: 3
+
+# Opt-in: wipe the entire validator logs dir during prepare. Off by default because the
+# systemd ExecStartPre already archives/prunes firedancer.log; enabling this discards the
+# forensic record of a prior crash before the new process has started.
+clear_validator_logs: false

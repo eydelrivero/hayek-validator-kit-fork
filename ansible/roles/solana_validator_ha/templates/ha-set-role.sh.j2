@@ -102,6 +102,23 @@ is_firedancer_client() {
   [[ "${CONFIG[client]}" == "firedancer" ]]
 }
 
+# Resolve the pubkey for a keypair file using the client's own tooling. Firedancer hosts
+# may not have the Agave companion's solana-keygen installed (the companion S3 install is
+# best-effort), so use fdctl there and fall back to solana-keygen for agave/jito clients.
+identity_pubkey() {
+  local keyfile="$1" out
+  if is_firedancer_client; then
+    if [[ -z "${FIREDANCER_CONFIG_PATH}" ]]; then
+      log ERROR "FIREDANCER_CONFIG_PATH is not set; cannot run fdctl keys pubkey"
+      return 1
+    fi
+    out="$(/usr/local/bin/fdctl --config "${FIREDANCER_CONFIG_PATH}" keys pubkey "$keyfile" 2>/dev/null)" || return 1
+    printf '%s\n' "$out" | awk '!/^Log at/ {print; exit}'
+  else
+    "{{ system_solana_active_release_dir }}/solana-keygen" pubkey "$keyfile"
+  fi
+}
+
 ensure_passive_via_service_controls() {
   local service="{{ validator_service_name }}"
 
@@ -136,7 +153,7 @@ run_set_identity() {
 
 set_active() {
   local desired_pubkey
-  desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
+  desired_pubkey="$(identity_pubkey "${CONFIG[identity-keyfile]}")"
 
   rpc_healthy || { log ERROR "local validator RPC is unhealthy; refusing active promotion"; return 1; }
 
@@ -156,7 +173,7 @@ set_active() {
 set_passive() {
   local desired_pubkey=""
 
-  desired_pubkey="$("{{ system_solana_active_release_dir }}/solana-keygen" pubkey "${CONFIG[identity-keyfile]}")"
+  desired_pubkey="$(identity_pubkey "${CONFIG[identity-keyfile]}")"
 
   if ! systemctl is-active "{{ validator_service_name }}" >/dev/null 2>&1; then
     remove_tower_file

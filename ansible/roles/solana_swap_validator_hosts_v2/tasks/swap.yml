@@ -201,9 +201,17 @@
       register: wait_restart_result
       failed_when: wait_restart_result.rc != 0
 
-    - name: swap - Skip restart-window check for firedancer source (handled by fdctl internally)
+    - name: swap - Skip restart-window check for firedancer source
+      # No agave-validator wait-for-restart-window needed: fdctl set-identity itself waits for
+      # any in-progress leader slot to complete before switching identity, so it is safe to call
+      # during or near a leader slot (per Firedancer docs:
+      # https://docs.firedancer.io/api/cli.html#set-identity). The cluster-wide delinquency
+      # safety that agave's wait-for-restart-window also provides is covered by the prepare-stage
+      # delinquency pre-check.
       ansible.builtin.debug:
-        msg: "Skipping agave-validator wait-for-restart-window: source is Frankendancer (fdctl manages delinquency)"
+        msg: >-
+          Skipping agave-validator wait-for-restart-window: source is Frankendancer.
+          fdctl set-identity waits for any in-progress leader slot before switching.
       when:
         - inventory_hostname == source_host
         - source_client | default('agave') == 'firedancer'
