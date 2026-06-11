@@ -141,6 +141,21 @@
 - name: configure - Run fdctl configure init (one-time system setup)
   # Skipped on inactive install: this reserves hugepages and rebinds the NIC via XDP, which would
   # disrupt the live client. It is already in the unit's ExecStartPre, so it runs at first real start.
+  #
+  # HUGEPAGE CAVEAT (1 GiB "gigantic" pages): runtime reservation needs physically-contiguous memory
+  # and frequently FAILS with ENOMEM on a long-running, fragmented host (e.g. after a co-located agave
+  # client just freed >100 GiB) -- observed reserving only 37/84 pages with 154 GiB free. We cannot
+  # pre-reserve at staging time because the reserved RAM would be carved out from the live agave client.
+  # Mitigations, in order of reliability:
+  #   1. RELIABLE: reserve at boot via kernel cmdline (GRUB):
+  #        default_hugepagesz=1G hugepagesz=1G hugepages=<N>
+  #      The kernel reserves before any allocation. Trade-off: <N> GiB are carved out of RAM at boot,
+  #      so the host effectively becomes a firedancer host (no longer hot-swap-both). Not automated here.
+  #   2. LIKELY: a failed switch leaves this unit installed+enabled, so a plain reboot re-runs configure
+  #      init on freshly-defragmented memory and usually succeeds.
+  #   3. BEST-EFFORT: switch-validator-client.sh compacts memory (and optionally drops caches via
+  #      SWITCH_DROP_CACHES=1) before starting firedancer, and logs the resulting free gigantic-page
+  #      count. Not guaranteed.
   ansible.builtin.command: >-
     fdctl configure init all --config {{ firedancer_config_path }}
   become: true

@@ -21,6 +21,8 @@ STATE_FILE="${VALIDATOR_ROOT}/active-flavor"
 FIREDANCER_CONFIG="{{ firedancer_config_path }}"
 KEYSET_DIR="{{ validator_keyset_dir }}"
 LEDGER="{{ ledger_path }}"
+ACCOUNTS="{{ accounts_path }}"
+FD_LOG="{{ validator_logs_dir }}/firedancer.log"
 SCRIPTS_DIR="{{ validator_scripts_dir }}"
 PARK_SCRIPT="${SCRIPTS_DIR}/firedancer-park-ht-siblings.sh"
 FD_BIN="/usr/local/bin/fdctl"
@@ -28,8 +30,10 @@ AGAVE_BIN="{{ system_solana_active_release_dir }}/agave-validator"
 SOL_USER="{{ solana_user }}"
 PRIMARY_KEY="${KEYSET_DIR}/primary-target-identity.json"
 
-DRAIN_TIMEOUT=180   # seconds to wait for the old client to fully stop
-START_TIMEOUT=120   # seconds to wait for the new client to come up
+DRAIN_TIMEOUT=180          # seconds to wait for the old client to fully stop
+START_TIMEOUT=120          # seconds to wait for the new client to come up
+PROMOTE_READY_TIMEOUT=180  # seconds to wait for the validator's admin RPC to accept set-identity
+PROMOTE_ATTEMPT_TIMEOUT=20 # per-attempt cap so a hung set-identity cannot blow the overall deadline
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -68,6 +72,42 @@ detect_running() {
 
 substate() { systemctl show "$SERVICE" -p SubState --value 2>/dev/null || echo unknown; }
 
+# Explain a firedancer start failure (almost always: cannot reserve gigantic 1GiB hugepages). Reports
+# needed-vs-reservable, distinguishes "not enough RAM" from "enough RAM but too fragmented", and gives the
+# two fixes. Numbers come from fdctl's own ENOMEM line and the kernel hugepage counters.
+firedancer_start_diag() {
+  # `|| true` / `|| echo 0` on every parse: this runs under `set -euo pipefail`, and a grep that finds
+  # nothing would otherwise abort the function before the diagnostic prints and the caller stops the unit.
+  local req_g free_g avail_gib line ma
+  line="$(grep -aiE '[0-9]+ gigantic .*pages and .*huge' "$FD_LOG" 2>/dev/null | tail -1 || true)"
+  # The line holds BOTH the requirement ("consisting of 84 gigantic ...") and what was available
+  # ("only 37 gigantic pages were available") -- anchor on the requirement, fall back to the first count.
+  req_g="$(printf '%s' "$line" | grep -oE 'consisting of [0-9]+ gigantic' | grep -oE '[0-9]+' | head -1 || true)"
+  [[ -n "$req_g" ]] || req_g="$(printf '%s' "$line" | grep -oE '[0-9]+ gigantic' | grep -oE '[0-9]+' | head -1 || true)"
+  free_g="$(awk '{s+=$1} END{print s+0}' /sys/devices/system/node/node*/hugepages/hugepages-1048576kB/free_hugepages 2>/dev/null || echo 0)"
+  ma="$(awk '/MemAvailable/{print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)"; avail_gib=$(( ${ma:-0} / 1024 / 1024 ))
+  log "firedancer did not start. Most likely it could not reserve gigantic (1GiB) hugepages:"
+  [[ -n "$req_g" ]] && log "  needs ~${req_g} x 1GiB gigantic pages (per its NUMA node); ${free_g} free now (summed across all NUMA nodes)."
+  log "  system has ${avail_gib} GiB available (MemAvailable, host-wide)."
+  if [[ -n "$req_g" ]] && (( avail_gib >= req_g )) && (( free_g < req_g )); then
+    log "  => Plenty of TOTAL memory (${avail_gib} GiB >= ${req_g} GiB) but LIKELY too FRAGMENTED to form ${req_g} contiguous 1GiB pages."
+    log "     (host-wide figures; for the precise per-node picture: cat /sys/devices/system/node/node*/hugepages/hugepages-1048576kB/free_hugepages)"
+  fi
+  log "  Fixes (1GiB pages need CONTIGUOUS memory; it fragments with uptime and stays fragmented even after"
+  log "  freeing -- a reboot resets it. During a switch the old client is already stopped, so what matters is"
+  log "  accumulated fragmentation, not which client is running):"
+  log "   1) Reboot, then bring up firedancer SOON after boot (before long uptime re-fragments memory):"
+  log "      - If you have NOT restored jito-bam, the firedancer unit is still the enabled $SERVICE, so a"
+  log "        plain 'sudo reboot' auto-starts firedancer at boot (least-fragmented moment) and reserves the"
+  log "        pages -- no need to re-run this script (then --promote it)."
+  log "      - If you HAVE restored jito-bam, just reboot and re-run this switch to firedancer shortly after"
+  log "        boot; that works too -- a freshly-booted host is contiguous even with jito running."
+  log "   2) Guaranteed regardless of uptime/boot order (keeps hot-swap working): reserve at boot via kernel"
+  log "      cmdline 'default_hugepagesz=1G hugepagesz=1G hugepages=${req_g:-84}', 'sudo update-grub', reboot."
+  log "      The pages become a persistent pool jito never touches, so firedancer can be switched in anytime."
+  log "  Raw error: grep -i hugetlbfs $FD_LOG ; journalctl -u $SERVICE"
+}
+
 # Refuse to install a staged file unless it is root-owned and not group/other-writable. Defense in
 # depth: these files are executed as root, so a tampered staged copy would be a privesc vector.
 assert_safe_root_file() {
@@ -80,33 +120,73 @@ assert_safe_root_file() {
   (( (8#$perms & 8#022) == 0 )) || die "refusing to install $f: group/other-writable (mode=$perms)"
 }
 
+# What client the installed unit on disk actually IS, independent of the state file. Used to decide
+# firedancer teardown so it stays correct even when a prior start crash-looped and never recorded
+# active-flavor=firedancer (the state file would then wrongly say jito-bam and skip the teardown).
+detect_installed() {
+  local unit="/etc/systemd/system/${SERVICE}.service"
+  [[ -f "$unit" ]] || { echo ""; return; }
+  if grep -qE '^[[:space:]]*ExecStart=.*\bfdctl\b' "$unit"; then echo firedancer; else echo jito-bam; fi
+}
+
 # --- resolve current active flavor (state file) and what is actually running ---
 ACTIVE="$(cat "$STATE_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
 RUNNING="$(detect_running)"
+# Capture the LEAVING flavor from the installed unit now, before step 5 overwrites it.
+LEAVING="$(detect_installed)"
 if [[ -z "$ACTIVE" ]]; then
   ACTIVE="$RUNNING"
   log "no state file; detected running flavor: '${ACTIVE:-none}'"
 fi
 
-promote_identity() {
-  local flavor="$1"
-  [[ -f "$PRIMARY_KEY" ]] || die "primary identity keyfile not found: $PRIMARY_KEY"
-  case "$flavor" in
-    firedancer)
-      # Planned promote (not emergency failover): use the SAFE path. fdctl set-identity waits for
-      # any in-progress leader slot by default (so no --force), and --require-tower refuses to vote
-      # without a loaded tower file, preventing a double-vote. (HA's ha-set-role.sh uses --force
-      # because failover is time-critical; a planned switch is not.)
-      log "promoting firedancer to primary identity via fdctl set-identity --require-tower"
-      "$FD_BIN" set-identity --config "$FIREDANCER_CONFIG" --require-tower "$PRIMARY_KEY"
-      ;;
-    jito-bam)
-      log "promoting jito-bam to primary identity via agave-validator set-identity --require-tower"
-      sudo -n -u "$SOL_USER" bash -lc "$(printf '%q --ledger %q set-identity --require-tower %q' \
-        "$AGAVE_BIN" "$LEDGER" "$PRIMARY_KEY")"
-      ;;
+# Run set-identity once for the given flavor, wrapped in `timeout` ($2 seconds). Called in the CURRENT
+# shell so $FD_BIN/$AGAVE_BIN/$LEDGER/$PRIMARY_KEY/$SOL_USER are all in scope (a `bash -c` subshell would
+# NOT inherit these unexported vars). `bash -c` (not -lc) avoids the sol-user MOTD banner.
+# --require-tower (both clients): refuse to set the identity unless a saved tower exists -> prevents
+# voting without tower history (no double-vote). firedancer ALSO needs --force: a previously cancelled
+# set-identity can leave the key partially switched ("already in the process of switching keys"); --force
+# resets that partial state. Per the fdctl docs the two are independent -- --force does NOT bypass the
+# --require-tower safety. agave-validator has no partial-key-switch state, so the jito-bam branch omits it.
+# Always passing --force is safe HERE: promotion is always passive(hot-spare)->primary, and the OUTGOING
+# hot-spare identity is unstaked (never a leader), so --force has no in-progress leader slot to skip. The
+# only other path is a no-op re-promote of an already-primary client, where set-identity to the SAME key
+# is benign. (A general validator tool would prefer force-only-on-retry; this kit's promote path does not.)
+_promote_cmd() {  # $1=flavor  $2=timeout_secs
+  case "$1" in
+    firedancer) timeout "$2" "$FD_BIN" set-identity --config "$FIREDANCER_CONFIG" --force --require-tower "$PRIMARY_KEY" ;;
+    jito-bam)   timeout "$2" sudo -n -u "$SOL_USER" bash -c "$(printf '%q --ledger %q set-identity --require-tower %q' \
+                  "$AGAVE_BIN" "$LEDGER" "$PRIMARY_KEY")" ;;
   esac
-  log "promotion complete"
+}
+
+promote_identity() {
+  local flavor="$1" out rc now remaining t deadline
+  [[ -f "$PRIMARY_KEY" ]] || die "primary identity keyfile not found: $PRIMARY_KEY"
+  deadline=$(( $(date +%s) + PROMOTE_READY_TIMEOUT ))
+  log "promoting $flavor to primary identity via set-identity --require-tower (awaiting admin RPC)"
+  while :; do
+    now="$(date +%s)"; remaining=$(( deadline - now ))
+    (( remaining > 0 )) || die "promotion failed: $flavor admin RPC not ready after ${PROMOTE_READY_TIMEOUT}s (last: ${out:-<none>})"
+    # Cap each attempt at the smaller of the per-attempt limit and the time left so the overall
+    # deadline is a true bound even if the CLI hangs.
+    t=$(( remaining < PROMOTE_ATTEMPT_TIMEOUT ? remaining : PROMOTE_ATTEMPT_TIMEOUT ))
+    # `&& rc=0 || rc=$?` keeps set -e from aborting on the expected early failures while capturing the
+    # REAL exit code (an `if cmd; then..fi` would clobber $? to the if-statement's status).
+    out="$(_promote_cmd "$flavor" "$t" 2>&1)" && rc=0 || rc=$?
+    if (( rc == 0 )); then
+      if [[ -n "$out" ]]; then log "$out"; fi
+      log "promotion complete"
+      return 0
+    fi
+    # rc 124 == attempt timeout (admin RPC hung). Retry only on admin-RPC-not-ready signals; any other
+    # error (missing tower, bad key, perms, ...) is permanent -> fail fast with stderr preserved.
+    if (( rc != 124 )) && ! printf '%s' "$out" \
+         | grep -qiE 'connection refused|os error 111|admin\.rpc does not exist|failed to connect'; then
+      die "set-identity failed for $flavor (not a readiness error): $out"
+    fi
+    log "admin RPC not ready yet; retrying set-identity in 3s"
+    sleep 3
+  done
 }
 
 # --- no-op rule: only short-circuit when the target is BOTH recorded active AND actually running.
@@ -137,33 +217,99 @@ fi
 
 log "switching '$ACTIVE' -> '$TARGET' (promote=$PROMOTE)"
 
-# --- step 2: stop + drain the current client ---
-log "stopping $SERVICE and waiting for full drain (cgroup must release ledger locks)"
+# --- step 2a: stop $SERVICE and wait for ITS OWN cgroup to release the shared ledger ---
+# Scope the wait to the unit's cgroup, NOT host-wide process names: a clean `systemctl stop`
+# can leave the unit dead with its cgroup emptied while some unrelated client process exists
+# elsewhere on the host, and a host-wide check would then misreport that as "$SERVICE did not
+# stop" (it did). The cross-host double-start guard is handled separately in step 2b.
+# Resolve the cgroup BEFORE stopping, while the unit is active and the path is valid.
+cg="$(systemctl show "$SERVICE" -p ControlGroup --value 2>/dev/null || true)"
+log "stopping $SERVICE and waiting for it to release the ledger"
 systemctl stop "$SERVICE" || true
-deadline=$(( $(date +%s) + DRAIN_TIMEOUT ))
-while :; do
-  st="$(substate)"
-  if [[ "$st" == "dead" ]] && ! pgrep -x fdctl >/dev/null 2>&1 && ! pgrep -x agave-validator >/dev/null 2>&1; then
-    break
+unit_released() {
+  local st; st="$(substate)"
+  [[ "$st" == "dead" || "$st" == "failed" ]] || return 1
+  # Unit already inactive when queried (no cgroup path): trust the dead/failed state.
+  [[ -n "$cg" ]] || return 0
+  local base="/sys/fs/cgroup${cg}"
+  # systemd removes the cgroup dir once the unit is fully torn down.
+  [[ -d "$base" ]] || return 0
+  # cgroup v2: 'populated 0' == no process in this cgroup OR any descendant (fail closed:
+  # while the dir exists we require explicit proof it is empty before declaring released).
+  if [[ -r "$base/cgroup.events" ]]; then
+    grep -qx 'populated 0' "$base/cgroup.events"
+    return
   fi
-  [[ "$(date +%s)" -lt "$deadline" ]] || die "timed out waiting for $SERVICE to stop (SubState=$st); refusing to start $TARGET"
+  # Fallback (no cgroup.events): require an empty cgroup.procs.
+  [[ -f "$base/cgroup.procs" && ! -s "$base/cgroup.procs" ]]
+}
+deadline=$(( $(date +%s) + DRAIN_TIMEOUT ))
+until unit_released; do
+  [[ "$(date +%s)" -lt "$deadline" ]] || die "timed out waiting for $SERVICE to stop (SubState=$(substate)); refusing to start $TARGET"
   sleep 2
 done
-log "$SERVICE drained"
+log "$SERVICE stopped; ledger released"
+
+# --- step 2b: safety gate — never start a 2nd process that OPENS the shared ledger ---
+# Only ONE process may open the shared ledger/accounts. Refuse if ANY process (regardless of name)
+# already holds a file open under them. Detect by an actual open file descriptor under $LEDGER/$ACCOUNTS,
+# NOT by process name: a real client (agave-validator / fdctl run) keeps RocksDB and accounts files open,
+# whereas admin-RPC CLIs (`... monitor`, `... set-identity`, `fdctl monitor`) only talk to the admin.rpc
+# socket and hold no ledger files, so they do NOT block. Scanning every PID's fds also catches renamed
+# binaries/wrappers; canonicalizing the paths matches a symlinked ledger; a zombie holds no fds and is
+# naturally ignored. Note: small TOCTOU window vs. a client started by something other than this script;
+# bounded by flock (serializes this script), single-validator hosts, and HA off when staged.
+ledger_real="$(readlink -f "$LEDGER" 2>/dev/null || echo "$LEDGER")"
+accounts_real="$(readlink -f "$ACCOUNTS" 2>/dev/null || echo "$ACCOUNTS")"
+blockers=""
+for fd in /proc/[0-9]*/fd/*; do
+  t="$(readlink "$fd" 2>/dev/null)" || continue
+  case "$t" in
+    "$ledger_real"/*|"$accounts_real"/*) ;;
+    *) continue ;;
+  esac
+  pid="${fd#/proc/}"; pid="${pid%%/*}"
+  case " $blockers " in *" $pid "*) ;; *) blockers+="$pid " ;; esac
+done
+if [[ -n "${blockers// /}" ]]; then
+  for p in $blockers; do
+    log "blocker: pid $p ($(ps -o comm= -p "$p" 2>/dev/null || echo '?')) holds the shared ledger; cmd: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
+  done
+  die "refusing to start $TARGET: another process already holds the shared ledger (pids above); stop it first"
+fi
 
 # --- step 3: leaving-firedancer cleanup / entering-jito prep ---
-# Only run firedancer teardown when actually leaving firedancer (not on a same-flavor recovery restart).
-if [[ "$ACTIVE" == "firedancer" && "$TARGET" != "firedancer" ]]; then
+# Run firedancer teardown when the INSTALLED unit was firedancer and we are switching away from it
+# (keyed on the on-disk unit, not the state file, so a crash-looped firedancer is still cleaned up;
+# also skips the no-op same-flavor recovery restart).
+if [[ "$LEAVING" == "firedancer" && "$TARGET" != "firedancer" ]]; then
   log "releasing firedancer host config (hugepages/XDP) via fdctl configure fini"
   "$FD_BIN" configure fini all --config "$FIREDANCER_CONFIG" || log "WARN: fdctl configure fini failed; continuing (jito-bam can still start)"
+  # `fdctl configure fini` resets channels/ntuple/rxfh but does NOT detach firedancer's XDP program from
+  # the NIC. If left attached, the incoming agave/jito client cannot create its own AF_XDP socket
+  # ("failed to create AF_XDP socket on queue QueueId(0)") and crash-loops. firedancer is fully stopped
+  # at this point (drained in step 2a), so any XDP program still on its interface is stale -> detach it.
+  fd_iface="$(sed -n '/^\[net\]/,/^\[/ s/^[[:space:]]*interface[[:space:]]*=[[:space:]]*"\{0,1\}\([^"[:space:]]*\).*/\1/p' "$FIREDANCER_CONFIG" 2>/dev/null | head -1)"
+  fd_xdp_prog="$(ip -d link show "$fd_iface" 2>/dev/null | grep -oE 'prog/xdp id [0-9]+' | head -1 || true)"
+  # Scope: only firedancer's own data NIC ($fd_iface), only when leaving firedancer, with firedancer
+  # already stopped (step 2a) and the incoming client not yet started. Any XDP program still attached
+  # there is therefore the just-stopped client's stale program -- detach it so the incoming client can
+  # attach its own. (Log the id so an unexpected detach is auditable.)
+  if [[ -n "$fd_iface" && -n "$fd_xdp_prog" ]]; then
+    log "detaching stale XDP program ($fd_xdp_prog) from $fd_iface so $TARGET can attach its own"
+    ip link set dev "$fd_iface" xdpgeneric off 2>/dev/null || true
+    ip link set dev "$fd_iface" xdp off 2>/dev/null || true
+  fi
   if [[ -x "$PARK_SCRIPT" ]]; then
     log "re-onlining HT siblings firedancer parked this boot"
     "$PARK_SCRIPT" --unpark || log "WARN: unpark failed; continuing"
   fi
 fi
 if [[ "$TARGET" == "jito-bam" ]]; then
-  # The XDP-ring unit is installed by the jito-bam role; just (re)start it. Ignore if absent.
-  systemctl start "xdp-rings-${SERVICE}.service" 2>/dev/null || log "note: xdp-rings-${SERVICE}.service not started (may be absent)"
+  # The XDP-ring unit (sets NIC rx/tx ring sizes via ethtool -G) is installed by the jito-bam role. Use
+  # `restart`, not `start`: it is a Type=oneshot+RemainAfterExit unit that is already "active (exited)"
+  # from boot, so `start` is a no-op and would NOT re-apply the rings after firedancer touched the NIC.
+  systemctl restart "xdp-rings-${SERVICE}.service" 2>/dev/null || log "note: xdp-rings-${SERVICE}.service not (re)started (may be absent)"
 fi
 
 # --- step 4: firewall (idempotent, best-effort) ---
@@ -188,6 +334,25 @@ if command -v ufw >/dev/null 2>&1; then
   esac
 fi
 
+# --- step 4b: best-effort memory prep before firedancer reserves gigantic (1GiB) pages ---
+# 1GiB pages need physically-contiguous memory; on a long-running host runtime reservation often falls
+# short (observed 37/84 with 154GiB free). This improves the odds but is NOT guaranteed -- the reliable
+# path is a boot-time reservation (kernel cmdline default_hugepagesz=1G hugepagesz=1G hugepages=N; see the
+# firedancer role notes). Done here ONCE per switch, not in the unit (the unit would thrash this every
+# RestartSec=1 crash-loop). drop_caches is host-wide and I/O-disruptive, so it is opt-in.
+if [[ "$TARGET" == "firedancer" ]]; then
+  sync || true
+  if [[ "${SWITCH_DROP_CACHES:-0}" == "1" ]]; then
+    log "dropping page cache to free contiguous memory (SWITCH_DROP_CACHES=1)"
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+  fi
+  log "compacting memory before firedancer reserves gigantic (1GiB) hugepages"
+  echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+  sleep 2
+  avail="$(cat /sys/devices/system/node/node*/hugepages/hugepages-1048576kB/free_hugepages 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+  log "gigantic (1GiB) hugepages currently free across NUMA nodes: ${avail} (firedancer reserves what its config needs at start; if it ENOMEMs, reboot is the reliable fallback)"
+fi
+
 # --- step 5: install target unit + logrotate, reload, start ---
 assert_safe_root_file "$TARGET_UNIT"
 install -o root -g root -m 0644 "$TARGET_UNIT" "/etc/systemd/system/${SERVICE}.service"
@@ -197,7 +362,13 @@ if [[ -f "${FLAVORS_DIR}/${TARGET}/logrotate" ]]; then
 fi
 systemctl daemon-reload
 log "starting $SERVICE as $TARGET"
-systemctl start "$SERVICE"
+if ! systemctl start "$SERVICE"; then
+  # firedancer's ExecStartPre (fdctl configure init) most often fails on gigantic-hugepage ENOMEM and
+  # then Restart=always crash-loops. Explain it clearly, quiesce the loop, and exit.
+  if [[ "$TARGET" == "firedancer" ]]; then firedancer_start_diag; fi
+  systemctl stop "$SERVICE" 2>/dev/null || true
+  die "$SERVICE failed to start as $TARGET (see: journalctl -u $SERVICE ; $FD_LOG)"
+fi
 
 # --- step 6: verify the new client is up ---
 want_bin="$(binary_for "$TARGET")"

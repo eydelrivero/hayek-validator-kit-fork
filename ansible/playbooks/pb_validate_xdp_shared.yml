@@ -204,4 +204,5 @@
           - Zero-copy block reason: {{ xdp_zero_copy_block_reason | default('n/a') }}
           - Capability source: {{ xdp_capability_source | default('n/a') }}
           - Capability confidence: {{ xdp_capability_confidence | default('n/a') }}
+          - NOTE - 'effective' is a STATIC capability check (driver/kernel/caps/flag); it does NOT exercise a real AF_XDP zero-copy bind, so the runtime ZC bind can still fail. If the validator panics creating an AF_XDP socket, inspect dmesg (i40e/xsk) and NIC config despite this PASS.
       tags: [xdp, xdp_validate]
